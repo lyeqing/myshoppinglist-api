@@ -47,9 +47,19 @@ try
         {
             if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retry))
                 context.HttpContext.Response.Headers.RetryAfter = Math.Ceiling(retry.TotalSeconds).ToString(System.Globalization.CultureInfo.InvariantCulture);
-            await Results.Problem(statusCode: 429, title: "Too many trial requests. Please try again later.").ExecuteAsync(context.HttpContext);
+            context.HttpContext.Response.Headers.CacheControl = "no-store";
+            await Results.Problem(statusCode: 429, title: "Too many requests. Please try again later.").ExecuteAsync(context.HttpContext);
         };
     });
+    builder.Services.AddOptions<RateLimiterOptions>().Configure<IOptions<ProductImportOptions>>((limits, imports) =>
+        limits.AddPolicy(ProductImportEndpoints.SubmissionRatePolicy, context => RateLimitPartition.GetFixedWindowLimiter(
+            context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "anonymous", _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = imports.Value.SubmissionRequestsPerWindow,
+                Window = TimeSpan.FromSeconds(imports.Value.SubmissionWindowSeconds), QueueLimit = 0, AutoReplenishment = true
+            })));
+    builder.Services.AddScoped<ProductImportSubmissionService>();
+    builder.Services.AddScoped<ProductImportStatusService>();
     builder.Services.AddSingleton<ProductNormalisationService>();
     builder.Services.AddSingleton<ProductMatchingService>();
     builder.Services.AddScoped<ProductService>();
@@ -91,7 +101,11 @@ try
     builder.Services.ConfigureHttpJsonOptions(options =>
         options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
     var app = builder.Build();
-    app.UseExceptionHandler();
+    app.UseExceptionHandler(new ExceptionHandlerOptions
+    {
+        StatusCodeSelector = exception => exception is BadHttpRequestException badRequest
+            ? badRequest.StatusCode : StatusCodes.Status500InternalServerError
+    });
     app.UseSerilogRequestLogging();
     if (app.Environment.IsDevelopment())
     {
@@ -108,6 +122,7 @@ try
     app.UseMiddleware<CookieRequestProtection>();
     app.UseRateLimiter();
     app.MapAuthEndpoints();
+    app.MapProductImportEndpoints();
     app.MapGet("/", () => "MyShoppingList API").ExcludeFromDescription();
     app.Run();
 }

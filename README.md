@@ -1,6 +1,6 @@
 # MyShoppingList API
 
-Standalone ASP.NET Core 10 / EF Core / PostgreSQL backend following HandyTool conventions. Stages 1 and 2 provide the database and provider contracts. Stage 3A adds safe public-page fetching and Coles source extraction. Stage 3B adds transactional source-product persistence and deterministic matching. Stage 3C adds the durable source-import worker. Stage 4A adds trial accounts and secure sessions. Registered-account login, job submission/status endpoints, other retailers, and the frontend will follow separately.
+Standalone ASP.NET Core 10 / EF Core / PostgreSQL backend following HandyTool conventions. Stages 1 and 2 provide the database and provider contracts. Stage 3A adds safe public-page fetching and Coles source extraction. Stage 3B adds transactional source-product persistence and deterministic matching. Stage 3C adds the durable source-import worker. Stage 4A adds trial accounts and secure sessions. Stage 4B adds authenticated import submission and status polling. Registered-account login, other retailers, and the frontend will follow separately.
 
 ## Local setup
 
@@ -22,7 +22,7 @@ dotnet ef database update --project myshoppinglist-api.csproj
 dotnet run --project myshoppinglist-api.csproj --launch-profile http
 ```
 
-EF creates the named database if absent when the configured PostgreSQL role has permission. The API listens on `http://localhost:5392`; development Swagger is at `/swagger`. The API exposes liveness and trial/session endpoints. Shopping-list management and import endpoints are not implemented yet.
+EF creates the named database if absent when the configured PostgreSQL role has permission. The API listens on `http://localhost:5392`; development Swagger is at `/swagger`. The API exposes liveness, trial/session endpoints, and product-import submission/status. General shopping-list management is not implemented yet.
 
 ## Database design
 
@@ -99,7 +99,7 @@ Lease renewal runs in an independent scope while extraction is active. A rejecte
 
 This stage implements source extraction only. Other active retailers receive `NotSupported` with `comparison_not_implemented`; they are never reported as `NotFound`. Successful source imports normally finish `Partial` until comparison providers are implemented. Source offer failures preserve the identified product and their specific unavailable/failure result. A complete result can be produced when all expected checks have normal outcomes. Completion rechecks the lease, account, and list; an account/list that becomes unavailable before finalisation cancels the job.
 
-The worker processes existing SQL jobs. Authenticated enqueue/status routes, fresh-price reuse for comparisons, Woolworths comparisons, and frontend polling remain future stages. No new migration is required. Implementation references: [PostgreSQL queue locking](https://www.postgresql.org/docs/14/sql-select.html) and [scoped services in BackgroundService](https://learn.microsoft.com/en-us/dotnet/core/extensions/scoped-service).
+The worker processes SQL jobs created by the Stage 4B submission endpoint. Fresh-price reuse for comparisons, Woolworths comparisons, and frontend polling remain future stages. No new migration is required. Implementation references: [PostgreSQL queue locking](https://www.postgresql.org/docs/14/sql-select.html) and [scoped services in BackgroundService](https://learn.microsoft.com/en-us/dotnet/core/extensions/scoped-service).
 
 ## Trial accounts and sessions (Stage 4A)
 
@@ -135,7 +135,41 @@ await fetch('/api/auth/logout', {
 
 Trial-start requests are limited to `Auth:TrialRequestsPerWindow` (default 10) per `Auth:TrialWindowSeconds` (default 3600), per remote IP per application instance. Reused trials also count. Rejection returns `429` with `Retry-After`. Limits are held in memory and reset on restart; they are not shared between instances. Forwarded address headers are not trusted automatically. Configure trusted proxies explicitly before relying on client-IP limits behind a proxy.
 
-No database migration is required for this stage. Registered login, account conversion, expired-data cleanup, and authenticated import routes remain subsequent work.
+No database migration is required for this stage. Registered login, account conversion, and expired-data cleanup remain subsequent work.
+
+## Import submission and polling (Stage 4B)
+
+`POST /api/shopping-lists/{listId}/products/url` requires a valid session and the browser request header described above. Send JSON:
+
+```json
+{ "url": "https://www.coles.com.au/product/your-product", "quantity": 2 }
+```
+
+Quantity defaults to 1 when omitted and must be a positive integer. Invalid JSON, fractional quantities, invalid URLs, and unimplemented source retailers return `400`. At this stage Coles is the only implemented source provider. Submission validates the URL allow-list but does not fetch or resolve retailer DNS; the worker's safe transport validates resolved addresses and redirects when it connects.
+
+The endpoint checks active account/trial and list access, then creates a durable queued job with pending retailer rows. No retailer lookup runs in the request. Success returns `202 Accepted`, `Cache-Control: no-store`, and a `Location` header pointing to the status URL:
+
+```json
+{
+  "jobId": 123,
+  "status": "Queued",
+  "quantity": 2,
+  "reused": false,
+  "statusUrl": "/api/product-import-jobs/123"
+}
+```
+
+Submissions are serialised using account then list row locks. The same normalised URL on the same list reuses an existing `Queued` or `Processing` job, including a job waiting for retry. The response has `reused: true` and retains that job's original quantity. URL fragments are removed; path and query semantics are retained. Once a job is terminal, a new submission creates a new job. Final list insertion still preserves an existing item's quantity and notes according to Stage 3B. The response's `quantity` is the job's requested quantity, not necessarily the quantity of an already-existing list item.
+
+Missing or other users' lists return `404`; owned archived/expired lists return `409`. Unauthenticated or expired sessions return `401`. Submission is limited per account per application instance to `ProductImport:SubmissionRequestsPerWindow` (20) per `SubmissionWindowSeconds` (60); excess requests return `429` with `Retry-After`. Reused/invalid submissions count toward the limit. Polling does not consume this submission allowance.
+
+`GET /api/product-import-jobs/{jobId}` requires the owner session and returns status/progress, requested quantity, list-item reference, product metadata when saved, and retailer result DTOs. Missing, other users', or unavailable-list jobs return `404`. Responses are not cached and exclude claim tokens, leases, raw provider error messages, and EF entities.
+
+Each retailer retains its own status, match confidence, cache flag, check time, and error code. `prices` is an array of current shared catalogue observations with amount, currency, location ID, price scope, source, promotions, and individual check times. These observations may have been refreshed by another import; they are not an immutable quotation from this job. Different scopes/currencies/locations stay separate; no cheapest-price or local-price claim is inferred. Unavailable, failed, unsupported, and pending results do not surface old prices as successful checks. Products appear after source persistence commits, even while the job remains `Processing`.
+
+Status projections use a PostgreSQL repeatable-read transaction so a poll observes one coherent database snapshot. See [PostgreSQL transaction isolation](https://www.postgresql.org/docs/17/transaction-iso.html). The future frontend should poll approximately every two seconds, stop on `Completed`, `Partial`, `Failed`, or `Cancelled`, and stop on session/access loss or component disposal. The frontend polling UI is not implemented in this stage.
+
+No migration is required. Tests use a controlled fake retailer to verify that submission returns before extraction completes, then exercise the real hosted worker and polling endpoint without contacting retailer websites.
 
 ## Verification
 
