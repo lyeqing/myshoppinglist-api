@@ -7,6 +7,7 @@ using myshoppinglist_api.Configuration;
 using myshoppinglist_api.Providers.Coles;
 using myshoppinglist_api.Providers.Http;
 using myshoppinglist_api.Services;
+using myshoppinglist_api.Workers;
 using System.Net;
 using Serilog;
 
@@ -29,6 +30,13 @@ try
     builder.Services.AddScoped<ShopProductService>();
     builder.Services.AddScoped<PriceService>();
     builder.Services.AddScoped<SourceProductPersistenceService>();
+    builder.Services.AddScoped<ProductImportJobService>();
+    builder.Services.AddScoped<ProductImportProcessor>();
+    builder.Services.AddOptions<ProductImportOptions>().BindConfiguration(ProductImportOptions.SectionName)
+        .ValidateDataAnnotations()
+        .Validate(o => o.RenewalSeconds * 2 < o.LeaseSeconds, "Lease duration must exceed twice the renewal interval.")
+        .ValidateOnStart();
+    builder.Services.AddHostedService<ProductImportWorker>();
     builder.Services.AddOptions<PriceOptions>().BindConfiguration(PriceOptions.SectionName)
         .ValidateDataAnnotations().ValidateOnStart();
     builder.Services.AddSingleton(services => new SafeRetailerConnection(services.GetRequiredService<RetailerCatalog>()));

@@ -1,6 +1,6 @@
 # MyShoppingList API
 
-Standalone ASP.NET Core 10 / EF Core / PostgreSQL backend following HandyTool conventions. Stages 1 and 2 provide the database and provider contracts. Stage 3A adds safe public-page fetching and Coles source extraction. Stage 3B adds transactional source-product persistence and deterministic matching. Authentication endpoints, job processing, other retailers, and the frontend will follow separately.
+Standalone ASP.NET Core 10 / EF Core / PostgreSQL backend following HandyTool conventions. Stages 1 and 2 provide the database and provider contracts. Stage 3A adds safe public-page fetching and Coles source extraction. Stage 3B adds transactional source-product persistence and deterministic matching. Stage 3C adds the durable source-import worker. Authentication endpoints, job submission/status endpoints, other retailers, and the frontend will follow separately.
 
 ## Local setup
 
@@ -34,11 +34,11 @@ EF creates the named database if absent when the configured PostgreSQL role has 
 - `ProductImportJobs` persists quantity, ownership, URL, progress, retry scheduling, and claim lease information. Composite foreign keys enforce matching list ownership and resulting list-item identity.
 - `ProductImportRetailerResults` preserves per-shop progress and failures even without a mapping or price. Each job has at most one result per shop.
 
-## Background processing contract for the next stage
+## Background processing contract
 
-The database is the durable queue. A future `BackgroundService` must claim a queued job atomically, assigning a fresh `ClaimToken` and lease with its status transition. `Status` and `ClaimToken` are EF concurrency tokens; stale writes fail instead of silently overwriting a newer claim. Lease renewal and recovery must also use guarded writes. Child-result and catalogue writes must be fenced inside a transaction that verifies the current claim; a parent concurrency token alone cannot protect child-table writes.
+The database is the durable queue. `ProductImportWorker` claims a queued job atomically, assigning a fresh `ClaimToken` and lease with its status transition. `Status` and `ClaimToken` are EF concurrency tokens; stale writes fail instead of silently overwriting a newer claim. Lease renewal and recovery also use guarded writes. Child-result and catalogue writes are fenced inside a transaction that verifies the current claim; a parent concurrency token alone cannot protect child-table writes.
 
-The worker must recheck account/list access and expiry, validate outbound URLs at connection and redirect time, use separate scopes/contexts for concurrent retailer operations, and commit source results before comparisons finish. Restart recovery and retry processing are future implementation, not functionality supplied merely by these tables. Polling will expose partial results at approximately two-second intervals.
+The worker rechecks account/list access and expiry before extraction and persistence, uses the safe outbound transport, and commits source results before finalising comparisons. Processing and lease renewal use separate scopes/contexts. Future comparison operations must each use their own scope and save results incrementally. Future status endpoints and frontend polling will expose partial results at approximately two-second intervals.
 
 Source persistence now validates price-location ownership, normalises GTIN, preserves retry idempotency, and samples price history. Authentication will handle email normalisation. Business operations are not exposed yet.
 
@@ -76,7 +76,30 @@ A transaction-scoped PostgreSQL advisory lock serialises the short catalogue wri
 
 Prices are validated against their retailer and optional active location. Store-specific prices require a location; anonymous prices retain their supplied scope. Currency and scope remain separate current-price keys. Older observations cannot replace newer prices, and conflicting observations at the same timestamp are rejected. Timestamps are aligned to PostgreSQL microsecond precision so identical retries remain idempotent. History is inserted for an initial observation, a price/promotion change, or an unchanged observation after `Price:HistorySampleHours` (default 24); unchanged refreshes still update the current check time.
 
-No database migration or new public endpoint is added in Stage 3B. The future worker must supply an already-claimed job and invoke this service in its own scope.
+No database migration or new public endpoint is added in Stage 3B. The worker supplies an already-claimed job and invokes this service in its own scope.
+
+## Durable source-import worker (Stage 3C)
+
+The hosted worker runs one job at a time per application instance. It uses a PostgreSQL `UPDATE ... RETURNING` statement with a `FOR UPDATE SKIP LOCKED` candidate to claim one eligible queued job. Competing instances cannot claim the same row. Claiming, renewal, and recovery lock only job rows and never acquire catalogue/account/list locks afterwards. Source persistence and completion retain the catalogue → account → list → job lock order. No transaction spans a retailer request.
+
+`ProductImport` settings are validated at startup:
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `Enabled` | `true` | Enable the hosted worker; set `ProductImport__Enabled=false` to disable it. |
+| `PollSeconds` | `1` | Idle queue polling interval. |
+| `MaxAttempts` | `3` | Maximum claims, including recovered attempts. |
+| `LeaseSeconds` | `600` | Time before an unrenewed claim expires. |
+| `RenewalSeconds` | `30` | Renewal interval; must be less than half the lease duration. |
+| `RetryDelaySeconds` | `30` | Initial retry delay, doubled on later attempts. |
+
+Transient source-provider failures are requeued with a persisted retry date. Provider `RetryAfter` can lengthen the delay, capped at one hour. Invalid URLs, unimplemented source providers, removed products, and other nonretryable source failures finish without retry. Unexpected processing exceptions also have bounded retries. Each claim increments `AttemptCount`. Expired processing claims are recovered in batches of up to 100 on each loop; jobs at their attempt limit finish `Failed`, or `Partial` when a source list item already exists. Previously saved products and prices are retained.
+
+Lease renewal runs in an independent scope while extraction is active. A rejected or failed renewal cancels that processing attempt. On shutdown, cancellation reaches the provider and the worker awaits its processing/renewal tasks. An interrupted SQL claim remains recoverable when its lease expires; it is not marked as a successful import. If a restart occurs after source persistence committed, processing resumes finalisation without fetching or adding that source item again.
+
+This stage implements source extraction only. Other active retailers receive `NotSupported` with `comparison_not_implemented`; they are never reported as `NotFound`. Successful source imports normally finish `Partial` until comparison providers are implemented. Source offer failures preserve the identified product and their specific unavailable/failure result. A complete result can be produced when all expected checks have normal outcomes. Completion rechecks the lease, account, and list; an account/list that becomes unavailable before finalisation cancels the job.
+
+The worker processes existing SQL jobs. Authenticated enqueue/status routes, fresh-price reuse for comparisons, Woolworths comparisons, and frontend polling remain future stages. No new migration is required. Implementation references: [PostgreSQL queue locking](https://www.postgresql.org/docs/14/sql-select.html) and [scoped services in BackgroundService](https://learn.microsoft.com/en-us/dotnet/core/extensions/scoped-service).
 
 ## Verification
 
@@ -85,7 +108,7 @@ dotnet test myshoppinglist-api.slnx
 dotnet ef migrations has-pending-model-changes --project myshoppinglist-api.csproj
 ```
 
-Model and matching tests run without a database. Set `MYSHOPPINGLIST_TEST_CONNECTION` to a migrated PostgreSQL database to also run relational constraints, optimistic concurrency, source persistence, and price-history tests. Most database tests roll back a transaction. The separate-context concurrent-import test commits uniquely identified fixtures and deletes those fixtures in `finally`. PostgreSQL identity sequences may advance. Tests never drop or recreate the database. Without the environment variable, database tests are explicitly reported as skipped.
+Model and matching tests run without a database. Set `MYSHOPPINGLIST_TEST_CONNECTION` to a migrated PostgreSQL test database to also run relational constraints, optimistic concurrency, source persistence, price-history, and worker tests. Most database tests roll back a transaction. Separate-context concurrent-import and worker tests commit uniquely identified fixtures and delete those fixtures during cleanup. Worker tests are serialised and refuse to run with unrelated active import jobs; stop any application worker against the test database first. PostgreSQL identity sequences may advance. Tests never drop or recreate the database. Without the environment variable, database tests are explicitly reported as skipped.
 
 Parser/HTTP tests are deterministic and do not contact retailers. One separate opt-in test fetches the public Coles page through the safe transport:
 
