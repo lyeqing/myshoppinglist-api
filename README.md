@@ -1,6 +1,6 @@
 # MyShoppingList API
 
-Standalone ASP.NET Core 10 / EF Core / PostgreSQL backend following HandyTool conventions. Stage 1 provides the database foundation. Stage 2 adds retailer-provider contracts, a registry, and URL validation. Authentication endpoints, real retailer providers, job processing, and the frontend will follow separately.
+Standalone ASP.NET Core 10 / EF Core / PostgreSQL backend following HandyTool conventions. Stages 1 and 2 provide the database and provider contracts. Stage 3A adds safe public-page fetching and Coles source extraction. Authentication endpoints, catalogue persistence services, job processing, other retailers, and the frontend will follow separately.
 
 ## Local setup
 
@@ -48,13 +48,23 @@ Later services must validate that a price's location belongs to its retailer, no
 
 Operations return a typed success or failure. Temporary timeout, network, rate-limit, and server failures are retryable; access restrictions, unsupported retailers, missing products, and parsing failures are not automatically retried. Failure status distinguishes unavailable data from a product not found. A successful search with no candidates means the search completed normally; an unsuccessful search must return a failure. Source extraction can succeed while its optional offer carries a price-retrieval failure. A null offer means no offer check was performed. Expected provider failures use these results; shutdown/request cancellation must propagate through the supplied token rather than being converted into a retailer failure. Providers must validate extracted values (including positive pack sizes, nonnegative prices, and matching location retailer) before returning success.
 
-The registry knows the five seeded retailer codes and explicitly approved root/www hosts. No real providers are registered yet: these retailers resolve as known but unimplemented. Unknown hosts remain distinct. Adding a retailer means adding its definition, database shop record, and provider registration; application dispatch does not need retailer-specific branches. Duplicate codes, conflicting hosts, and providers without a retailer definition fail configuration. The registry is scoped so future providers can safely depend on scoped services.
+The registry knows the five seeded retailer codes and explicitly approved root/www hosts. Coles is registered for source extraction and anonymous offer retrieval; its cross-retailer search returns `NotSupported`. Woolworths, ALDI, IGA, and Foodland remain known but unimplemented. Adding a retailer means adding its definition, database shop record, and provider registration; application dispatch does not need retailer-specific branches. Duplicate codes, conflicting hosts, and providers without a retailer definition fail configuration. The registry is scoped so providers can depend on scoped services. The separate immutable `RetailerCatalog` supplies host policy without resolving provider instances, avoiding circular dependencies with the HTTP client.
 
-`ProductUrlValidator.Validate` accepts HTTPS on port 443, requires an exact approved hostname and an implemented provider, and rejects embedded credentials, literal IP addresses, malformed inputs, internal/unknown hosts, and ambiguous authorities. Fragments are removed while path and query semantics are preserved. Known but unimplemented hosts return `ProviderNotImplemented`; this is not a successful validation for fetching.
+`ProductUrlValidator.Validate` accepts HTTPS on port 443, requires an exact approved hostname, and rejects embedded credentials, literal IP addresses, malformed inputs, internal/unknown hosts, and ambiguous authorities. Fragments are removed while path and query semantics are preserved. It now validates host policy independently of provider availability; callers use the registry's `IsImplemented` to decide whether an operation is supported. An allowed hostname does not imply extraction/search capabilities.
 
-Validation does not fetch a page or resolve DNS. `IsPublicAddress` supplies a conservative IPv4/IPv6 destination policy for the future HTTP client, including mapped IPv4, private, link-local, multicast, documentation, and tunnelling ranges. A future client must check **all** DNS results, reject empty/unsafe results, connect to the checked destination without resolving again, and revalidate each redirect. It must use `IHttpClientFactory`, enforce response size/time limits, and disable automatic unvalidated redirects. URL validation alone is not complete SSRF protection.
+Validation alone does not fetch a page or resolve DNS. `SafeRetailerConnection` checks **all** DNS results using the IPv4/IPv6 destination policy, rejects empty or unsafe results, then connects using a checked numeric endpoint. Normal TLS certificate and hostname verification remains enabled. `RetailerHttpClient` uses `IHttpClientFactory`, forbids automatic redirects, and revalidates every redirect within the same retailer. Proxy routing and cookies are disabled to keep destination checks and anonymous pricing explicit. Connections are pooled briefly; a new connection repeats DNS validation. The client limits the full operation to 20 seconds, the decompressed body to 2 MiB, redirects to three, and response headers to 32 KiB. The `RetailerHttp` settings configure time, body size, and redirects with startup validation. No caller authentication headers or cookies are forwarded.
 
 References: [Microsoft URI hostname handling](https://learn.microsoft.com/en-us/dotnet/api/system.uri.idnhost?view=net-10.0), [IANA IPv4 special-purpose registry](https://www.iana.org/assignments/iana-ipv4-special-registry/), and [IANA IPv6 special-purpose registry](https://www.iana.org/assignments/iana-ipv6-special-registry/).
+
+## Coles extraction (Stage 3A)
+
+The public [Coles product page for code 1849307](https://www.coles.com.au/product/coca-cola-classic-soft-drink-multipack-cans-375ml-10-pack-1849307) was inspected on 2026-09-19. It returned both schema.org Product JSON-LD and `__NEXT_DATA__.props.pageProps.product`. The parser selects by product ID and checks URL/sku consistency; it never treats a recommended product or another pack size as the requested item. Embedded fields supplement JSON-LD or provide a fallback. A reduced fixture documents the exact observed structures without retaining account/session state.
+
+HTML is parsed with AngleSharp 1.8.2, without script execution or external resource loading. GTIN checksums are validated. Missing optional metadata remains null; contradictory GTIN or pack information is left unresolved. The observed title said 10 Pack while its description also mentioned 24 cans, so this fixture intentionally has unknown pack quantity. Conflicting source prices produce an explicit offer failure while preserving the identified product. A multibuy reward is never substituted for the single-pack price; its wording is retained separately.
+
+Prices from anonymous pages have `PriceScope.Unknown` and no claimed user store. They are observed page prices, not national prices or a verified local-store quote. Requested location-specific offers return `NotSupported` for now. A later savings service must determine eligibility for these unverified-location prices. Missing prices return an offer-level parsing failure, not a fabricated zero or a claim that the product is not sold. HTTP 403/access-restriction pages return nonretryable access failures; no bypass or Playwright fallback is implemented. Search remains explicitly unsupported. This stage writes no products, prices, or jobs to the database and exposes no new public endpoint.
+
+The implementation uses [SocketsHttpHandler.ConnectCallback](https://learn.microsoft.com/en-us/dotnet/api/system.net.http.socketshttphandler.connectcallback?view=net-10.0) for checked-address connections and the pinned [AngleSharp package](https://www.nuget.org/packages/AngleSharp/1.8.2) for parsing.
 
 ## Verification
 
@@ -64,3 +74,13 @@ dotnet ef migrations has-pending-model-changes --project myshoppinglist-api.cspr
 ```
 
 Model tests run without a database. Set `MYSHOPPINGLIST_TEST_CONNECTION` to a migrated PostgreSQL database to also run relational constraint and optimistic-concurrency tests. Each database test uses a transaction and rolls back its records; PostgreSQL identity sequences may still advance. Tests never drop or recreate the database. Without the environment variable, relational tests are explicitly reported as skipped.
+
+Parser/HTTP tests are deterministic and do not contact retailers. One separate opt-in test fetches the public Coles page through the safe transport:
+
+```powershell
+$env:MYSHOPPINGLIST_LIVE_COLES = '1'
+dotnet test myshoppinglist-api.slnx --filter 'FullyQualifiedName~Live_public_page'
+Remove-Item Env:MYSHOPPINGLIST_LIVE_COLES
+```
+
+This live check can fail when retailer access or page structures change. It must not be used as an always-on CI dependency.

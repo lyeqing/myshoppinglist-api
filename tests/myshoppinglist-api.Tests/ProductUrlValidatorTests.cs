@@ -6,19 +6,18 @@ namespace myshoppinglist_api.Tests;
 
 public class ProductUrlValidatorTests
 {
-    private static ProductUrlValidator Validator() => new(new RetailerProviderRegistry(
-        [new TestShopProductProvider("coles"), new TestShopProductProvider("woolworths")]));
+    private static ProductUrlValidator Validator() => new(new RetailerCatalog());
 
     [Theory]
     [InlineData("https://coles.com.au/product/123", "coles")]
     [InlineData("HTTPS://WWW.COLES.COM.AU/product/123", "coles")]
     [InlineData("https://www.woolworths.com.au/shop/productdetails/123", "woolworths")]
     [InlineData("https://www.coles.com.au:443/product/123", "coles")]
-    public void Implemented_retailer_urls_are_accepted(string url, string code)
+    public void Known_retailer_urls_pass_host_policy(string url, string code)
     {
         var result = Validator().Validate(url);
         Assert.True(result.IsValid);
-        Assert.Equal(code, result.Registration!.Retailer.Code);
+        Assert.Equal(code, result.Retailer!.Code);
         Assert.NotNull(result.ProductUrl);
     }
 
@@ -34,13 +33,12 @@ public class ProductUrlValidatorTests
     public void Known_unimplemented_retailer_is_distinct_from_unknown_retailer()
     {
         var known = Validator().Validate("https://www.aldi.com.au/product/example");
-        Assert.False(known.IsValid);
-        Assert.Equal(ProductUrlValidationError.ProviderNotImplemented, known.Error);
-        Assert.Equal("aldi", known.Registration!.Retailer.Code);
-        Assert.Null(known.Registration.Provider);
+        Assert.True(known.IsValid);
+        Assert.Equal("aldi", known.Retailer!.Code);
+        Assert.False(new RetailerProviderRegistry([]).FindByCode("aldi")!.IsImplemented);
         var unknown = Validator().Validate("https://shop.example.com/product/example");
         Assert.Equal(ProductUrlValidationError.UnsupportedRetailer, unknown.Error);
-        Assert.Null(unknown.Registration);
+        Assert.Null(unknown.Retailer);
     }
 
     [Theory]

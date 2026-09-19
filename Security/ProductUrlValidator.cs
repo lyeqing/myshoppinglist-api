@@ -12,17 +12,16 @@ public enum ProductUrlValidationError
     CredentialsNotAllowed,
     PortNotAllowed,
     UnsafeHost,
-    UnsupportedRetailer,
-    ProviderNotImplemented
+    UnsupportedRetailer
 }
 
 public sealed record ProductUrlValidationResult(
-    ProductUrlValidationError Error, Uri? ProductUrl = null, RetailerRegistration? Registration = null)
+    ProductUrlValidationError Error, Uri? ProductUrl = null, RetailerDefinition? Retailer = null)
 {
     public bool IsValid => Error == ProductUrlValidationError.None;
 }
 
-public sealed class ProductUrlValidator(RetailerProviderRegistry registry)
+public sealed class ProductUrlValidator(RetailerCatalog catalog)
 {
     public const int MaximumUrlLength = 2048;
 
@@ -61,13 +60,12 @@ public sealed class ProductUrlValidator(RetailerProviderRegistry registry)
             || authority.Any(c => c > 127) || authority.Contains('%') || uri.IdnHost.EndsWith('.'))
             return new(ProductUrlValidationError.UnsafeHost);
 
-        var registration = registry.FindByHost(uri.IdnHost);
-        if (registration is null) return new(ProductUrlValidationError.UnsupportedRetailer);
+        var retailer = catalog.FindByHost(uri.IdnHost);
+        if (retailer is null) return new(ProductUrlValidationError.UnsupportedRetailer);
 
         // Fragments are browser-only. Preserve path and query semantics; do not guess tracking parameters.
         var normalised = new UriBuilder(uri) { Fragment = string.Empty }.Uri;
-        return new(registration.IsImplemented ? ProductUrlValidationError.None : ProductUrlValidationError.ProviderNotImplemented,
-            normalised, registration);
+        return new(ProductUrlValidationError.None, normalised, retailer);
     }
 
     // The future HTTP transport must check every resolved address and connect to the checked address,
