@@ -12,6 +12,22 @@ namespace myshoppinglist_api.Tests;
 public class ProductImportStatusTests
 {
     [PostgreSqlFact]
+    public async Task Discovery_paginates_without_duplicates_and_checks_list_access()
+    {
+        await using var scope = await SubmissionScope.CreateAsync();
+        var ids = new List<long>();
+        for (var i = 0; i < 3; i++) ids.Add((await scope.SubmitAsync(new(scope.Url + i))).Response!.JobId);
+        var service = new ProductImportStatusService(scope.Db, scope.Clock);
+        var first = (await service.ListAsync(scope.AccountId, scope.ListId, null, 2, default))!;
+        Assert.Equal(ids.AsEnumerable().Reverse().Take(2), first.Items.Select(i => i.JobId));
+        var second = (await service.ListAsync(scope.AccountId, scope.ListId, first.NextBeforeId, 2, default))!;
+        Assert.Equal(ids[0], Assert.Single(second.Items).JobId); Assert.Null(second.NextBeforeId);
+        Assert.Null(await service.ListAsync(scope.AccountId + 100000, scope.ListId, null, 2, default));
+        scope.Clock.Now += TimeSpan.FromHours(4);
+        Assert.Null(await service.ListAsync(scope.AccountId, scope.ListId, null, 2, default));
+    }
+
+    [PostgreSqlFact]
     public async Task Worker_commit_during_poll_does_not_mix_progress_and_price_snapshots()
     {
         await using var fixture = await ImportFixture.CreateAsync();

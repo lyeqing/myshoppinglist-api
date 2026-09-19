@@ -22,6 +22,25 @@ namespace myshoppinglist_api.Tests;
 [Collection("Import worker database")]
 public class ProductImportEndpointTests
 {
+    [PostgreSqlFact]
+    public async Task Discovery_endpoint_checks_owner_pagination_and_expired_session()
+    {
+        await using var app = new ImportApiFactory();
+        using var client = app.Client(); using var other = app.Client();
+        var trial = await Read<TrialStartResponse>(await client.PostAsync("/api/auth/trial", null));
+        await other.PostAsync("/api/auth/trial", null);
+        for (var i = 0; i < 3; i++) await client.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId), new ProductImportRequest(app.Provider.Url + i));
+        var route = $"/api/shopping-lists/{trial.ShoppingListId}/imports";
+        var first = await Read<ProductImportPage>(await client.GetAsync(route + "?pageSize=2"));
+        Assert.Equal(2, first.Items.Count); Assert.NotNull(first.NextBeforeId);
+        var second = await Read<ProductImportPage>(await client.GetAsync(route + $"?pageSize=2&beforeId={first.NextBeforeId}"));
+        Assert.Single(second.Items); Assert.Null(second.NextBeforeId);
+        Assert.Equal(HttpStatusCode.NotFound, (await other.GetAsync(route)).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync(route + "?pageSize=51")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync(route + "?beforeId=0")).StatusCode);
+        app.Clock.Now += TimeSpan.FromHours(4);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync(route)).StatusCode);
+    }
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
     private static async Task<T> Read<T>(HttpResponseMessage response) => (await response.Content.ReadFromJsonAsync<T>(Json))!;
     private static string SubmitUrl(long listId) => $"/api/shopping-lists/{listId}/products/url";

@@ -10,6 +10,9 @@ public static class ProductImportEndpoints
     public const string SubmissionRatePolicy = "product-import-submit";
     public static void MapProductImportEndpoints(this IEndpointRouteBuilder routes)
     {
+        routes.MapGet("/api/shopping-lists/{listId:long}/imports", ListAsync)
+            .WithTags("Product imports").RequireAuthorization().Produces<ProductImportPage>()
+            .ProducesProblem(400).ProducesProblem(401).ProducesProblem(404);
         routes.MapPost("/api/shopping-lists/{listId:long}/products/url", SubmitAsync)
             .WithTags("Product imports").RequireAuthorization().RequireRateLimiting(SubmissionRatePolicy)
             .Produces<ProductImportAcceptedResponse>(202).ProducesProblem(400).ProducesProblem(401).ProducesProblem(403)
@@ -19,6 +22,15 @@ public static class ProductImportEndpoints
             .ProducesProblem(401).ProducesProblem(404);
     }
     private static long AccountId(HttpContext context) => long.Parse(context.User.FindFirstValue(ClaimTypes.NameIdentifier)!, CultureInfo.InvariantCulture);
+    private static async Task<IResult> ListAsync(long listId, long? beforeId, int? pageSize, HttpContext context,
+        ProductImportStatusService service, CancellationToken token)
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        var size = pageSize ?? 20;
+        if (size is < 1 or > 50 || beforeId <= 0) return Results.Problem(statusCode: 400, title: "Invalid pagination parameters.");
+        var page = await service.ListAsync(AccountId(context), listId, beforeId, size, token);
+        return page is null ? Results.Problem(statusCode: 404, title: "The shopping list was not found.") : Results.Ok(page);
+    }
     private static async Task<IResult> SubmitAsync(long listId, ProductImportRequest request, HttpContext context,
         ProductImportSubmissionService service, CancellationToken token)
     {

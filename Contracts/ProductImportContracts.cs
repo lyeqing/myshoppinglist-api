@@ -4,6 +4,8 @@ using MatchType = myshoppinglist_api.Models.MatchType;
 namespace myshoppinglist_api.Contracts;
 
 public sealed record ProductImportRequest(string? Url, int Quantity = 1);
+public sealed record ProductImportSummary(long JobId, ProductImportJobStatus Status, DateTime CreatedDate);
+public sealed record ProductImportPage(IReadOnlyList<ProductImportSummary> Items, long? NextBeforeId);
 public sealed record ProductImportAcceptedResponse(long JobId, ProductImportJobStatus Status, int Quantity, bool Reused, string StatusUrl);
 public sealed record ImportProductResponse(long Id, string Name, string? Brand, string? Variant,
     int? PackQuantity, decimal? PackSize, string? PackUnit, string? ImageUrl);

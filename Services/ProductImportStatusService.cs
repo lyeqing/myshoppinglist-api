@@ -8,6 +8,27 @@ namespace myshoppinglist_api.Services;
 
 public sealed class ProductImportStatusService(MyShoppingListDbContext db, TimeProvider clock)
 {
+    public async Task<ProductImportPage?> ListAsync(long accountId, long listId, long? beforeId, int pageSize, CancellationToken token)
+    {
+        if (pageSize is < 1 or > 50 || beforeId <= 0) throw new ArgumentOutOfRangeException(nameof(pageSize));
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.RepeatableRead, token);
+        var now = clock.GetUtcNow().UtcDateTime;
+        var access = await db.ShoppingLists.AsNoTracking().Where(l => l.Id == listId && l.UserAccountId == accountId
+            && !l.IsArchived && (l.ExpiresDate == null || l.ExpiresDate > now) && l.UserAccount.IsActive
+            && (!l.UserAccount.IsTrial || l.UserAccount.ExpiresDate > now))
+            .Select(l => new { ListExpiry = l.ExpiresDate, AccountExpiry = l.UserAccount.IsTrial ? l.UserAccount.ExpiresDate : null })
+            .SingleOrDefaultAsync(token);
+        if (access is null) return null;
+        var jobs = await db.ProductImportJobs.AsNoTracking().Where(j => j.ShoppingListId == listId && j.UserAccountId == accountId
+            && (beforeId == null || j.Id < beforeId)).OrderByDescending(j => j.Id).Take(pageSize + 1)
+            .Select(j => new ProductImportSummary(j.Id, j.Status, j.CreatedDate)).ToListAsync(token);
+        now = clock.GetUtcNow().UtcDateTime;
+        if (access.ListExpiry <= now || access.AccountExpiry <= now) return null;
+        var items = jobs.Take(pageSize).ToArray();
+        await transaction.CommitAsync(token);
+        return new(items, jobs.Count > pageSize ? items[^1].JobId : null);
+    }
+
     public async Task<ProductImportStatusResponse?> ReadAsync(long accountId, long jobId, CancellationToken token)
     {
         // All projections share a snapshot so a worker commit cannot mix old progress with new retailer results.
