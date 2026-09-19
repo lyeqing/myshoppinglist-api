@@ -1,6 +1,8 @@
 using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using myshoppinglist_api.Data;
+using myshoppinglist_api.Providers;
+using myshoppinglist_api.Security;
 using Serilog;
 
 Log.Logger = new LoggerConfiguration().WriteTo.Console().CreateBootstrapLogger();
@@ -13,6 +15,8 @@ try
         .ReadFrom.Configuration(builder.Configuration).ReadFrom.Services(services).Enrich.FromLogContext());
     builder.Services.AddDbContext<MyShoppingListDbContext>(options =>
         options.UseNpgsql(builder.Configuration.GetConnectionString("MyShoppingList")));
+    builder.Services.AddScoped(services => new RetailerProviderRegistry(services.GetServices<IShopProductProvider>()));
+    builder.Services.AddScoped<ProductUrlValidator>();
     builder.Services.AddProblemDetails();
     builder.Services.AddOpenApi();
     builder.Services.ConfigureHttpJsonOptions(options =>
