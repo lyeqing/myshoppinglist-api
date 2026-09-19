@@ -46,9 +46,14 @@ public class ProductImportEndpointTests
     private static string SubmitUrl(long listId) => $"/api/shopping-lists/{listId}/products/url";
 
     [PostgreSqlFact]
-    public async Task Submission_returns_202_before_fetch_finishes_and_worker_completes_the_job()
+    public Task Submission_returns_202_before_fetch_finishes_and_worker_completes_the_job() => AssertSourceImport("coles");
+
+    [PostgreSqlFact]
+    public Task Woolworths_submission_runs_through_the_worker_and_polling_endpoint() => AssertSourceImport("woolworths");
+
+    private static async Task AssertSourceImport(string retailer)
     {
-        await using var app = new ImportApiFactory(worker: true);
+        await using var app = new ImportApiFactory(worker: true, retailer: retailer);
         await app.AssertEmptyQueueAsync();
         using var client = app.Client();
         var trial = await Read<TrialStartResponse>(await client.PostAsync("/api/auth/trial", null));
@@ -142,10 +147,10 @@ public class ProductImportEndpointTests
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId), new ProductImportRequest(app.Provider.Url))).StatusCode);
     }
 
-    private sealed class ImportApiFactory(bool worker = false, int limit = 20) : WebApplicationFactory<Program>
+    private sealed class ImportApiFactory(bool worker = false, int limit = 20, string retailer = "coles") : WebApplicationFactory<Program>
     {
         public PersistenceClock Clock { get; } = new();
-        public BlockingProvider Provider { get; } = new();
+        public BlockingProvider Provider { get; } = new(retailer);
         private readonly ConcurrentBag<long> accounts = [];
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -195,11 +200,11 @@ public class ProductImportEndpointTests
             return ValueTask.FromResult(result);
         }
     }
-    private sealed class BlockingProvider : IShopProductProvider
+    private sealed class BlockingProvider(string retailer) : IShopProductProvider
     {
         public string Code { get; } = "import-http-test-" + Guid.NewGuid().ToString("N");
-        public string Url => "https://www.coles.com.au/product/" + Code;
-        public string ShopCode => "coles";
+        public string Url => (retailer == "coles" ? "https://www.coles.com.au/product/" : "https://www.woolworths.com.au/shop/productdetails/") + Code;
+        public string ShopCode => retailer;
         public int Calls { get; private set; }
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);

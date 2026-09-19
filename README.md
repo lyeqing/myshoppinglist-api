@@ -1,6 +1,6 @@
 # MyShoppingList API
 
-Standalone ASP.NET Core 10 / EF Core / PostgreSQL backend following HandyTool conventions. Stages 1 and 2 provide the database and provider contracts. Stage 3A adds safe public-page fetching and Coles source extraction. Stage 3B adds transactional source-product persistence and deterministic matching. Stage 3C adds the durable source-import worker. Stage 4A adds trial accounts and secure sessions. Stage 4B adds authenticated import submission and status polling. Registered-account login, other retailers, and the frontend will follow separately.
+Standalone ASP.NET Core 10 / EF Core / PostgreSQL backend following HandyTool conventions. Stages 1 and 2 provide the database and provider contracts. Stage 3A adds safe public-page fetching and Coles source extraction. Stage 3B adds transactional source-product persistence and deterministic matching. Stage 3C adds the durable source-import worker. Stage 4A adds trial accounts and secure sessions. Stage 4B adds authenticated import submission and status polling. Stage 5A adds paginated import discovery and the separate Next.js frontend. Registered-account login and other retailers will follow separately.
 
 ## Local setup
 
@@ -38,7 +38,7 @@ EF creates the named database if absent when the configured PostgreSQL role has 
 
 The database is the durable queue. `ProductImportWorker` claims a queued job atomically, assigning a fresh `ClaimToken` and lease with its status transition. `Status` and `ClaimToken` are EF concurrency tokens; stale writes fail instead of silently overwriting a newer claim. Lease renewal and recovery also use guarded writes. Child-result and catalogue writes are fenced inside a transaction that verifies the current claim; a parent concurrency token alone cannot protect child-table writes.
 
-The worker rechecks account/list access and expiry before extraction and persistence, uses the safe outbound transport, and commits source results before finalising comparisons. Processing and lease renewal use separate scopes/contexts. Future comparison operations must each use their own scope and save results incrementally. Future status endpoints and frontend polling will expose partial results at approximately two-second intervals.
+The worker rechecks account/list access and expiry before extraction and persistence, uses the safe outbound transport, and commits source results before finalising comparisons. Processing and lease renewal use separate scopes/contexts. Future comparison operations must each use their own scope and save results incrementally. The status endpoint and frontend polling expose partial results at approximately two-second intervals.
 
 Source persistence now validates price-location ownership, normalises GTIN, preserves retry idempotency, and samples price history. Authentication will handle email normalisation. Business operations are not exposed yet.
 
@@ -99,7 +99,7 @@ Lease renewal runs in an independent scope while extraction is active. A rejecte
 
 This stage implements source extraction only. Other active retailers receive `NotSupported` with `comparison_not_implemented`; they are never reported as `NotFound`. Successful source imports normally finish `Partial` until comparison providers are implemented. Source offer failures preserve the identified product and their specific unavailable/failure result. A complete result can be produced when all expected checks have normal outcomes. Completion rechecks the lease, account, and list; an account/list that becomes unavailable before finalisation cancels the job.
 
-The worker processes SQL jobs created by the Stage 4B submission endpoint. Fresh-price reuse for comparisons, Woolworths comparisons, and frontend polling remain future stages. No new migration is required. Implementation references: [PostgreSQL queue locking](https://www.postgresql.org/docs/14/sql-select.html) and [scoped services in BackgroundService](https://learn.microsoft.com/en-us/dotnet/core/extensions/scoped-service).
+The worker processes SQL jobs created by the Stage 4B submission endpoint. Fresh-price reuse for comparisons and Woolworths comparisons remain future stages. No new migration is required. Implementation references: [PostgreSQL queue locking](https://www.postgresql.org/docs/14/sql-select.html) and [scoped services in BackgroundService](https://learn.microsoft.com/en-us/dotnet/core/extensions/scoped-service).
 
 ## Trial accounts and sessions (Stage 4A)
 
@@ -145,7 +145,7 @@ No database migration is required for this stage. Registered login, account conv
 { "url": "https://www.coles.com.au/product/your-product", "quantity": 2 }
 ```
 
-Quantity defaults to 1 when omitted and must be a positive integer. Invalid JSON, fractional quantities, invalid URLs, and unimplemented source retailers return `400`. At this stage Coles is the only implemented source provider. Submission validates the URL allow-list but does not fetch or resolve retailer DNS; the worker's safe transport validates resolved addresses and redirects when it connects.
+Quantity defaults to 1 when omitted and must be a positive integer. Invalid JSON, fractional quantities, invalid URLs, and unimplemented source retailers return `400`. Coles and Woolworths are implemented source providers as of Stage 5B. Submission validates the URL allow-list but does not fetch or resolve retailer DNS; the worker's safe transport validates resolved addresses and redirects when it connects.
 
 The endpoint checks active account/trial and list access, then creates a durable queued job with pending retailer rows. No retailer lookup runs in the request. Success returns `202 Accepted`, `Cache-Control: no-store`, and a `Location` header pointing to the status URL:
 
@@ -167,7 +167,13 @@ Missing or other users' lists return `404`; owned archived/expired lists return 
 
 Each retailer retains its own status, match confidence, cache flag, check time, and error code. `prices` is an array of current shared catalogue observations with amount, currency, location ID, price scope, source, promotions, and individual check times. These observations may have been refreshed by another import; they are not an immutable quotation from this job. Different scopes/currencies/locations stay separate; no cheapest-price or local-price claim is inferred. Unavailable, failed, unsupported, and pending results do not surface old prices as successful checks. Products appear after source persistence commits, even while the job remains `Processing`.
 
-Status projections use a PostgreSQL repeatable-read transaction so a poll observes one coherent database snapshot. See [PostgreSQL transaction isolation](https://www.postgresql.org/docs/17/transaction-iso.html). The future frontend should poll approximately every two seconds, stop on `Completed`, `Partial`, `Failed`, or `Cancelled`, and stop on session/access loss or component disposal. The frontend polling UI is not implemented in this stage.
+Status projections use a PostgreSQL repeatable-read transaction so a poll observes one coherent database snapshot. See [PostgreSQL transaction isolation](https://www.postgresql.org/docs/17/transaction-iso.html). The Stage 5A frontend polls approximately every two seconds and stops on `Completed`, `Partial`, `Failed`, or `Cancelled`, session/access loss, or component disposal.
+
+## Import discovery (Stage 5A)
+
+`GET /api/shopping-lists/{listId}/imports?pageSize=20&beforeId=123` discovers imports after a page refresh. Both query parameters are optional: page size defaults to 20 and must be 1–50; `beforeId` must be positive when supplied. Results are newest ID first. The response contains `items` with `jobId`, `status`, and `createdDate`, plus `nextBeforeId` (null on the last page). Pass that cursor to fetch older imports; fetch individual status endpoints for product/retailer details. New submissions do not shift cursor pages.
+
+Only the active owner can discover an active, unexpired list. Other users' or unavailable lists return `404`; invalid pagination returns `400`; invalid/expired sessions return `401`. Discovery uses a consistent database snapshot and sends `Cache-Control: no-store`. It does not consume the submission rate limit or fetch retailers. No migration is required. The frontend runs separately in `D:/pra/myshoppinglist` on port 3001 and forwards approved requests through its same-origin gateway.
 
 No migration is required. Tests use a controlled fake retailer to verify that submission returns before extraction completes, then exercise the real hosted worker and polling endpoint without contacting retailer websites.
 
@@ -191,3 +197,21 @@ Remove-Item Env:MYSHOPPINGLIST_LIVE_COLES
 ```
 
 This live check can fail when retailer access or page structures change. It must not be used as an always-on CI dependency.
+
+## Woolworths source imports (Stage 5B)
+
+Woolworths product URLs (`https://www.woolworths.com.au/shop/productdetails/{stockcode}/{slug}`) now use the existing safe HTTP transport and durable import worker. Use the current link from the retailer: an outdated slug can return a not-found page even when that stockcode still exists.
+
+The parser reads matching Product JSON-LD and `__NEXT_DATA__.props.pageProps.pdDetails.Product`. It verifies stockcode and GTIN consistency, ignores recommendations, retains missing pack information as unknown, and rejects marketplace products. Conflicting, variable-weight, or member-only prices remain unavailable instead of being presented as unconditional single-pack prices. The observed JSON-LD unit-price label contains package size, so unit prices use the explicit `CupPrice` and `CupMeasure` fields instead. Prices have unknown store scope; anonymous retailer context is not the user's selected store. An explicit AUD currency is required.
+
+The existing matching and persistence services reuse the canonical product for matching GTINs across Coles and Woolworths, subject to contradiction checks. Cross-retailer search remains unsupported; accepting both source retailers does not automatically search the other retailer. No database migration is required.
+
+Deterministic fixtures retain only relevant public product fields and exclude reviews, tracking, and unrelated application state. The optional live extraction check is:
+
+```powershell
+$env:MYSHOPPINGLIST_LIVE_WOOLWORTHS = '1'
+dotnet test myshoppinglist-api.slnx --filter 'FullyQualifiedName~WoolworthsProductProviderTests.Live_public_page'
+Remove-Item Env:MYSHOPPINGLIST_LIVE_WOOLWORTHS
+```
+
+Live retailer availability and page formats can change independently of this application.

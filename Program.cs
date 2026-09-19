@@ -5,6 +5,7 @@ using myshoppinglist_api.Providers;
 using myshoppinglist_api.Security;
 using myshoppinglist_api.Configuration;
 using myshoppinglist_api.Providers.Coles;
+using myshoppinglist_api.Providers.Woolworths;
 using myshoppinglist_api.Providers.Http;
 using myshoppinglist_api.Services;
 using myshoppinglist_api.Workers;
@@ -94,6 +95,8 @@ try
     builder.Services.AddScoped<RetailerHttpClient>();
     builder.Services.AddSingleton<ColesProductParser>();
     builder.Services.AddScoped<IShopProductProvider, ColesProductProvider>();
+    builder.Services.AddSingleton<WoolworthsProductParser>();
+    builder.Services.AddScoped<IShopProductProvider, WoolworthsProductProvider>();
     builder.Services.AddScoped(services => new RetailerProviderRegistry(services.GetRequiredService<RetailerCatalog>(),
         services.GetServices<IShopProductProvider>()));
     builder.Services.AddProblemDetails();

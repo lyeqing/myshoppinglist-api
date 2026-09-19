@@ -28,6 +28,7 @@ public class ProductPersistenceTests
         Assert.Equal(first.ProductId, second.ProductId);
         Assert.Equal(first.ShoppingListProductId, second.ShoppingListProductId);
         Assert.Equal(2, await scope.Db.ShopProducts.CountAsync(p => p.ProductId == first.ProductId));
+        Assert.Equal(2, await scope.Db.ShopProducts.Where(p => p.ProductId == first.ProductId).Select(p => p.ShopId).Distinct().CountAsync());
     }
 
     [PostgreSqlFact]
