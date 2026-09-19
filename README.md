@@ -1,6 +1,6 @@
 # MyShoppingList API
 
-Standalone ASP.NET Core 10 / EF Core / PostgreSQL backend following HandyTool conventions. Stages 1 and 2 provide the database and provider contracts. Stage 3A adds safe public-page fetching and Coles source extraction. Stage 3B adds transactional source-product persistence and deterministic matching. Stage 3C adds the durable source-import worker. Authentication endpoints, job submission/status endpoints, other retailers, and the frontend will follow separately.
+Standalone ASP.NET Core 10 / EF Core / PostgreSQL backend following HandyTool conventions. Stages 1 and 2 provide the database and provider contracts. Stage 3A adds safe public-page fetching and Coles source extraction. Stage 3B adds transactional source-product persistence and deterministic matching. Stage 3C adds the durable source-import worker. Stage 4A adds trial accounts and secure sessions. Registered-account login, job submission/status endpoints, other retailers, and the frontend will follow separately.
 
 ## Local setup
 
@@ -22,7 +22,7 @@ dotnet ef database update --project myshoppinglist-api.csproj
 dotnet run --project myshoppinglist-api.csproj --launch-profile http
 ```
 
-EF creates the named database if absent when the configured PostgreSQL role has permission. The API listens on `http://localhost:5392`; development Swagger is at `/swagger`. This stage exposes only a liveness response, not shopping-list or import endpoints.
+EF creates the named database if absent when the configured PostgreSQL role has permission. The API listens on `http://localhost:5392`; development Swagger is at `/swagger`. The API exposes liveness and trial/session endpoints. Shopping-list management and import endpoints are not implemented yet.
 
 ## Database design
 
@@ -30,7 +30,7 @@ EF creates the named database if absent when the configured PostgreSQL role has 
 - `ShoppingListProducts` references a canonical product, with one row per list/product. Repeat source imports return the existing item without changing its quantity, notes, purchased state, or hidden state.
 - Current prices are unique by retailer mapping, optional location, scope, and currency. Separate filtered indexes enforce uniqueness when location is NULL. History preserves currency, promotion details, source, and check time. Amounts use `numeric(18,4)`; timestamps use PostgreSQL `timestamp with time zone` and must be supplied in UTC.
 - GTIN is indexed but not unique. Deterministic canonical resolution serialises catalogue writes and rejects ambiguous or contradictory identity data.
-- Registered users require credentials. Trial accounts have no credentials and require expiry. Sessions store token hashes only; token issuance, authentication, and expiry enforcement are not implemented in this stage.
+- Registered users require credentials; registration/login are future work. Trial accounts have no passwords and require expiry. Session issuance, validation, and revocation are implemented for trials. Sessions store token hashes only.
 - `ProductImportJobs` persists quantity, ownership, URL, progress, retry scheduling, and claim lease information. Composite foreign keys enforce matching list ownership and resulting list-item identity.
 - `ProductImportRetailerResults` preserves per-shop progress and failures even without a mapping or price. Each job has at most one result per shop.
 
@@ -101,6 +101,42 @@ This stage implements source extraction only. Other active retailers receive `No
 
 The worker processes existing SQL jobs. Authenticated enqueue/status routes, fresh-price reuse for comparisons, Woolworths comparisons, and frontend polling remain future stages. No new migration is required. Implementation references: [PostgreSQL queue locking](https://www.postgresql.org/docs/14/sql-select.html) and [scoped services in BackgroundService](https://learn.microsoft.com/en-us/dotnet/core/extensions/scoped-service).
 
+## Trial accounts and sessions (Stage 4A)
+
+| Endpoint | Behaviour |
+| --- | --- |
+| `POST /api/auth/trial` | Creates a trial account, shopping list, and session atomically; returns `201` and a session cookie. An existing valid trial returns `200` with the same list and original expiry. |
+| `GET /api/auth/me` | Returns the current account, first available list ID, and session expiry; requires a valid session. |
+| `POST /api/auth/logout` | Revokes only the calling session, clears the cookie, and returns `204`. |
+
+Trial accounts, their initial lists, and sessions expire together after three hours by default (`Auth:TrialLifetimeHours`). Reuse does not extend any expiry or replace an archived/expired list; an unavailable trial list returns `409`. A registered session cannot be replaced with a trial (`409`). An expired browser session can explicitly start a new trial. Expired records are retained until a later cleanup implementation; shared catalogue data is unaffected.
+
+Session credentials are 256 random bits encoded as lowercase hexadecimal. The database stores their SHA-256 hashes. Browser responses never include the raw credential in JSON; it is carried only in `myshoppinglist_session`, an HttpOnly, host-only, `SameSite=Lax` cookie with path `/`. Cookies are Secure in production and on HTTPS development requests. Use HTTPS in production. Authentication checks session expiry/revocation and account activity/trial expiry on every request, without sliding expiry. Auth responses use `Cache-Control: no-store`.
+
+The authentication handler also accepts `Authorization: Bearer <opaque-session-token>` for a client that already possesses a valid token. An explicit invalid Authorization header never falls back to a cookie. This stage does not provide a separate native-client token-issuance endpoint.
+
+Browser state-changing API requests, including anonymous trial creation, must send `X-MyShoppingList-Request: 1`. The middleware rejects cross-site fetch metadata and any supplied Origin that differs from the API's scheme/host/port. Authenticated bearer requests do not need the browser header. Protection relies on the browser same-origin policy and the absence of credentialed CORS; future frontend deployment should use a same-origin API proxy. Do not enable cross-origin access without revisiting this protection. Local tools may omit Origin but must send the custom header.
+
+Example same-origin browser calls:
+
+```javascript
+await fetch('/api/auth/trial', {
+  method: 'POST',
+  credentials: 'same-origin',
+  headers: { 'X-MyShoppingList-Request': '1' }
+});
+const current = await fetch('/api/auth/me', { credentials: 'same-origin' }).then(r => r.json());
+await fetch('/api/auth/logout', {
+  method: 'POST',
+  credentials: 'same-origin',
+  headers: { 'X-MyShoppingList-Request': '1' }
+});
+```
+
+Trial-start requests are limited to `Auth:TrialRequestsPerWindow` (default 10) per `Auth:TrialWindowSeconds` (default 3600), per remote IP per application instance. Reused trials also count. Rejection returns `429` with `Retry-After`. Limits are held in memory and reset on restart; they are not shared between instances. Forwarded address headers are not trusted automatically. Configure trusted proxies explicitly before relying on client-IP limits behind a proxy.
+
+No database migration is required for this stage. Registered login, account conversion, expired-data cleanup, and authenticated import routes remain subsequent work.
+
 ## Verification
 
 ```powershell
@@ -109,6 +145,8 @@ dotnet ef migrations has-pending-model-changes --project myshoppinglist-api.cspr
 ```
 
 Model and matching tests run without a database. Set `MYSHOPPINGLIST_TEST_CONNECTION` to a migrated PostgreSQL test database to also run relational constraints, optimistic concurrency, source persistence, price-history, and worker tests. Most database tests roll back a transaction. Separate-context concurrent-import and worker tests commit uniquely identified fixtures and delete those fixtures during cleanup. Worker tests are serialised and refuse to run with unrelated active import jobs; stop any application worker against the test database first. PostgreSQL identity sequences may advance. Tests never drop or recreate the database. Without the environment variable, database tests are explicitly reported as skipped.
+
+Authentication integration tests use `Microsoft.AspNetCore.Mvc.Testing` 10.0.11 to exercise the real HTTP pipeline with the worker disabled and a controlled clock. They use the test connection, capture the IDs of accounts they create, and delete only those accounts (and cascading session/list records) during cleanup. They cover cookie/bearer authentication, request protection, trial reuse, expiry, revocation, and rate limiting. See [ASP.NET Core integration testing](https://learn.microsoft.com/en-us/aspnet/core/test/integration-tests?view=aspnetcore-10.0).
 
 Parser/HTTP tests are deterministic and do not contact retailers. One separate opt-in test fetches the public Coles page through the safe transport:
 

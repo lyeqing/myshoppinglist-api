@@ -10,6 +10,11 @@ using myshoppinglist_api.Services;
 using myshoppinglist_api.Workers;
 using System.Net;
 using Serilog;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Options;
+using System.Threading.RateLimiting;
+using myshoppinglist_api.Endpoints;
 
 Log.Logger = new LoggerConfiguration().WriteTo.Console().CreateBootstrapLogger();
 try
@@ -24,6 +29,27 @@ try
     builder.Services.AddSingleton(new RetailerCatalog());
     builder.Services.AddSingleton<ProductUrlValidator>();
     builder.Services.AddSingleton(TimeProvider.System);
+    builder.Services.AddOptions<AuthOptions>().BindConfiguration(AuthOptions.SectionName).ValidateDataAnnotations().ValidateOnStart();
+    builder.Services.AddScoped<TrialSessionService>();
+    builder.Services.AddAuthentication(SessionTokenAuthenticationHandler.SchemeName)
+        .AddScheme<AuthenticationSchemeOptions, SessionTokenAuthenticationHandler>(SessionTokenAuthenticationHandler.SchemeName, _ => { });
+    builder.Services.AddAuthorization();
+    builder.Services.AddRateLimiter(_ => { });
+    builder.Services.AddOptions<RateLimiterOptions>().Configure<IOptions<AuthOptions>>((limits, auth) =>
+    {
+        limits.AddPolicy(AuthEndpoints.TrialRatePolicy, context => RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.MapToIPv6().ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = auth.Value.TrialRequestsPerWindow, Window = TimeSpan.FromSeconds(auth.Value.TrialWindowSeconds),
+                QueueLimit = 0, AutoReplenishment = true
+            }));
+        limits.OnRejected = async (context, token) =>
+        {
+            if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retry))
+                context.HttpContext.Response.Headers.RetryAfter = Math.Ceiling(retry.TotalSeconds).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            await Results.Problem(statusCode: 429, title: "Too many trial requests. Please try again later.").ExecuteAsync(context.HttpContext);
+        };
+    });
     builder.Services.AddSingleton<ProductNormalisationService>();
     builder.Services.AddSingleton<ProductMatchingService>();
     builder.Services.AddScoped<ProductService>();
@@ -77,6 +103,11 @@ try
         });
     }
     else app.UseHttpsRedirection();
+    app.UseAuthentication();
+    app.UseAuthorization();
+    app.UseMiddleware<CookieRequestProtection>();
+    app.UseRateLimiter();
+    app.MapAuthEndpoints();
     app.MapGet("/", () => "MyShoppingList API").ExcludeFromDescription();
     app.Run();
 }
@@ -86,3 +117,5 @@ catch (Exception exception) when (exception is not HostAbortedException)
     throw;
 }
 finally { Log.CloseAndFlush(); }
+
+public partial class Program { }
