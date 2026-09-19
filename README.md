@@ -1,6 +1,6 @@
 # MyShoppingList API
 
-Standalone ASP.NET Core 10 / EF Core / PostgreSQL backend following HandyTool conventions. Stages 1 and 2 provide the database and provider contracts. Stage 3A adds safe public-page fetching and Coles source extraction. Authentication endpoints, catalogue persistence services, job processing, other retailers, and the frontend will follow separately.
+Standalone ASP.NET Core 10 / EF Core / PostgreSQL backend following HandyTool conventions. Stages 1 and 2 provide the database and provider contracts. Stage 3A adds safe public-page fetching and Coles source extraction. Stage 3B adds transactional source-product persistence and deterministic matching. Authentication endpoints, job processing, other retailers, and the frontend will follow separately.
 
 ## Local setup
 
@@ -27,9 +27,9 @@ EF creates the named database if absent when the configured PostgreSQL role has 
 ## Database design
 
 - Shared `Products`, `Shops`, `ShopLocations`, and `ShopProducts` contain catalogue data, independent of account ownership. All five initial shops are seeded; a shop record does not mean a provider is implemented.
-- `ShoppingListProducts` references a canonical product, with one row per list/product. The later service must explicitly choose quantity behaviour for repeat submissions.
+- `ShoppingListProducts` references a canonical product, with one row per list/product. Repeat source imports return the existing item without changing its quantity, notes, purchased state, or hidden state.
 - Current prices are unique by retailer mapping, optional location, scope, and currency. Separate filtered indexes enforce uniqueness when location is NULL. History preserves currency, promotion details, source, and check time. Amounts use `numeric(18,4)`; timestamps use PostgreSQL `timestamp with time zone` and must be supplied in UTC.
-- GTIN is indexed but not unique. Future deterministic canonical resolution must handle concurrent imports and contradictory metadata rather than merging by title alone.
+- GTIN is indexed but not unique. Deterministic canonical resolution serialises catalogue writes and rejects ambiguous or contradictory identity data.
 - Registered users require credentials. Trial accounts have no credentials and require expiry. Sessions store token hashes only; token issuance, authentication, and expiry enforcement are not implemented in this stage.
 - `ProductImportJobs` persists quantity, ownership, URL, progress, retry scheduling, and claim lease information. Composite foreign keys enforce matching list ownership and resulting list-item identity.
 - `ProductImportRetailerResults` preserves per-shop progress and failures even without a mapping or price. Each job has at most one result per shop.
@@ -40,7 +40,7 @@ The database is the durable queue. A future `BackgroundService` must claim a que
 
 The worker must recheck account/list access and expiry, validate outbound URLs at connection and redirect time, use separate scopes/contexts for concurrent retailer operations, and commit source results before comparisons finish. Restart recovery and retry processing are future implementation, not functionality supplied merely by these tables. Polling will expose partial results at approximately two-second intervals.
 
-Later services must validate that a price's location belongs to its retailer, normalise email and GTIN, implement retry idempotency, and determine history insertion frequency. Business operations are not exposed yet.
+Source persistence now validates price-location ownership, normalises GTIN, preserves retry idempotency, and samples price history. Authentication will handle email normalisation. Business operations are not exposed yet.
 
 ## Retailer-provider contracts and URL validation
 
@@ -66,6 +66,18 @@ Prices from anonymous pages have `PriceScope.Unknown` and no claimed user store.
 
 The implementation uses [SocketsHttpHandler.ConnectCallback](https://learn.microsoft.com/en-us/dotnet/api/system.net.http.socketshttphandler.connectcallback?view=net-10.0) for checked-address connections and the pinned [AngleSharp package](https://www.nuget.org/packages/AngleSharp/1.8.2) for parsing.
 
+## Source persistence (Stage 3B)
+
+`SourceProductPersistenceService.SaveAsync` accepts an extracted source product plus a processing job ID, account ID, and current claim token. It requires a fresh or cleared scoped DbContext. It checks ownership, account/trial eligibility, list availability, and the unexpired claim before writing, then checks eligibility again before committing. Products, retailer mappings, current prices/history, list items, and the source retailer result are saved atomically. Invalid offers and identity conflicts roll back the operation. An explicit offer-retrieval failure still preserves the identified product and records the failure. The job advances to `CheckingRetailers`; this service does not claim or complete jobs.
+
+Valid GTINs are checksum-checked and padded to 14 digits for comparison. Existing retailer mappings are reused only without identity contradictions. New canonical matches require an equal GTIN, brand plus manufacturer/model identifier, or complete matching brand/variant/pack metadata with supporting title similarity. Contradictory variants, identifiers, or pack data prevent merging. Title similarity alone is insufficient. Missing metadata stays unresolved and does not erase established values; original retailer text is retained on the mapping.
+
+A transaction-scoped PostgreSQL advisory lock serialises the short catalogue write phase, including separate-context concurrent imports. Retailer HTTP work must happen before entering this phase. Row locks follow catalogue, account, list, then job order; future worker and cleanup writers must preserve that order. Lower-level persistence services require a transaction; use the source service as the orchestration entry point. An existing caller transaction is protected with a savepoint and remains the caller's responsibility to commit.
+
+Prices are validated against their retailer and optional active location. Store-specific prices require a location; anonymous prices retain their supplied scope. Currency and scope remain separate current-price keys. Older observations cannot replace newer prices, and conflicting observations at the same timestamp are rejected. Timestamps are aligned to PostgreSQL microsecond precision so identical retries remain idempotent. History is inserted for an initial observation, a price/promotion change, or an unchanged observation after `Price:HistorySampleHours` (default 24); unchanged refreshes still update the current check time.
+
+No database migration or new public endpoint is added in Stage 3B. The future worker must supply an already-claimed job and invoke this service in its own scope.
+
 ## Verification
 
 ```powershell
@@ -73,7 +85,7 @@ dotnet test myshoppinglist-api.slnx
 dotnet ef migrations has-pending-model-changes --project myshoppinglist-api.csproj
 ```
 
-Model tests run without a database. Set `MYSHOPPINGLIST_TEST_CONNECTION` to a migrated PostgreSQL database to also run relational constraint and optimistic-concurrency tests. Each database test uses a transaction and rolls back its records; PostgreSQL identity sequences may still advance. Tests never drop or recreate the database. Without the environment variable, relational tests are explicitly reported as skipped.
+Model and matching tests run without a database. Set `MYSHOPPINGLIST_TEST_CONNECTION` to a migrated PostgreSQL database to also run relational constraints, optimistic concurrency, source persistence, and price-history tests. Most database tests roll back a transaction. The separate-context concurrent-import test commits uniquely identified fixtures and deletes those fixtures in `finally`. PostgreSQL identity sequences may advance. Tests never drop or recreate the database. Without the environment variable, database tests are explicitly reported as skipped.
 
 Parser/HTTP tests are deterministic and do not contact retailers. One separate opt-in test fetches the public Coles page through the safe transport:
 

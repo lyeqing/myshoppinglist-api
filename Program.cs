@@ -6,6 +6,7 @@ using myshoppinglist_api.Security;
 using myshoppinglist_api.Configuration;
 using myshoppinglist_api.Providers.Coles;
 using myshoppinglist_api.Providers.Http;
+using myshoppinglist_api.Services;
 using System.Net;
 using Serilog;
 
@@ -22,6 +23,14 @@ try
     builder.Services.AddSingleton(new RetailerCatalog());
     builder.Services.AddSingleton<ProductUrlValidator>();
     builder.Services.AddSingleton(TimeProvider.System);
+    builder.Services.AddSingleton<ProductNormalisationService>();
+    builder.Services.AddSingleton<ProductMatchingService>();
+    builder.Services.AddScoped<ProductService>();
+    builder.Services.AddScoped<ShopProductService>();
+    builder.Services.AddScoped<PriceService>();
+    builder.Services.AddScoped<SourceProductPersistenceService>();
+    builder.Services.AddOptions<PriceOptions>().BindConfiguration(PriceOptions.SectionName)
+        .ValidateDataAnnotations().ValidateOnStart();
     builder.Services.AddSingleton(services => new SafeRetailerConnection(services.GetRequiredService<RetailerCatalog>()));
     builder.Services.AddOptions<RetailerHttpOptions>().BindConfiguration(RetailerHttpOptions.SectionName)
         .ValidateDataAnnotations().ValidateOnStart();
