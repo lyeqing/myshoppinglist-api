@@ -8,6 +8,14 @@ namespace myshoppinglist_api.Tests;
 
 public class ColesProductParserTests
 {
+    [Theory]
+    [InlineData("https://www.coles.com.au/product/coca-cola-classic-soft-drink-bottle-1.25l-123011", "123011")]
+    [InlineData("https://www.coles.com.au/product/123011", "123011")]
+    [InlineData("https://evil.example/product/coca-cola-1.25l-123011", null)]
+    [InlineData("https://www.coles.com.au/product/../account-123011", null)]
+    public void Decimal_sizes_in_current_Coles_product_slugs_are_supported(string url, string? code) =>
+        Assert.Equal(code, ColesProductParser.ProductCode(new(url)));
+
     internal static readonly Uri Url = new("https://www.coles.com.au/product/coca-cola-classic-soft-drink-multipack-cans-375ml-10-pack-1849307");
     internal static readonly DateTimeOffset Checked = new(2026, 9, 19, 12, 0, 0, TimeSpan.Zero);
     internal static string Fixture => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Coles", "coles-1849307.html"));

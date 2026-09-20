@@ -48,7 +48,7 @@ Source persistence now validates price-location ownership, normalises GTIN, pres
 
 Operations return a typed success or failure. Temporary timeout, network, rate-limit, and server failures are retryable; access restrictions, unsupported retailers, missing products, and parsing failures are not automatically retried. Failure status distinguishes unavailable data from a product not found. A successful search with no candidates means the search completed normally; an unsuccessful search must return a failure. Source extraction can succeed while its optional offer carries a price-retrieval failure. A null offer means no offer check was performed. Expected provider failures use these results; shutdown/request cancellation must propagate through the supplied token rather than being converted into a retailer failure. Providers must validate extracted values (including positive pack sizes, nonnegative prices, and matching location retailer) before returning success.
 
-The registry knows the five seeded retailer codes and explicitly approved root/www hosts. Coles is registered for source extraction and anonymous offer retrieval; its cross-retailer search returns `NotSupported`. Woolworths, ALDI, IGA, and Foodland remain known but unimplemented. Adding a retailer means adding its definition, database shop record, and provider registration; application dispatch does not need retailer-specific branches. Duplicate codes, conflicting hosts, and providers without a retailer definition fail configuration. The registry is scoped so providers can depend on scoped services. The separate immutable `RetailerCatalog` supplies host policy without resolving provider instances, avoiding circular dependencies with the HTTP client.
+The registry knows the five seeded retailer codes and explicitly approved root/www hosts. Coles and Woolworths are registered for source extraction and anonymous offer retrieval. Stage 6A adds their search-provider implementations; background comparison integration is still pending. ALDI, IGA, and Foodland remain known but unimplemented. Adding a retailer means adding its definition, database shop record, and provider registration; application dispatch does not need retailer-specific branches. Duplicate codes, conflicting hosts, and providers without a retailer definition fail configuration. The registry is scoped so providers can depend on scoped services. The separate immutable `RetailerCatalog` supplies host policy without resolving provider instances, avoiding circular dependencies with the HTTP client.
 
 `ProductUrlValidator.Validate` accepts HTTPS on port 443, requires an exact approved hostname, and rejects embedded credentials, literal IP addresses, malformed inputs, internal/unknown hosts, and ambiguous authorities. Fragments are removed while path and query semantics are preserved. It now validates host policy independently of provider availability; callers use the registry's `IsImplemented` to decide whether an operation is supported. An allowed hostname does not imply extraction/search capabilities.
 
@@ -62,7 +62,7 @@ The public [Coles product page for code 1849307](https://www.coles.com.au/produc
 
 HTML is parsed with AngleSharp 1.8.2, without script execution or external resource loading. GTIN checksums are validated. Missing optional metadata remains null; contradictory GTIN or pack information is left unresolved. The observed title said 10 Pack while its description also mentioned 24 cans, so this fixture intentionally has unknown pack quantity. Conflicting source prices produce an explicit offer failure while preserving the identified product. A multibuy reward is never substituted for the single-pack price; its wording is retained separately.
 
-Prices from anonymous pages have `PriceScope.Unknown` and no claimed user store. They are observed page prices, not national prices or a verified local-store quote. Requested location-specific offers return `NotSupported` for now. A later savings service must determine eligibility for these unverified-location prices. Missing prices return an offer-level parsing failure, not a fabricated zero or a claim that the product is not sold. HTTP 403/access-restriction pages return nonretryable access failures; no bypass or Playwright fallback is implemented. Search remains explicitly unsupported. This stage writes no products, prices, or jobs to the database and exposes no new public endpoint.
+Prices from anonymous pages have `PriceScope.Unknown` and no claimed user store. They are observed page prices, not national prices or a verified local-store quote. Requested location-specific offers return `NotSupported` for now. A later savings service must determine eligibility for these unverified-location prices. Missing prices return an offer-level parsing failure, not a fabricated zero or a claim that the product is not sold. HTTP 403/access-restriction pages return nonretryable access failures; source extraction has no browser fallback. Stage 6A separately adds browser-rendered searches, with live-access limitations documented below. This stage writes no products, prices, or jobs to the database and exposes no new public endpoint.
 
 The implementation uses [SocketsHttpHandler.ConnectCallback](https://learn.microsoft.com/en-us/dotnet/api/system.net.http.socketshttphandler.connectcallback?view=net-10.0) for checked-address connections and the pinned [AngleSharp package](https://www.nuget.org/packages/AngleSharp/1.8.2) for parsing.
 
@@ -204,7 +204,7 @@ Woolworths product URLs (`https://www.woolworths.com.au/shop/productdetails/{sto
 
 The parser reads matching Product JSON-LD and `__NEXT_DATA__.props.pageProps.pdDetails.Product`. It verifies stockcode and GTIN consistency, ignores recommendations, retains missing pack information as unknown, and rejects marketplace products. Conflicting, variable-weight, or member-only prices remain unavailable instead of being presented as unconditional single-pack prices. The observed JSON-LD unit-price label contains package size, so unit prices use the explicit `CupPrice` and `CupMeasure` fields instead. Prices have unknown store scope; anonymous retailer context is not the user's selected store. An explicit AUD currency is required.
 
-The existing matching and persistence services reuse the canonical product for matching GTINs across Coles and Woolworths, subject to contradiction checks. Cross-retailer search remains unsupported; accepting both source retailers does not automatically search the other retailer. No database migration is required.
+The existing matching and persistence services reuse the canonical product for matching GTINs across Coles and Woolworths, subject to contradiction checks. Accepting both source retailers does not automatically search the other retailer; Stage 6A adds search providers, while background integration remains pending. No database migration is required.
 
 Deterministic fixtures retain only relevant public product fields and exclude reviews, tracking, and unrelated application state. The optional live extraction check is:
 
@@ -215,3 +215,52 @@ Remove-Item Env:MYSHOPPINGLIST_LIVE_WOOLWORTHS
 ```
 
 Live retailer availability and page formats can change independently of this application.
+
+## Retailer search providers (Stage 6A)
+
+Coles and Woolworths now implement `SearchAsync`. A deterministic query retains brand, name, variant and pack terms. Search reads one rendered results page, ranks and deduplicates product links, then verifies at most five candidate product pages using the existing safe HTTP extractors, two reads at a time. Candidates are evidence for the matching service, never assertions of an exact match. A successful empty search needs explicit empty-state evidence; Coles' “best guesses” beneath “No results for” are excluded. Shells, challenges, timeouts and unreadable candidates return typed failures instead of an empty success. Store-specific searches remain unsupported.
+
+This stage does **not** connect searches to background import jobs or change the frontend. Imports still show other retailers as unsupported until the next integration stage. No database migration is required.
+
+The browser service uses Microsoft.Playwright 1.62.0 with isolated, non-persistent headless Chromium sessions. Service workers, websocket connections, downloads, image/media/font requests and non-search navigations are blocked. A per-search loopback SOCKS5 proxy allows only the selected retailer's exact hosts (plus `cdn0.woolworths.media` for Woolworths scripts). Every connection validates all DNS answers and connects to a checked numeric address, retaining normal browser TLS verification. There is no direct-network fallback. Both request interception and the proxy apply because Chromium can make speculative connections before an intercepted request. Login, existing browser profiles, CAPTCHA solving and access-control bypass are not used.
+
+Settings use the `RetailerSearch` configuration section, or environment variables such as `RetailerSearch__TimeoutSeconds`:
+
+| Setting | Default |
+|---|---|
+| `Enabled` | `true` |
+| `BrowserChannel` | unset: Playwright Chromium; set `chrome` to use installed Chrome |
+| `TimeoutSeconds` | 45, including search and candidate retrieval |
+| `MaximumConcurrentBrowsers` | 2 per application instance |
+| `MaximumCandidates` | 5 (maximum 8) |
+| `MaximumRequests` | 180 per browser search |
+| `MaximumTransferBytes` | 40 MiB across proxy traffic in both directions |
+
+Install the Playwright browser after building, or configure an installed Chrome channel:
+
+```powershell
+dotnet build myshoppinglist-api.slnx
+pwsh -File bin/Debug/net10.0/playwright.ps1 install chromium --only-shell
+# Alternatively, for an existing local Chrome installation:
+$env:RetailerSearch__BrowserChannel = 'chrome'
+```
+
+The browser dependency is loaded only when search is invoked. Source-only imports do not launch it. See the official [Playwright network documentation](https://playwright.dev/dotnet/docs/network) and [browser contexts](https://playwright.dev/dotnet/docs/api/class-browsercontext).
+
+Controlled rendering tests use Playwright Chromium, mocked documents and a rejecting fake DNS resolver; they contact no retailers. Set `MYSHOPPINGLIST_TEST_BROWSER_CHANNEL=chrome` to test an existing Chrome installation instead:
+
+```powershell
+$env:MYSHOPPINGLIST_BROWSER_TESTS = '1'
+dotnet test myshoppinglist-api.slnx --filter 'FullyQualifiedName~Controlled_browser'
+Remove-Item Env:MYSHOPPINGLIST_BROWSER_TESTS
+```
+
+Separate opt-in live tests require retailer access and installed Chrome:
+
+```powershell
+$env:MYSHOPPINGLIST_LIVE_SEARCH = '1'
+dotnet test myshoppinglist-api.slnx --filter 'FullyQualifiedName~Live_search_renders'
+Remove-Item Env:MYSHOPPINGLIST_LIVE_SEARCH
+```
+
+**Live verification limitation, 2026-09-20:** Woolworths returned HTTP access restriction in the isolated browser; Coles timed out. Both sites displayed results in an ordinary browser session, which does not establish that the server's isolated browser can access them. Live search success is therefore not verified. These failures remain visible as unavailable outcomes; do not advertise reliable automatic comparison on the strength of fixture tests. Source URL importing remains independently implemented.

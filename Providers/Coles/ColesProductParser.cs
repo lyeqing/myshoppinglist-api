@@ -16,7 +16,7 @@ public sealed class ColesProductParser
     {
         if (!url.IsAbsoluteUri || url.Scheme != "https" || url.Port != 443 || url.UserInfo.Length != 0
             || url.IdnHost is not ("coles.com.au" or "www.coles.com.au")) return null;
-        var match = Regex.Match(url.AbsolutePath, @"^/product/(?:[a-z0-9-]+-)?(?<id>\d{1,15})/?$",
+        var match = Regex.Match(url.AbsolutePath, @"^/product/(?:[a-z0-9.-]+-)?(?<id>\d{1,15})/?$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeout);
         return match.Success ? match.Groups["id"].Value : null;
     }

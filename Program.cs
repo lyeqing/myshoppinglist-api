@@ -30,6 +30,9 @@ try
     builder.Services.AddSingleton(new RetailerCatalog());
     builder.Services.AddSingleton<ProductUrlValidator>();
     builder.Services.AddSingleton(TimeProvider.System);
+    builder.Services.AddOptions<RetailerSearchOptions>().BindConfiguration(RetailerSearchOptions.SectionName)
+        .ValidateDataAnnotations().ValidateOnStart();
+    builder.Services.AddSingleton<IRetailerSearchBrowser, RetailerSearchBrowser>();
     builder.Services.AddOptions<AuthOptions>().BindConfiguration(AuthOptions.SectionName).ValidateDataAnnotations().ValidateOnStart();
     builder.Services.AddScoped<TrialSessionService>();
     builder.Services.AddAuthentication(SessionTokenAuthenticationHandler.SchemeName)

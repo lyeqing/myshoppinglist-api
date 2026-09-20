@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Options;
+using myshoppinglist_api.Configuration;
 using myshoppinglist_api.Providers.Http;
 using myshoppinglist_api.Providers.Models;
 using myshoppinglist_api.Security;
@@ -5,7 +7,8 @@ using myshoppinglist_api.Security;
 namespace myshoppinglist_api.Providers.Woolworths;
 
 public sealed class WoolworthsProductProvider(RetailerHttpClient http, WoolworthsProductParser parser,
-    ProductUrlValidator validator, ILogger<WoolworthsProductProvider> logger) : IShopProductProvider
+    ProductUrlValidator validator, ILogger<WoolworthsProductProvider> logger,
+    IRetailerSearchBrowser? searchBrowser = null, IOptions<RetailerSearchOptions>? searchOptions = null) : IShopProductProvider
 {
     public string ShopCode => "woolworths";
 
@@ -30,15 +33,53 @@ public sealed class WoolworthsProductProvider(RetailerHttpClient http, Woolworth
         return result;
     }
 
-    public Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchAsync(
+    public async Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchAsync(
         ProductIdentity product, ShopLocationContext? location, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult<ProviderResult<IReadOnlyList<ShopProductSearchResult>>>(
-            new ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Failure(new(ProviderFailureKind.NotSupported,
-                "woolworths_search_not_implemented", "Woolworths cross-retailer search is not implemented yet.")));
+        if (location is not null)
+            return SearchFailure(new(ProviderFailureKind.NotSupported, "unsupported_search_context", "Store-specific search is not supported."));
+        if (searchBrowser is null)
+            return SearchFailure(new(ProviderFailureKind.NotSupported, "search_not_configured", "Retailer search is not configured."));
+        var query = ProductSearchQueryBuilder.Build(product);
+        if (query is null)
+            return SearchFailure(new(ProviderFailureKind.InvalidProduct, "invalid_search_identity", "A product name is required."));
+        var settings = searchOptions?.Value ?? new RetailerSearchOptions();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(settings.TimeoutSeconds));
+        try
+        {
+            var rendered = await searchBrowser.ReadAsync(ShopCode, query, deadline.Token);
+            if (rendered is ProviderResult<RetailerPage>.Failure failed) return SearchFailure(failed.Error);
+            var links = await new WoolworthsSearchParser().ParseAsync(((ProviderResult<RetailerPage>.Success)rendered).Value,
+                query, settings.MaximumCandidates, deadline.Token);
+            if (links is ProviderResult<IReadOnlyList<Uri>>.Failure invalid) return SearchFailure(invalid.Error);
+            var candidates = new List<ShopProductSearchResult>();
+            // Two product reads at a time; results retain the search ranking regardless of completion order.
+            foreach (var batch in ((ProviderResult<IReadOnlyList<Uri>>.Success)links).Value.Chunk(2))
+            {
+                var results = await Task.WhenAll(batch.Select(url => GetProductFromUrlAsync(url, deadline.Token)));
+                foreach (var result in results)
+                {
+                    if (result is ProviderResult<ExtractedShopProduct>.Success identified)
+                        candidates.Add(new(identified.Value));
+                    else if (result is ProviderResult<ExtractedShopProduct>.Failure failure)
+                    {
+                        // A vanished or unsupported marketplace candidate is not a match. Incomplete
+                        // network/parsing checks must not become a misleading successful empty search.
+                        if (failure.Error.Kind is ProviderFailureKind.NotFound or ProviderFailureKind.NotSupported) continue;
+                        return SearchFailure(failure.Error);
+                    }
+                }
+            }
+            return new ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Success(candidates);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        { return SearchFailure(new(ProviderFailureKind.Timeout, "search_timeout", "Retailer search timed out.")); }
     }
 
+    private static ProviderResult<IReadOnlyList<ShopProductSearchResult>> SearchFailure(ProviderFailure failure) =>
+        new ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Failure(failure);
     public async Task<ProviderResult<ShopProductOffer>> GetOfferAsync(
         ShopProductSearchResult product, ShopLocationContext? location, CancellationToken cancellationToken)
     {
