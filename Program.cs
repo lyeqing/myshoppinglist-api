@@ -64,6 +64,7 @@ try
             })));
     builder.Services.AddScoped<ProductImportSubmissionService>();
     builder.Services.AddScoped<ProductImportStatusService>();
+    builder.Services.AddScoped<ShoppingListService>();
     builder.Services.AddSingleton<ProductNormalisationService>();
     builder.Services.AddSingleton<ProductMatchingService>();
     builder.Services.AddScoped<ProductService>();
@@ -131,6 +132,7 @@ try
     app.UseRateLimiter();
     app.MapAuthEndpoints();
     app.MapProductImportEndpoints();
+    app.MapShoppingListEndpoints();
     app.MapGet("/", () => "MyShoppingList API").ExcludeFromDescription();
     app.Run();
 }

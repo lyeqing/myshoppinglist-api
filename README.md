@@ -280,3 +280,38 @@ Persistence checks the current canonical identity again under the catalogue lock
 Timeouts, network errors, rate limiting and server errors retain a `Pending` retailer result and requeue the job with the existing bounded backoff, retry-after handling and attempt limit. Finished retailers are skipped on retry. Once attempts are exhausted, failures become terminal unavailable results. Access restrictions are terminal without retry. Unsupported retailers remain `NotSupported`; source products survive these failures. Recovery of an exhausted claim changes unfinished retailer results to `CheckFailed` with `comparison_interrupted`, preventing permanently running retailer cards.
 
 The existing status API and frontend polling expose comparison results without frontend or schema changes. Shared catalogue prices remain observations with individual scope, currency and check times, rather than immutable job quotations. This integration does not resolve the Stage 6A live-access limitation. Database/provider tests use controlled providers; controlled browser tests use local fixtures. Live retailer checks remain separately opt-in.
+
+## Shopping-list items and editing (Stage 7A)
+
+These authenticated endpoints expose actual `ShoppingListProduct` records, rather than import-history cards. Multiple imports of the same canonical product in a list return one editable item. No schema migration is required. Frontend controls and gateway routes for list editing are a subsequent stage.
+
+`GET /api/shopping-lists/{listId}/items` returns `{ items, nextBeforeId }`. Each item includes its ID, shopping-list ID, product identity/pack metadata, quantity, notes, purchased/hidden state, purchase date, preferred shop ID and added/updated timestamps. Prices and import-job details are not included in this endpoint. Optional query parameters:
+
+| Parameter | Default | Behaviour |
+|---|---|---|
+| `pageSize` | 20 | 1–50 items |
+| `beforeId` | omitted | Positive item ID; returns older IDs in descending order |
+| `includeHidden` | false | Include hidden items when true |
+| `includePurchased` | true | Exclude purchased items when false |
+
+Deleted canonical products are excluded. Invalid pagination returns 400; missing, other-owner, archived or expired lists return 404. Responses are `Cache-Control: no-store`. Reads use one repeatable-read snapshot and recheck account/list time expiry before returning it.
+
+`PUT /api/shopping-lists/{listId}/items/{itemId}` replaces all four editable fields. All five JSON properties below are required; send `notes: null` to clear notes. Copy `expectedUpdatedDate` exactly from the item's `updatedDate` (UTC `Z` timestamp):
+
+```json
+{
+  "quantity": 3,
+  "notes": "Keep one in the pantry",
+  "isPurchased": true,
+  "isHidden": false,
+  "expectedUpdatedDate": "2026-09-20T00:00:00.123456Z"
+}
+```
+
+Quantity must be a positive 32-bit integer and notes are limited to 4000 characters. Marking purchased sets `purchasedDate`; editing an already-purchased item preserves that date; unmarking clears it. Hiding preserves the item and does not change its purchased state. Product identity, preferred shop and added date are not editable through this request. Import quantities remain historical; subsequent imports preserve the edited list quantity, notes, purchase state and hidden state.
+
+Successful edits return 200 with the updated item. Invalid/missing fields return 400. A stale `expectedUpdatedDate` returns 409; reload the item and reconcile the edit before resubmitting. No-op edits with the current version preserve timestamps. Changed items receive a strictly increasing timestamp at PostgreSQL microsecond precision, even for rapid edits. A successful request retried with its previous timestamp receives 409 rather than overwriting another update.
+
+Writes lock account, list and item in that order, compatible with source persistence, and recheck eligibility before committing. Concurrent edits with the same timestamp have one winner. Missing items, items from another list, unavailable lists and deleted products return 404 without modification. Expired/invalid sessions are rejected by authentication with 401. Cookie-authenticated writes require the existing `X-MyShoppingList-Request: 1` header and same-origin request checks; failed browser protection returns 403. There is no delete endpoint.
+
+Tests cover pagination/filtering, purchase-date transitions, clearing notes, validation, ownership/expiry, stale concurrent edits, rollback when a trial expires before commit, import retry preservation, real endpoint authentication and browser request protection. Tests use disposable fixture data in the configured `MyShoppingList` database and make no live retailer requests.
