@@ -35,12 +35,21 @@ try
     builder.Services.AddSingleton<IRetailerSearchBrowser, RetailerSearchBrowser>();
     builder.Services.AddOptions<AuthOptions>().BindConfiguration(AuthOptions.SectionName).ValidateDataAnnotations().ValidateOnStart();
     builder.Services.AddScoped<TrialSessionService>();
+    builder.Services.AddScoped<AccountAuthService>();
     builder.Services.AddAuthentication(SessionTokenAuthenticationHandler.SchemeName)
         .AddScheme<AuthenticationSchemeOptions, SessionTokenAuthenticationHandler>(SessionTokenAuthenticationHandler.SchemeName, _ => { });
     builder.Services.AddAuthorization();
     builder.Services.AddRateLimiter(_ => { });
     builder.Services.AddOptions<RateLimiterOptions>().Configure<IOptions<AuthOptions>>((limits, auth) =>
     {
+        foreach (var policy in new[] { AuthEndpoints.RegistrationRatePolicy, AuthEndpoints.SignInRatePolicy })
+            limits.AddPolicy(policy, context => RateLimitPartition.GetFixedWindowLimiter(
+                context.Connection.RemoteIpAddress?.MapToIPv6().ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = policy == AuthEndpoints.RegistrationRatePolicy ? auth.Value.RegistrationRequestsPerWindow : auth.Value.SignInRequestsPerWindow,
+                    Window = TimeSpan.FromSeconds(policy == AuthEndpoints.RegistrationRatePolicy ? auth.Value.RegistrationWindowSeconds : auth.Value.SignInWindowSeconds),
+                    QueueLimit = 0, AutoReplenishment = true
+                }));
         limits.AddPolicy(AuthEndpoints.TrialRatePolicy, context => RateLimitPartition.GetFixedWindowLimiter(
             context.Connection.RemoteIpAddress?.MapToIPv6().ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
             {

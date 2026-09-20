@@ -30,7 +30,7 @@ EF creates the named database if absent when the configured PostgreSQL role has 
 - `ShoppingListProducts` references a canonical product, with one row per list/product. Repeat source imports return the existing item without changing its quantity, notes, purchased state, or hidden state.
 - Current prices are unique by retailer mapping, optional location, scope, and currency. Separate filtered indexes enforce uniqueness when location is NULL. History preserves currency, promotion details, source, and check time. Amounts use `numeric(18,4)`; timestamps use PostgreSQL `timestamp with time zone` and must be supplied in UTC.
 - GTIN is indexed but not unique. Deterministic canonical resolution serialises catalogue writes and rejects ambiguous or contradictory identity data.
-- Registered users require credentials; registration/login are future work. Trial accounts have no passwords and require expiry. Session issuance, validation, and revocation are implemented for trials. Sessions store token hashes only.
+- Registered users require credentials; registration/login and active trial conversion are implemented in Stage 8A. Trial accounts have no passwords and require expiry. Sessions store token hashes only.
 - `ProductImportJobs` persists quantity, ownership, URL, progress, retry scheduling, and claim lease information. Composite foreign keys enforce matching list ownership and resulting list-item identity.
 - `ProductImportRetailerResults` preserves per-shop progress and failures even without a mapping or price. Each job has at most one result per shop.
 
@@ -315,3 +315,28 @@ Successful edits return 200 with the updated item. Invalid/missing fields return
 Writes lock account, list and item in that order, compatible with source persistence, and recheck eligibility before committing. Concurrent edits with the same timestamp have one winner. Missing items, items from another list, unavailable lists and deleted products return 404 without modification. Expired/invalid sessions are rejected by authentication with 401. Cookie-authenticated writes require the existing `X-MyShoppingList-Request: 1` header and same-origin request checks; failed browser protection returns 403. There is no delete endpoint.
 
 Tests cover pagination/filtering, purchase-date transitions, clearing notes, validation, ownership/expiry, stale concurrent edits, rollback when a trial expires before commit, import retry preservation, real endpoint authentication and browser request protection. Tests use disposable fixture data in the configured `MyShoppingList` database and make no live retailer requests.
+
+## Registered accounts and trial conversion (Stage 8A)
+
+`POST /api/auth/register` accepts `{ "email": "shopper@example.com", "password": "A long unique passphrase", "displayName": "Shopper" }`. With no session it creates a permanent account and shopping list. With a valid active trial session it converts that same account, preserves list IDs, items, quantity, notes, purchased/hidden state and import jobs, and removes expiry from its available lists. Conversion revokes all previous trial sessions and issues a new registered session atomically. Expired or revoked trials cannot be recovered. Concurrent registrations for the same email or conversions of the same trial have only one winner.
+
+Email addresses are trimmed and lowercased, limited to 320 characters, and must have a valid address with a dotted domain. Display names are trimmed, required, and limited to 200 characters. Passwords are not trimmed and must contain 15–1024 characters by default. New passwords use randomly salted, versioned PBKDF2-SHA256 hashes with 600,000 iterations and constant-time verification, following the [OWASP password storage guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html). Passwords and raw session tokens are never returned in response JSON.
+
+Registration returns 201 with the existing `CurrentSessionResponse` shape (`account`, `shoppingListId`, `sessionExpiresDate`) and an HttpOnly, SameSite=Lax session cookie, Secure on HTTPS or outside Development. Invalid fields return 400, an unavailable supplied session returns 401, and duplicate email or already-registered session returns 409. A stale session cookie deliberately blocks registration instead of silently losing the trial: the frontend must explicitly clear its expired session cookie before requesting a fresh account. Starting a new trial is also possible through the existing endpoint.
+
+`POST /api/auth/login` accepts `{ "email": "shopper@example.com", "password": "A long unique passphrase" }` and returns 200 with the same session response and cookie. Unknown accounts, incorrect passwords and inactive accounts share a generic 401 response. Login can replace an expired browser cookie, but an explicitly invalid Authorization header is rejected. Logging into an existing account does not merge or convert a current trial list. Other registered sessions remain valid; logout revokes only the current session. `/api/auth/me` continues to work for both account types.
+
+Both endpoints require the existing browser request protection header and same-origin checks (403 on failure); authenticated bearer requests retain their existing exemption. Responses are not cached. Separate per-IP, in-memory fixed-window limits reject excess requests with 429 and `Retry-After`, before password hashing. These limits reset on process restart and are not shared between instances. Behind the Next.js gateway, requests currently share the proxy's IP; deployment-specific trusted-proxy handling and distributed abuse controls remain future work.
+
+Configuration under `Auth` (environment variables use `Auth__`):
+
+| Setting | Default | Allowed range |
+|---|---|---|
+| `RegisteredSessionDays` | 30 | 1–90 |
+| `MinimumPasswordLength` | 15 | 15–128 |
+| `RegistrationRequestsPerWindow` | 5 | 1–100 |
+| `RegistrationWindowSeconds` | 3600 | 1–86400 |
+| `SignInRequestsPerWindow` | 20 | 1–100 |
+| `SignInWindowSeconds` | 900 | 1–86400 |
+
+This stage uses the existing database schema; no migration is required. Tests cover hashing, validation, concurrent registration/conversion, preservation of edited trial data, expiry rollback, session rotation, login, browser protection and rate limits. Frontend registration/login controls and gateway routes belong to Stage 8B. Email ownership verification, password reset/change and account recovery are not implemented in this stage.
