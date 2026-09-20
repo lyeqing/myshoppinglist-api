@@ -6,6 +6,7 @@ public sealed class ProductImportOptions
 {
     public const string SectionName = "ProductImport";
     public bool Enabled { get; set; } = true;
+    [Range(1, 168)] public int ComparisonFreshHours { get; set; } = 6;
     [Range(1, 1000)] public int SubmissionRequestsPerWindow { get; set; } = 20;
     [Range(1, 3600)] public int SubmissionWindowSeconds { get; set; } = 60;
     [Range(1, 60)] public int PollSeconds { get; set; } = 1;

@@ -72,6 +72,8 @@ try
     builder.Services.AddScoped<SourceProductPersistenceService>();
     builder.Services.AddScoped<ProductImportJobService>();
     builder.Services.AddScoped<ProductImportProcessor>();
+    builder.Services.AddScoped<RetailerComparisonService>();
+    builder.Services.AddScoped<RetailerComparisonPersistenceService>();
     builder.Services.AddOptions<ProductImportOptions>().BindConfiguration(ProductImportOptions.SectionName)
         .ValidateDataAnnotations()
         .Validate(o => o.RenewalSeconds * 2 < o.LeaseSeconds, "Lease duration must exceed twice the renewal interval.")

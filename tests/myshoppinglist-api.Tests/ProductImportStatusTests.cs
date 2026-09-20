@@ -12,6 +12,37 @@ namespace myshoppinglist_api.Tests;
 public class ProductImportStatusTests
 {
     [PostgreSqlFact]
+    public async Task Comparison_status_exposes_verified_price_and_cache_metadata()
+    {
+        await using var f = await ImportFixture.CreateAsync();
+        var claim = await RetailerComparisonTests.PrepareAsync(f);
+        var provider = new RetailerComparisonTests.ComparisonProvider(RetailerComparisonTests.Other(f));
+        await RetailerComparisonTests.SeedMappingAsync(f, claim, provider.Source);
+        await RetailerComparisonTests.RunAsync(f, claim, provider);
+        var status = (await new ProductImportStatusService(f.Scope.Db, f.Scope.Clock).ReadAsync(claim.UserAccountId, claim.JobId, default))!;
+        var retailer = Assert.Single(status.Retailers, r => r.ShopId == 2);
+        Assert.Equal(RetailerLookupStatus.Exact, retailer.Status); Assert.True(retailer.IsFromCache);
+        var price = Assert.Single(retailer.Prices);
+        Assert.Equal(19, price.Price); Assert.Equal("AUD", price.Currency);
+        Assert.Equal(PriceScope.Unknown, price.PriceScope); Assert.Null(price.ShopLocationId);
+        Assert.Equal(provider.Source.CheckedDate.UtcTicks / 10, retailer.CheckedDate!.Value.Ticks / 10);
+    }
+
+    [PostgreSqlFact]
+    public async Task Uncertain_comparison_status_does_not_expose_a_price()
+    {
+        await using var f = await ImportFixture.CreateAsync();
+        var claim = await RetailerComparisonTests.PrepareAsync(f);
+        var source = RetailerComparisonTests.Other(f);
+        var provider = new RetailerComparisonTests.ComparisonProvider(source with
+        { Identity = source.Identity with { GTIN = null, PackQuantity = null } });
+        await RetailerComparisonTests.RunAsync(f, claim, provider);
+        var status = (await new ProductImportStatusService(f.Scope.Db, f.Scope.Clock).ReadAsync(claim.UserAccountId, claim.JobId, default))!;
+        var retailer = Assert.Single(status.Retailers, r => r.ShopId == 2);
+        Assert.Equal(RetailerLookupStatus.Likely, retailer.Status); Assert.Empty(retailer.Prices);
+    }
+
+    [PostgreSqlFact]
     public async Task Discovery_paginates_without_duplicates_and_checks_list_access()
     {
         await using var scope = await SubmissionScope.CreateAsync();

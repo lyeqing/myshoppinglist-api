@@ -18,6 +18,22 @@ namespace myshoppinglist_api.Tests;
 public class ProductImportProcessorTests
 {
     [PostgreSqlFact]
+    public async Task Source_import_runs_other_retailer_comparison_before_completion()
+    {
+        await using var fixture = await ImportFixture.CreateAsync();
+        var source = new StubSource(fixture.Scope.Source);
+        var other = new RetailerComparisonTests.ComparisonProvider(RetailerComparisonTests.Other(fixture));
+        await using var services = Services(fixture, source, other);
+        await using var scope = services.CreateAsyncScope();
+        var claim = (await fixture.Jobs().ClaimNextAsync(default))!;
+        await scope.ServiceProvider.GetRequiredService<ProductImportProcessor>().ProcessAsync(claim, default);
+        Assert.Equal(1, source.Calls); Assert.Equal(1, other.Searches);
+        Assert.Equal(RetailerLookupStatus.Exact, (await RetailerComparisonTests.ResultAsync(fixture)).Status);
+        Assert.NotNull((await fixture.ReadAsync()).ShoppingListProductId);
+        Assert.Equal(ProductImportJobStatus.Partial, (await fixture.ReadAsync()).Status);
+    }
+
+    [PostgreSqlFact]
     public async Task Source_success_saves_product_and_finishes_partial_with_honest_comparison_results()
     {
         await using var fixture = await ImportFixture.CreateAsync();
@@ -120,7 +136,9 @@ public class ProductImportProcessorTests
         using var cancellation = new CancellationTokenSource();
         var provider = new StubSource(fixture.Scope.Source) { BeforeReturn = _ => { cancellation.Cancel(); return Task.CompletedTask; } };
         var claim = (await fixture.Jobs().ClaimNextAsync(default))!;
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Processor(fixture, provider).ProcessAsync(claim, cancellation.Token));
+        await using var services = Services(fixture, provider);
+        await using var scope = services.CreateAsyncScope();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => scope.ServiceProvider.GetRequiredService<ProductImportProcessor>().ProcessAsync(claim, cancellation.Token));
         var job = await fixture.ReadAsync();
         Assert.Equal(ProductImportJobStatus.Processing, job.Status); Assert.Null(job.ProductId);
         fixture.Scope.Clock.Now += TimeSpan.FromSeconds(601);
@@ -251,20 +269,20 @@ public class ProductImportProcessorTests
     private static async Task ProcessAsync(ImportFixture fixture, StubSource provider)
     {
         var claim = Assert.IsType<ProductImportClaim>(await fixture.Jobs().ClaimNextAsync(default));
-        await Processor(fixture, provider).ProcessAsync(claim, default);
+        await using var services = Services(fixture, provider);
+        await using var scope = services.CreateAsyncScope();
+        await scope.ServiceProvider.GetRequiredService<ProductImportProcessor>().ProcessAsync(claim, default);
     }
-    private static ProductImportProcessor Processor(ImportFixture fixture, StubSource provider) => new(fixture.Jobs(),
-        fixture.Scope.Service, new RetailerProviderRegistry([provider]), new ProductUrlValidator(new RetailerCatalog()),
-        NullLogger<ProductImportProcessor>.Instance);
-    private static ServiceProvider Services(ImportFixture fixture, StubSource provider) => new ServiceCollection()
+    private static ServiceProvider Services(ImportFixture fixture, StubSource provider, IShopProductProvider? other = null) => new ServiceCollection()
         .AddSingleton<TimeProvider>(fixture.Scope.Clock)
         .AddSingleton<IOptions<ProductImportOptions>>(Options.Create(fixture.Options))
         .AddLogging()
         .AddScoped<MyShoppingListDbContext>(_ => PersistenceScope.Context())
         .AddScoped<ProductImportJobService>()
         .AddScoped(s => PersistenceScope.BuildService(s.GetRequiredService<MyShoppingListDbContext>(), fixture.Scope.Clock))
-        .AddSingleton(new RetailerProviderRegistry([provider]))
+        .AddSingleton(new RetailerProviderRegistry(other is null ? [provider] : [provider, other]))
         .AddSingleton(new ProductUrlValidator(new RetailerCatalog()))
+        .AddComparisonTests()
         .AddScoped<ProductImportProcessor>().BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
     private static async Task UntilAsync(Func<Task<bool>> condition)
     {

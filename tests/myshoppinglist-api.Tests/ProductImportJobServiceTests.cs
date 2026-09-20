@@ -100,6 +100,12 @@ public class ProductImportJobServiceTests
         var claim = (await fixture.Jobs().ClaimNextAsync(default))!;
         var saved = await fixture.Scope.Service.SaveAsync(claim.JobId, claim.UserAccountId, claim.Token, fixture.Scope.Source, default);
         Assert.Equal(ProductPersistenceStatus.Success, saved.Status);
+        fixture.Scope.Db.ProductImportRetailerResults.Add(new()
+        {
+            ProductImportJobId = claim.JobId, ShopId = 2, Status = RetailerLookupStatus.Checking,
+            CreatedDate = fixture.Scope.Clock.Now.UtcDateTime, UpdatedDate = fixture.Scope.Clock.Now.UtcDateTime
+        });
+        await fixture.Scope.Db.SaveChangesAsync(); fixture.Scope.Db.ChangeTracker.Clear();
         await fixture.Scope.Db.ProductImportJobs.Where(j => j.Id == claim.JobId)
             .ExecuteUpdateAsync(s => s.SetProperty(j => j.AttemptCount, 3));
         fixture.Scope.Clock.Now += TimeSpan.FromSeconds(601);
@@ -108,6 +114,24 @@ public class ProductImportJobServiceTests
         Assert.Equal(ProductImportJobStatus.Partial, job.Status);
         Assert.Equal(saved.ShoppingListProductId, job.ShoppingListProductId);
         Assert.True(await fixture.Scope.Db.ShoppingListProducts.AnyAsync(i => i.Id == saved.ShoppingListProductId));
+        var retailer = await fixture.Scope.Db.ProductImportRetailerResults.SingleAsync(r => r.ProductImportJobId == claim.JobId && r.ShopId == 2);
+        Assert.Equal(RetailerLookupStatus.CheckFailed, retailer.Status);
+        Assert.Equal("comparison_interrupted", retailer.ErrorCode); Assert.NotNull(retailer.CompletedDate);
+    }
+
+    [PostgreSqlFact]
+    public async Task Finalisation_preserves_completed_results_and_marks_unfinished_checks_failed()
+    {
+        await using var f = await ImportFixture.CreateAsync();
+        var claim = await RetailerComparisonTests.PrepareAsync(f);
+        await using var services = RetailerComparisonTests.Services(f, new RetailerComparisonTests.ComparisonProvider(RetailerComparisonTests.Other(f)));
+        await using var scope = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.CreateAsyncScope(services);
+        var store = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<RetailerComparisonPersistenceService>(scope.ServiceProvider);
+        Assert.True(await store.SaveStatusAsync(claim, 2, RetailerLookupStatus.NotFound, "no_verified_match_in_candidates", default));
+        Assert.True(await f.Jobs().CompleteSourceStageAsync(claim, default));
+        Assert.Equal(RetailerLookupStatus.NotFound, (await RetailerComparisonTests.ResultAsync(f)).Status);
+        var unfinished = await f.Scope.Db.ProductImportRetailerResults.Where(r => r.ProductImportJobId == claim.JobId && r.ShopId > 2).ToListAsync();
+        Assert.Equal(3, unfinished.Count); Assert.All(unfinished, r => Assert.Equal(RetailerLookupStatus.CheckFailed, r.Status));
     }
 
     [PostgreSqlFact]

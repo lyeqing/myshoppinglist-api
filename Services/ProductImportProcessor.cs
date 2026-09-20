@@ -7,7 +7,8 @@ using myshoppinglist_api.Services.Models;
 namespace myshoppinglist_api.Services;
 
 public sealed class ProductImportProcessor(ProductImportJobService jobs, SourceProductPersistenceService persistence,
-    RetailerProviderRegistry providers, ProductUrlValidator urls, ILogger<ProductImportProcessor> logger)
+    RetailerProviderRegistry providers, ProductUrlValidator urls, ILogger<ProductImportProcessor> logger,
+    RetailerComparisonService comparisons)
 {
     public async Task ProcessAsync(ProductImportClaim claim, CancellationToken token)
     {
@@ -18,7 +19,7 @@ public sealed class ProductImportProcessor(ProductImportJobService jobs, SourceP
         { await jobs.FailAsync(claim, "access_expired", false, token); return; }
         // A restart after the source transaction committed must preserve its product and list item.
         if (job.ShoppingListProductId.HasValue)
-        { await jobs.CompleteSourceStageAsync(claim, token); return; }
+        { await comparisons.RunAsync(claim, token); return; }
         var validated = urls.Validate(job.SourceUrl);
         if (!validated.IsValid)
         { await jobs.FailAsync(claim, "invalid_source_url", false, token); return; }
@@ -39,7 +40,7 @@ public sealed class ProductImportProcessor(ProductImportJobService jobs, SourceP
         var result = await persistence.SaveAsync(claim.JobId, claim.UserAccountId, claim.Token,
             ((ProviderResult<ExtractedShopProduct>.Success)source).Value, token);
         if (result.Status == ProductPersistenceStatus.Success)
-            await jobs.CompleteSourceStageAsync(claim, token);
+            await comparisons.RunAsync(claim, token);
         else if (result.Status is not (ProductPersistenceStatus.LostClaim or ProductPersistenceStatus.NotFound))
             await jobs.FailAsync(claim, result.ErrorCode ?? "source_persistence_failed",
                 result.Status == ProductPersistenceStatus.PersistenceConflict, token);

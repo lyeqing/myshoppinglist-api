@@ -40,6 +40,7 @@ public sealed class ProductImportJobService(MyShoppingListDbContext db, IOptions
     public async Task<int> RecoverExpiredAsync(CancellationToken token)
     {
         var now = Now;
+        await using var transaction = await db.Database.BeginTransactionAsync(token);
         // Bounded batches avoid a large startup transaction. Row-only operations never acquire catalogue locks afterwards.
         var count = await db.Database.ExecuteSqlInterpolatedAsync($"""
             WITH expired AS (
@@ -59,6 +60,16 @@ public sealed class ProductImportJobService(MyShoppingListDbContext db, IOptions
                 "ErrorCode" = 'claim_expired', "ErrorMessage" = 'Processing was interrupted.'
             FROM expired e WHERE j."Id" = e."Id"
             """, token);
+        // Exhausted claims cannot leave retailer cards showing a check that will never resume.
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE "ProductImportRetailerResults" r SET "Status" = 'CheckFailed',
+                "ErrorCode" = 'comparison_interrupted', "ErrorMessage" = NULL,
+                "CompletedDate" = {now}, "UpdatedDate" = {now}
+            FROM "ProductImportJobs" j WHERE r."ProductImportJobId" = j."Id"
+                AND j."ErrorCode" = 'claim_expired' AND j."Status" IN ('Partial', 'Failed')
+                AND r."Status" IN ('Pending', 'Checking')
+            """, token);
+        await transaction.CommitAsync(token);
         if (count > 0) logger.LogInformation("Recovered {JobCount} interrupted import jobs", count);
         return count;
     }
@@ -150,9 +161,9 @@ public sealed class ProductImportJobService(MyShoppingListDbContext db, IOptions
                         result = new() { ProductImportJobId = job.Id, ShopId = shopId, CreatedDate = now };
                         db.ProductImportRetailerResults.Add(result); results.Add(result);
                     }
-                    result.Status = RetailerLookupStatus.NotSupported;
-                    result.ErrorCode = "comparison_not_implemented";
-                    result.ErrorMessage = "Price comparison for this retailer is not implemented yet.";
+                    result.Status = RetailerLookupStatus.CheckFailed;
+                    result.ErrorCode = "comparison_interrupted";
+                    result.ErrorMessage = "The retailer check did not finish.";
                     result.CompletedDate = now; result.UpdatedDate = now;
                 }
                 var partial = !results.Any(r => r.ShopId == job.SourceShopId) || results.Any(r => r.Status is
