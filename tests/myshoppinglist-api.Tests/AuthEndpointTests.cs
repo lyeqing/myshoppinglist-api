@@ -130,7 +130,7 @@ public class AuthEndpointTests
     {
         await using var app = new AuthFactory();
         using var client = app.Client();
-        var request = new RegisterRequest(Guid.NewGuid() + "@example.test", "A long test passphrase 123", "Shopper");
+        var request = new RegisterRequest(Guid.NewGuid() + "@example.test", "A long test passphrase 123!", "Shopper");
         var created = await client.PostAsJsonAsync("/api/auth/register", request);
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
         var account = (await created.Content.ReadFromJsonAsync<CurrentSessionResponse>())!;
@@ -159,7 +159,7 @@ public class AuthEndpointTests
         var started = await client.PostAsync("/api/auth/trial", null);
         var trial = (await started.Content.ReadFromJsonAsync<TrialStartResponse>())!;
         var raw = started.Headers.GetValues("Set-Cookie").Single().Split(';')[0].Split('=')[1];
-        var registered = await client.PostAsJsonAsync("/api/auth/register", new RegisterRequest(Guid.NewGuid() + "@example.test", "A long test passphrase 123", "Shopper"));
+        var registered = await client.PostAsJsonAsync("/api/auth/register", new RegisterRequest(Guid.NewGuid() + "@example.test", "A long test passphrase 123!", "Shopper"));
         Assert.Equal(HttpStatusCode.Created, registered.StatusCode);
         var account = (await registered.Content.ReadFromJsonAsync<CurrentSessionResponse>())!;
         Assert.Equal(trial.Account.Id, account.Account.Id); Assert.Equal(trial.ShoppingListId, account.ShoppingListId);
@@ -175,7 +175,7 @@ public class AuthEndpointTests
     {
         await using var app = new AuthFactory();
         using var owner = app.Client(); using var trialClient = app.Client();
-        var request = new RegisterRequest(Guid.NewGuid() + "@example.test", "A long test passphrase 123", "Shopper");
+        var request = new RegisterRequest(Guid.NewGuid() + "@example.test", "A long test passphrase 123!", "Shopper");
         var registered = (await (await owner.PostAsJsonAsync("/api/auth/register", request)).Content.ReadFromJsonAsync<CurrentSessionResponse>())!;
         var trialResponse = await trialClient.PostAsync("/api/auth/trial", null);
         var trial = (await trialResponse.Content.ReadFromJsonAsync<TrialStartResponse>())!;
@@ -220,6 +220,17 @@ public class AuthEndpointTests
             Assert.NotNull(denied.Headers.RetryAfter); Assert.True(denied.Headers.CacheControl!.NoStore);
         }
         Assert.Empty(app.CreatedAccounts);
+    }
+
+    [PostgreSqlFact]
+    public async Task Registration_api_rejects_missing_password_requirements()
+    {
+        await using var app = new AuthFactory(); using var client = app.Client(false);
+        var request = new RegisterRequest(Guid.NewGuid() + "@example.test", "Abcdef1!", "Shopper");
+        foreach (var password in new[] { "Aa1!abc", "Abcdefg!", "ABCDEFG1!", "abcdefg1!", "Abcdefg1", "Abcdef1 " })
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/auth/register", request with { Password = password })).StatusCode);
+        Assert.Empty(app.CreatedAccounts);
+        Assert.Equal(HttpStatusCode.Created, (await client.PostAsJsonAsync("/api/auth/register", request)).StatusCode);
     }
 
     private sealed class AuthFactory(int limit = 10, int accountLimit = 20) : WebApplicationFactory<Program>

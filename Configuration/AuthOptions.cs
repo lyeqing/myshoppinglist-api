@@ -6,7 +6,7 @@ public sealed class AuthOptions
 {
     public const string SectionName = "Auth";
     [Range(1, 90)] public int RegisteredSessionDays { get; set; } = 30;
-    [Range(15, 128)] public int MinimumPasswordLength { get; set; } = 15;
+    [Range(8, 128)] public int MinimumPasswordLength { get; set; } = 8;
     [Range(1, 100)] public int RegistrationRequestsPerWindow { get; set; } = 5;
     [Range(1, 86400)] public int RegistrationWindowSeconds { get; set; } = 3600;
     [Range(1, 100)] public int SignInRequestsPerWindow { get; set; } = 20;

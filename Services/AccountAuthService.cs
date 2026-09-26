@@ -1,4 +1,5 @@
 using System.Net.Mail;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using myshoppinglist_api.Configuration;
@@ -23,8 +24,12 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
         if (email is null) return Fail(400, "Enter a valid email address.");
         if (string.IsNullOrWhiteSpace(request.DisplayName) || request.DisplayName.Trim().Length > 200)
             return Fail(400, "Enter a display name of at most 200 characters.");
-        if (string.IsNullOrWhiteSpace(request.Password) || request.Password.Length < options.Value.MinimumPasswordLength || request.Password.Length > 1024)
-            return Fail(400, $"Use a password between {options.Value.MinimumPasswordLength} and 1024 characters.");
+        if (string.IsNullOrWhiteSpace(request.Password) || request.Password.Length < options.Value.MinimumPasswordLength || request.Password.Length > 1024
+            || !request.Password.Any(c => c is >= '0' and <= '9')
+            || !request.Password.Any(c => c is >= 'a' and <= 'z')
+            || !request.Password.Any(c => c is >= 'A' and <= 'Z')
+            || !request.Password.EnumerateRunes().Any(c => Rune.IsPunctuation(c) || Rune.IsSymbol(c)))
+            return Fail(400, $"Use {options.Value.MinimumPasswordLength}–1024 characters with at least one number (0–9), one lowercase letter (a–z), one uppercase letter (A–Z), and one special character. Spaces do not count as special characters.");
         if (accountId.HasValue != sessionId.HasValue) return Fail(401, "A valid session is required.");
         CleanContext();
         // Expensive hashing is outside database locks. Eligibility is checked again after acquiring them.

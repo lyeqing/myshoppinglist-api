@@ -12,6 +12,31 @@ namespace myshoppinglist_api.Tests;
 public class AccountAuthServiceTests
 {
     [PostgreSqlFact]
+    public async Task Registration_requires_each_character_type_and_accepts_eight_characters()
+    {
+        await using var f = new AccountFixture();
+        foreach (var password in new[] { "Aa1!abc", "Abcdefg!", "ABCDEFG1!", "abcdefg1!", "Abcdefg1", "Abcdef1 ", "Abcdef1\t", "Abcdef1\u200B" })
+        {
+            var result = await f.Service.RegisterAsync(f.Request with { Password = password }, null, null, default);
+            Assert.Equal(400, result.StatusCode); Assert.Contains("special character", result.Message);
+        }
+        Assert.False(await f.Db.UserAccounts.AnyAsync(u => u.Email == f.Email));
+        Assert.Equal(201, (await f.Service.RegisterAsync(f.Request with { Password = "Abcdef1!" }, null, null, default)).StatusCode);
+    }
+
+    [PostgreSqlFact]
+    public async Task Unicode_symbol_is_accepted_and_existing_passwords_can_still_sign_in()
+    {
+        await using var f = new AccountFixture();
+        var created = await f.Service.RegisterAsync(f.Request with { Password = "Abcdef1😀" }, null, null, default);
+        Assert.Equal(201, created.StatusCode);
+        const string oldPassword = "A long legacy passphrase";
+        var oldHash = PasswordHasher.Hash(oldPassword);
+        await f.Db.UserAccounts.Where(u => u.Id == created.Response!.Account.Id).ExecuteUpdateAsync(s => s
+            .SetProperty(u => u.PasswordHash, oldHash.Hash).SetProperty(u => u.PasswordSalt, oldHash.Salt));
+        Assert.Equal(200, (await f.Service.SignInAsync(new(f.Email, oldPassword), default)).StatusCode);
+    }
+    [PostgreSqlFact]
     public async Task New_registration_normalises_email_and_login_uses_independent_sessions()
     {
         await using var f = new AccountFixture();
@@ -144,7 +169,7 @@ public class AccountAuthServiceTests
     }
     private sealed class AccountFixture : IAsyncDisposable
     {
-        internal const string Password = "A long test passphrase 123";
+        internal const string Password = "A long test passphrase 123!";
         public string Email { get; } = "account-test-" + Guid.NewGuid().ToString("N") + "@example.test";
         public MyShoppingListDbContext Db { get; } = PersistenceScope.Context();
         public PersistenceClock Clock { get; } = new();
