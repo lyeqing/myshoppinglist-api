@@ -13,6 +13,29 @@ namespace myshoppinglist_api.Tests;
 
 public class RetailerSearchBrowserTests(ITestOutputHelper output)
 {
+    [Theory]
+    [InlineData("https://www.coles.com.au/product/coca-cola-1.25l-123011", true)]
+    [InlineData("https://coles.com.au/product/123011", true)]
+    [InlineData("https://www.coles.com.au/product/another-999", false)]
+    [InlineData("https://www.coles.com.au/search/products", false)]
+    [InlineData("https://www.coles.com.au/account", false)]
+    [InlineData("https://www.coles.com.au/cart", false)]
+    [InlineData("https://www.coles.com.au.evil.example/product/123011", false)]
+    [InlineData("http://www.coles.com.au/product/123011", false)]
+    [InlineData("https://www.coles.com.au:444/product/123011", false)]
+    [InlineData("https://user@www.coles.com.au/product/123011", false)]
+    public void Product_navigation_is_opt_in_and_identity_bound(string url, bool allowed)
+    {
+        var product = new Uri("https://www.coles.com.au/product/123011");
+        Assert.Equal(allowed, RetailerBrowserNetworkGuard.IsAllowedColesProductRequest(product, url, "GET", "document", true));
+        Assert.False(RetailerBrowserNetworkGuard.IsAllowedColesProductRequest(product, url, "POST", "document", true));
+        if (!url.EndsWith("/search/products"))
+            Assert.False(RetailerBrowserNetworkGuard.IsAllowedRequest("coles", url, "GET", "document", true));
+        Assert.True(RetailerBrowserNetworkGuard.IsAllowedRequest("coles", "https://www.coles.com.au/search/products", "GET", "document", true));
+        Assert.True(RetailerBrowserNetworkGuard.IsAllowedRequest("woolworths", "https://www.woolworths.com.au/shop/search/products", "GET", "document", true));
+        Assert.False(RetailerBrowserNetworkGuard.IsAllowedColesProductRequest(product, "https://localhost/script.js", "GET", "script", false));
+    }
+
     [Fact]
     public async Task Disabled_invalid_and_cancelled_searches_never_launch_a_browser()
     {

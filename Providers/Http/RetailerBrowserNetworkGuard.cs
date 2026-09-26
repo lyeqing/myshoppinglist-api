@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using myshoppinglist_api.Configuration;
+using myshoppinglist_api.Providers.Coles;
 using myshoppinglist_api.Security;
 
 namespace myshoppinglist_api.Providers.Http;
@@ -57,6 +58,15 @@ public sealed class RetailerBrowserNetworkGuard : IAsyncDisposable
         return shop == "woolworths" && uri.IdnHost == "www.woolworths.com.au" && method == "POST"
             && uri.AbsolutePath.Equals("/apis/ui/Search/products", StringComparison.OrdinalIgnoreCase)
             && resourceType is "xhr" or "fetch";
+    }
+
+    public static bool IsAllowedColesProductRequest(Uri product, string url, string method, string resourceType, bool navigation)
+    {
+        if (ColesProductParser.ProductCode(product) is not { } code) return false;
+        if (!navigation) return IsAllowedRequest("coles", url, method, resourceType, false);
+        return method == "GET" && url.Length <= 8192 && !url.Contains('\\')
+            && Uri.TryCreate(url, UriKind.Absolute, out var destination)
+            && ColesProductParser.ProductCode(destination) == code;
     }
 
     public static bool IsSearchPage(string shop, Uri uri) => uri.Scheme == "https" && uri.Port == 443
