@@ -148,6 +148,33 @@ public class ColesProductParserTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new ColesProductParser().ParseAsync(
             new(Url, Fixture, Checked), new CancellationToken(true)));
 
+    [Theory]
+    [InlineData("/_Incapsula_Resource?incident_id=example")]
+    [InlineData("https://www.coles.com.au/_Incapsula_Resource?incident_id=example")]
+    public async Task Http_200_challenge_shell_is_access_restricted(string source)
+    {
+        var html = $"<html><head><meta name='robots' content='noindex,nofollow'></head><body><iframe id='main-iframe' src='{source}'>Request unsuccessful. Incapsula incident ID: example</iframe></body></html>";
+        var page = new RetailerPage(new("https://www.coles.com.au/product/coles-kitchen-supreme-pizza-445g-1435461?pid=meals-hub_productlist_oven-faves"), html, Checked);
+        var failure = Assert.IsType<ProviderResult<ExtractedShopProduct>.Failure>(await new ColesProductParser().ParseAsync(page, default));
+        Assert.Equal(ProviderFailureKind.AccessRestricted, failure.Error.Kind);
+        Assert.Equal("retailer_access_restricted", failure.Error.Code);
+        Assert.False(failure.Error.IsRetryable);
+    }
+
+    [Fact]
+    public async Task Security_script_on_real_product_page_is_not_a_block()
+    {
+        var html = Html(Ld()) + "<script src='/_Incapsula_Resource?script=example'></script>";
+        Assert.Equal("1849307", Success(await Parse(html)).ShopProductCode);
+    }
+
+    [Fact]
+    public async Task Missing_product_without_challenge_keeps_its_original_failure()
+    {
+        var failure = Assert.IsType<ProviderResult<ExtractedShopProduct>.Failure>(await Parse("<html><body>No product data</body></html>"));
+        Assert.Equal("product_not_identified", failure.Error.Code);
+    }
+
     internal static JsonObject Ld() => JsonNode.Parse("""
         {"@type":"Product","@id":"https://www.coles.com.au/product/example-1849307","sku":1849307,
          "name":"Coca-Cola Classic Cans 10 x 375mL","brand":{"name":"Coca-Cola"},"gtin":"9300675014779",

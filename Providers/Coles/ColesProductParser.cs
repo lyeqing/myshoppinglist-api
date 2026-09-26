@@ -29,8 +29,14 @@ public sealed class ColesProductParser
         // HtmlParser parses the supplied text only. It does not load scripts, images, or external resources.
         using var document = await new HtmlParser().ParseDocumentAsync(page.Html, cancellationToken);
         var title = document.Title ?? string.Empty;
+        // Incapsula can return an HTTP 200 shell instead of a product page.
+        // Match the challenge iframe, not ordinary security scripts on a valid page.
+        var hasAccessChallenge = document.QuerySelectorAll("iframe[src]").Any(frame =>
+            Uri.TryCreate(page.Url, frame.GetAttribute("src"), out var source)
+            && source.Scheme == Uri.UriSchemeHttps && source.IdnHost == page.Url.IdnHost
+            && source.AbsolutePath.Equals("/_Incapsula_Resource", StringComparison.OrdinalIgnoreCase));
         if (title.Contains("Access Denied", StringComparison.OrdinalIgnoreCase)
-            || title.Contains("Just a moment", StringComparison.OrdinalIgnoreCase))
+            || title.Contains("Just a moment", StringComparison.OrdinalIgnoreCase) || hasAccessChallenge)
             return Fail("retailer_access_restricted", "Coles restricted access to this page.", ProviderFailureKind.AccessRestricted);
 
         var products = new List<JsonElement>();
