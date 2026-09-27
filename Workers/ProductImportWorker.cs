@@ -10,32 +10,37 @@ public sealed class ProductImportWorker(IServiceScopeFactory scopes, IOptions<Pr
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!options.Value.Enabled) return;
-        while (!stoppingToken.IsCancellationRequested)
+        if (!options.Value.Enabled) { logger.LogInformation("Import background worker is disabled"); return; }
+        logger.LogInformation("Import background worker started");
+        try
         {
-            ProductImportClaim? claim = null;
-            try
+            while (!stoppingToken.IsCancellationRequested)
             {
-                await using (var scope = scopes.CreateAsyncScope())
+                ProductImportClaim? claim = null;
+                try
                 {
-                    var jobs = scope.ServiceProvider.GetRequiredService<ProductImportJobService>();
-                    await jobs.RecoverExpiredAsync(stoppingToken);
-                    claim = await jobs.ClaimNextAsync(stoppingToken);
+                    await using (var scope = scopes.CreateAsyncScope())
+                    {
+                        var jobs = scope.ServiceProvider.GetRequiredService<ProductImportJobService>();
+                        await jobs.RecoverExpiredAsync(stoppingToken);
+                        claim = await jobs.ClaimNextAsync(stoppingToken);
+                    }
+                    if (claim is not null) await RunClaimAsync(claim, stoppingToken);
                 }
-                if (claim is not null) await RunClaimAsync(claim, stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-            catch (Exception exception)
-            {
-                // Log exception type only: provider exception messages can contain source URLs or response data.
-                logger.LogError("Import worker iteration failed ({ExceptionType}); durable jobs remain recoverable", exception.GetType().Name);
-            }
-            if (claim is null)
-            {
-                try { await Task.Delay(TimeSpan.FromSeconds(options.Value.PollSeconds), clock, stoppingToken); }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+                catch (Exception exception)
+                {
+                    // Provider messages can contain source URLs or response data; retain type and stack only.
+                    logger.LogError("Import worker iteration failed ({ExceptionType}); durable jobs remain recoverable. Stack: {StackTrace}", exception.GetType().FullName, exception.StackTrace);
+                }
+                if (claim is null)
+                {
+                    try { await Task.Delay(TimeSpan.FromSeconds(options.Value.PollSeconds), clock, stoppingToken); }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+                }
             }
         }
+        finally { logger.LogInformation("Import background worker stopped"); }
     }
 
     private async Task RunClaimAsync(ProductImportClaim claim, CancellationToken stoppingToken)
@@ -54,7 +59,7 @@ public sealed class ProductImportWorker(IServiceScopeFactory scopes, IOptions<Pr
         }
         catch (Exception exception)
         {
-            logger.LogError("Import job {ProductImportJobId} failed unexpectedly ({ExceptionType})", claim.JobId, exception.GetType().Name);
+            logger.LogError("Import job {ProductImportJobId} failed unexpectedly ({ExceptionType}). Stack: {StackTrace}", claim.JobId, exception.GetType().FullName, exception.StackTrace);
             if (!processing.IsCancellationRequested)
             {
                 await using var scope = scopes.CreateAsyncScope();
@@ -84,7 +89,7 @@ public sealed class ProductImportWorker(IServiceScopeFactory scopes, IOptions<Pr
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception exception)
         {
-            logger.LogWarning("Lease renewal failed for import job {ProductImportJobId} ({ExceptionType})", claim.JobId, exception.GetType().Name);
+            logger.LogError("Lease renewal failed for import job {ProductImportJobId} ({ExceptionType}). Stack: {StackTrace}", claim.JobId, exception.GetType().FullName, exception.StackTrace);
             await processing.CancelAsync();
         }
     }

@@ -11,20 +11,31 @@ using myshoppinglist_api.Services;
 using myshoppinglist_api.Workers;
 using System.Net;
 using Serilog;
+using Serilog.Events;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Options;
 using System.Threading.RateLimiting;
 using myshoppinglist_api.Endpoints;
 
-Log.Logger = new LoggerConfiguration().WriteTo.Console().CreateBootstrapLogger();
+Log.Logger = new LoggerConfiguration().MinimumLevel.Error().WriteTo.Console()
+    .WriteTo.File("logs/myshoppinglist-.log", rollingInterval: RollingInterval.Day,
+        fileSizeLimitBytes: 10485760, rollOnFileSizeLimit: true, retainedFileCountLimit: 14, shared: true,
+        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}")
+    .CreateBootstrapLogger();
 try
 {
     var builder = WebApplication.CreateBuilder(args);
     // Local credentials are excluded from source control. Environment variables take precedence.
     builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true).AddEnvironmentVariables();
     builder.Services.AddSerilog((services, configuration) => configuration
-        .ReadFrom.Configuration(builder.Configuration).ReadFrom.Services(services).Enrich.FromLogContext());
+        .ReadFrom.Configuration(builder.Configuration).ReadFrom.Services(services).Enrich.FromLogContext()
+        .Filter.ByIncludingOnly(entry => entry.Level >= LogEventLevel.Error ||
+            entry.Level == LogEventLevel.Information &&
+            entry.Properties.TryGetValue("SourceContext", out var source) && source is ScalarValue { Value: string name } &&
+            name is "myshoppinglist_api.Workers.ProductImportWorker" or
+                "myshoppinglist_api.Services.ProductImportJobService" or
+                "myshoppinglist_api.Services.ProductImportSubmissionService"));
     builder.Services.AddDbContext<MyShoppingListDbContext>(options =>
         options.UseNpgsql(builder.Configuration.GetConnectionString("MyShoppingList")));
     builder.Services.AddSingleton(new RetailerCatalog());
@@ -132,7 +143,9 @@ try
         StatusCodeSelector = exception => exception is BadHttpRequestException badRequest
             ? badRequest.StatusCode : StatusCodes.Status500InternalServerError
     });
-    app.UseSerilogRequestLogging();
+    app.UseSerilogRequestLogging(options => options.GetLevel = Program.RequestLogLevel);
+    // Handle client disconnects before request logging or the exception handler sees them.
+    app.Use(Program.HandleRequestCancellationAsync);
     if (app.Environment.IsDevelopment())
     {
         app.MapOpenApi();
@@ -161,4 +174,18 @@ catch (Exception exception) when (exception is not HostAbortedException)
 }
 finally { Log.CloseAndFlush(); }
 
-public partial class Program { }
+public partial class Program
+{
+    public static LogEventLevel RequestLogLevel(HttpContext context, double elapsed, Exception? exception) =>
+        exception is not null || context.Response.StatusCode >= 500 ? LogEventLevel.Error : LogEventLevel.Debug;
+
+    public static async Task HandleRequestCancellationAsync(HttpContext context, RequestDelegate next)
+    {
+        try { await next(context); }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        {
+            // The client has gone away. Do not write a response body or label this as a server failure.
+            if (!context.Response.HasStarted) context.Response.StatusCode = StatusCodes.Status499ClientClosedRequest;
+        }
+    }
+}
