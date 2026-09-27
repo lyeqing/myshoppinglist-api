@@ -165,6 +165,7 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
                 ? submission.ErrorCode : retryable ? submission.ErrorCode : "extraction_failed";
             task.Status = retryable && task.Attempts < 3 ? "Waiting" : "Failed";
             task.NextAttemptAt = Now.AddSeconds(30 * task.Attempts); task.LeaseExpiresAt = null;
+            if (task.Status == "Failed") task.CompletedAt = Now;
         }
         else if (task.Kind == "search")
         {
@@ -212,6 +213,10 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
         task.SubmissionHash = digest;
         await db.SaveChangesAsync(token);
         if (leaseExpiresAt <= Now) return "claim_lost";
+        if (task.Status is "Completed" or "Failed")
+            await db.ProductImportJobs.Where(j => j.Status == ProductImportJobStatus.Queued
+                && j.ProgressStage == ProductImportProgressStage.WaitingForExtension)
+                .ExecuteUpdateAsync(s => s.SetProperty(j => j.NextAttemptDate, (DateTime?)Now), token);
         await tx.CommitAsync(token); db.ChangeTracker.Clear();
         return null;
     }

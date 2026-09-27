@@ -12,15 +12,24 @@ public sealed class ProductImportJobService(MyShoppingListDbContext db, IOptions
 {
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
 
-    public Task<int> DeferForExtensionAsync(ProductImportClaim claim, CancellationToken token)
+    public async Task<int> DeferForExtensionAsync(ProductImportClaim claim, CancellationToken token)
     {
+        await using var tx = await db.Database.BeginTransactionAsync(token);
+        await ProductService.LockCatalogueAsync(db, token);
         var now = Now;
-        return Owned(claim, now).ExecuteUpdateAsync(s => s.SetProperty(j => j.Status, ProductImportJobStatus.Queued)
+        var lastActivity = await Owned(claim, now).Select(j => j.LastActivityDate).SingleOrDefaultAsync(token);
+        // Submission uses the same lock: either it wakes the queued job, or this check sees it.
+        var resultArrived = lastActivity.HasValue && await db.ColesExtensionTasks.AnyAsync(t =>
+            t.CompletedAt > lastActivity && t.CompletedAt <= now && (t.Status == "Completed" || t.Status == "Failed"), token);
+        var next = resultArrived ? now : now.AddSeconds(30);
+        var changed = await Owned(claim, now).ExecuteUpdateAsync(s => s.SetProperty(j => j.Status, ProductImportJobStatus.Queued)
             .SetProperty(j => j.ProgressStage, ProductImportProgressStage.WaitingForExtension)
             .SetProperty(j => j.AttemptCount, j => j.AttemptCount > 0 ? j.AttemptCount - 1 : 0)
             .SetProperty(j => j.ClaimToken, (Guid?)null).SetProperty(j => j.LeaseExpiresDate, (DateTime?)null)
-            .SetProperty(j => j.NextAttemptDate, now.AddSeconds(30)).SetProperty(j => j.LastActivityDate, now)
+            .SetProperty(j => j.NextAttemptDate, next).SetProperty(j => j.LastActivityDate, now)
             .SetProperty(j => j.ErrorCode, "waiting_for_extension"), token);
+        await tx.CommitAsync(token);
+        return changed;
     }
 
     public async Task<ProductImportClaim?> ClaimNextAsync(CancellationToken token)

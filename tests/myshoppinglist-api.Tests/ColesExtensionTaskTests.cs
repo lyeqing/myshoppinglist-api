@@ -15,6 +15,35 @@ namespace myshoppinglist_api.Tests;
 [Collection("Import worker database")]
 public class ColesExtensionTaskTests
 {
+    [PostgreSqlFact]
+    public async Task Result_wakes_waiting_import_and_result_before_deferral_is_not_lost()
+    {
+        await using var imports = await ImportFixture.CreateAsync();
+        await using var f = new Fixture();
+        f.Clock.Now = imports.Scope.Clock.Now;
+        var jobs = imports.Jobs();
+        var claim = (await jobs.ClaimNextAsync(default))!;
+        await Assert.ThrowsAsync<ColesWorkPendingException>(() => f.Service.ProductAsync(f.Url, default));
+        var task = await f.Db.ColesExtensionTasks.AsNoTracking().SingleAsync(t => t.Key == ColesExtensionTaskService.ProductKey(f.Url));
+        var worker = (await f.Service.ClaimAsync(task.Id, "worker-test", default))!;
+        Assert.Equal(1, await jobs.DeferForExtensionAsync(claim, default));
+        Assert.True((await imports.ReadAsync()).NextAttemptDate > imports.Scope.Clock.Now.UtcDateTime);
+        f.Clock.Now += TimeSpan.FromSeconds(1);
+        imports.Scope.Clock.Now = f.Clock.Now;
+        Assert.Null(await f.Service.SubmitAsync(task.Id, new("worker-test", worker.ClaimToken, f.Url.AbsoluteUri, true, Evidence(f.Code)), default));
+        Assert.True((await imports.ReadAsync()).NextAttemptDate <= imports.Scope.Clock.Now.UtcDateTime);
+
+        claim = (await jobs.ClaimNextAsync(default))!;
+        await Assert.ThrowsAsync<ColesWorkPendingException>(() => f.Service.ProductAsync(f.OtherUrl, default));
+        task = await f.Db.ColesExtensionTasks.AsNoTracking().SingleAsync(t => t.Key == ColesExtensionTaskService.ProductKey(f.OtherUrl));
+        worker = (await f.Service.ClaimAsync(task.Id, "worker-test", default))!;
+        f.Clock.Now += TimeSpan.FromSeconds(1);
+        imports.Scope.Clock.Now = f.Clock.Now;
+        Assert.Null(await f.Service.SubmitAsync(task.Id, new("worker-test", worker.ClaimToken, f.OtherUrl.AbsoluteUri, true, Evidence((long.Parse(f.Code) + 1).ToString())), default));
+        Assert.Equal(1, await jobs.DeferForExtensionAsync(claim, default));
+        Assert.True((await imports.ReadAsync()).NextAttemptDate <= imports.Scope.Clock.Now.UtcDateTime);
+    }
+
     [Fact]
     public async Task Evidence_is_bounded_escaped_and_identity_checked_by_server()
     {
