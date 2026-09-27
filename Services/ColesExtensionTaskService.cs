@@ -7,6 +7,7 @@ using myshoppinglist_api.Data;
 using myshoppinglist_api.Models;
 using myshoppinglist_api.Providers;
 using myshoppinglist_api.Providers.Coles;
+using myshoppinglist_api.Providers.Woolworths;
 using myshoppinglist_api.Providers.Http;
 using myshoppinglist_api.Providers.Models;
 using myshoppinglist_api.Services.Models;
@@ -21,13 +22,25 @@ public interface IColesExtensionQueue
     Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchAsync(string query, CancellationToken token);
 }
 
+public interface IWoolworthsExtensionQueue
+{
+    Task<ProviderResult<ExtractedShopProduct>> ProductAsync(Uri url, CancellationToken token);
+    Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchAsync(string query, CancellationToken token);
+}
+
 public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, SourceProductCacheService cache,
     CatalogueFreshnessService freshness, ColesProductParser parser, ProductService products,
-    ShopProductService mappings, PriceService prices, TimeProvider clock) : IColesExtensionQueue
+    ShopProductService mappings, PriceService prices, TimeProvider clock) : IColesExtensionQueue, IWoolworthsExtensionQueue
 {
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
-    public static string ProductKey(Uri url) => "product:" + (ColesProductParser.ProductCode(url) ?? throw new ArgumentException("Invalid product URL"));
+    private static string Retailer(Uri url) => url.Host is "www.woolworths.com.au" or "woolworths.com.au" ? "woolworths" : "coles";
+    private static string? Code(Uri url) => Retailer(url) == "woolworths" ? WoolworthsProductParser.ProductCode(url) : ColesProductParser.ProductCode(url);
+    private static Uri Canonical(Uri url) => new(Retailer(url) == "woolworths"
+        ? "https://www.woolworths.com.au/shop/productdetails/" + Code(url) : "https://www.coles.com.au/product/" + Code(url));
+    public static string ProductKey(Uri url) => (Retailer(url) == "woolworths" ? "woolworths:" : "") + "product:" + (Code(url) ?? throw new ArgumentException("Invalid product URL"));
+    private Task<ProviderResult<ExtractedShopProduct>> ParseAsync(RetailerPage page, CancellationToken token) =>
+        Retailer(page.Url) == "woolworths" ? new WoolworthsProductParser().ParseAsync(page, token) : parser.ParseAsync(page, token);
     public static bool ValidWorker(string? value) => value is { Length: >= 1 and <= 100 } && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
     private async Task<ColesExtensionTask> EnsureAsync(string kind, string key, Uri url, string? query, CancellationToken token)
     {
@@ -44,7 +57,7 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
             var stale = !freshness.IsFresh(task.ClaimedAt, clock.GetUtcNow());
             if (!stale && kind == "product")
             {
-                var parsed = await parser.ParseAsync(new(url, task.ResultJson!, new(task.ClaimedAt!.Value, TimeSpan.Zero)), token);
+                var parsed = await ParseAsync(new(url, task.ResultJson!, new(task.ClaimedAt!.Value, TimeSpan.Zero)), token);
                 if (parsed is ProviderResult<ExtractedShopProduct>.Success product
                     && product.Value.Offer is ProviderResult<ShopProductOffer>.Success offer)
                     stale = offer.Value.SpecialEndDate <= Now || offer.Value.SpecialStartDate > Now;
@@ -62,19 +75,22 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
     }
     public async Task<ProviderResult<ExtractedShopProduct>> ProductAsync(Uri url, CancellationToken token)
     {
-        var cached = await cache.FindAsync("coles", url, token);
+        var cached = await cache.FindAsync(Retailer(url), url, token);
         if (cached is not null) return new ProviderResult<ExtractedShopProduct>.Success(cached);
-        var canonical = new Uri("https://www.coles.com.au/product/" + ColesProductParser.ProductCode(url));
-        var task = await EnsureAsync("product", ProductKey(url), canonical, null, token);
+        var key = ProductKey(url);
+        var canonical = Canonical(url);
+        var task = await EnsureAsync("product", key, canonical, null, token);
         if (task.Status == "Failed") throw new ColesWorkFailedException(task.Id);
         if (task.Status != "Completed") throw new ColesWorkPendingException();
         // A product with no price can still be added with an honest unavailable offer.
-        return await parser.ParseAsync(new(canonical, task.ResultJson!, new(task.ClaimedAt!.Value, TimeSpan.Zero)), token);
+        return await ParseAsync(new(canonical, task.ResultJson!, new(task.ClaimedAt!.Value, TimeSpan.Zero)), token);
     }
-    public async Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchAsync(string query, CancellationToken token)
+    public Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchAsync(string query, CancellationToken token) => SearchAsync("coles", query, token);
+    Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> IWoolworthsExtensionQueue.SearchAsync(string query, CancellationToken token) => SearchAsync("woolworths", query, token);
+    private async Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchAsync(string retailer, string query, CancellationToken token)
     {
-        var task = await EnsureAsync("search", "search:" + Hash(query.ToLowerInvariant()),
-            ProductSearchQueryBuilder.SearchUrl("coles", query), query, token);
+        var task = await EnsureAsync("search", (retailer == "woolworths" ? "woolworths:" : "") + "search:" + Hash(query.ToLowerInvariant()),
+            ProductSearchQueryBuilder.SearchUrl(retailer, query), query, token);
         if (task.Status == "Failed") throw new ColesWorkFailedException(task.Id);
         if (task.Status != "Completed") throw new ColesWorkPendingException();
         var links = JsonSerializer.Deserialize<string[]>(task.ResultJson!)!;
@@ -153,25 +169,25 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
             var links = new List<string>();
             foreach (var link in submission.Links)
             {
-                if (link is null || link.Length > 2048 || !Uri.TryCreate(link, UriKind.Absolute, out var uri) || ColesProductParser.ProductCode(uri) is not { } code)
+                if (link is null || link.Length > 2048 || !Uri.TryCreate(link, UriKind.Absolute, out var uri) || Code(uri) is not { } code || Retailer(uri) != Retailer(new Uri(task.Url)))
                     return "invalid_product_link";
-                links.Add("https://www.coles.com.au/product/" + code);
+                links.Add(Canonical(uri).AbsoluteUri);
             }
             task.ResultJson = JsonSerializer.Serialize(links.Distinct().ToArray());
             task.Status = "Completed"; task.CompletedAt = Now; task.LeaseExpiresAt = null;
         }
         else
         {
-            if (!Uri.TryCreate(submission.Url, UriKind.Absolute, out var uri) || ColesProductParser.ProductCode(uri) is not { } code
+            if (!Uri.TryCreate(submission.Url, UriKind.Absolute, out var uri) || Code(uri) is not { } code
                 || ProductKey(uri) != task.Key) return "product_identity_conflict";
-            var html = EvidenceHtml(submission.Evidence);
+            var html = EvidenceHtml(submission.Evidence, Retailer(uri));
             if (html is null) return "invalid_product_evidence";
-            var parsed = await parser.ParseAsync(new(uri, html, new(task.ClaimedAt!.Value, TimeSpan.Zero)), token);
+            var parsed = await ParseAsync(new(uri, html, new(task.ClaimedAt!.Value, TimeSpan.Zero)), token);
             if (parsed is not ProviderResult<ExtractedShopProduct>.Success success || success.Value.ShopProductCode != code) return "invalid_product_evidence";
             var source = success.Value;
             if (!SourceProductPersistenceService.ValidSource(source, new(new RetailerCatalog()), new(), clock))
                 return "invalid_product_evidence";
-            var shop = await db.Shops.SingleAsync(s => s.Code == "coles" && s.IsActive, token);
+            var shop = await db.Shops.SingleAsync(s => s.Code == source.ShopCode && s.IsActive, token);
             var known = await mappings.FindAsync(shop.Id, source, token);
             if (known.Count > 1) return "ambiguous_retailer_mapping";
             var resolution = await products.ResolveAsync(source, known.SingleOrDefault(), Now, token);
@@ -195,7 +211,7 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
         await tx.CommitAsync(token); db.ChangeTracker.Clear();
         return null;
     }
-    public static string? EvidenceHtml(ColesEvidence? evidence)
+    public static string? EvidenceHtml(ColesEvidence? evidence, string retailer = "coles")
     {
         if (evidence is null || evidence.JsonLd?.Length > 20) return null;
         var size = evidence.NextProductJson?.Length ?? 0;
@@ -207,7 +223,9 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
             if (evidence.NextProductJson is { } next)
             {
                 using var doc = JsonDocument.Parse(next, new JsonDocumentOptions { MaxDepth = 64 });
-                var state = JsonSerializer.Serialize(new { props = new { pageProps = new { product = doc.RootElement } } });
+                var state = retailer == "woolworths"
+                    ? JsonSerializer.Serialize(new { props = new { pageProps = new { pdDetails = new { Product = doc.RootElement } } } })
+                    : JsonSerializer.Serialize(new { props = new { pageProps = new { product = doc.RootElement } } });
                 html.Append("<script id='__NEXT_DATA__' type='application/json'>").Append(state.Replace("<", "\\u003c")).Append("</script>");
             }
             foreach (var ld in evidence.JsonLd ?? [])
@@ -234,7 +252,8 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
             .SetProperty(j => j.ProgressStage, ProductImportProgressStage.Queued).SetProperty(j => j.AttemptCount, 0)
             .SetProperty(j => j.NextAttemptDate, (DateTime?)null).SetProperty(j => j.CompletedDate, (DateTime?)null)
             .SetProperty(j => j.ErrorCode, (string?)null), token);
-        await db.ProductImportRetailerResults.Where(r => ids.Contains(r.ProductImportJobId) && r.Shop.Code == "coles")
+        var retailer = Retailer(new Uri(task.Url));
+        await db.ProductImportRetailerResults.Where(r => ids.Contains(r.ProductImportJobId) && r.Shop.Code == retailer)
             .ExecuteUpdateAsync(s => s.SetProperty(r => r.Status, RetailerLookupStatus.Pending).SetProperty(r => r.ErrorCode, (string?)null), token);
         await tx.CommitAsync(token); db.ChangeTracker.Clear(); return true;
     }

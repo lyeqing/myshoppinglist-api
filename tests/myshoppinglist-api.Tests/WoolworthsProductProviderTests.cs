@@ -90,6 +90,35 @@ public class WoolworthsProductProviderTests(ITestOutputHelper output)
         output.WriteLine($"Live product {product.ShopProductCode}: price {offer.Price} {offer.Currency}; scope {offer.PriceScope}; checked {offer.CheckedDate:O}");
     }
 
+    [Fact]
+    public async Task Restricted_product_and_search_use_browser_queue_but_other_failures_do_not()
+    {
+        var queue = new BrowserQueue();
+        var blocked = new RecordingHandler((_, _) => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.Forbidden)));
+        var provider = new WoolworthsProductProvider(RetailerHttpClientTests.Client(blocked), new(), new(new RetailerCatalog()),
+            NullLogger<WoolworthsProductProvider>.Instance, new RestrictedSearch(), extension: queue);
+        await Assert.ThrowsAsync<myshoppinglist_api.Services.ColesWorkPendingException>(() => provider.GetProductFromUrlAsync(WoolworthsProductParserTests.Url, default));
+        await Assert.ThrowsAsync<myshoppinglist_api.Services.ColesWorkPendingException>(() => provider.SearchAsync(new() { Name = "Panadol Rapid 16 pack" }, null, default));
+        Assert.Equal(1, queue.Products); Assert.Equal(1, queue.Searches);
+        var missing = new RecordingHandler((_, _) => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.NotFound)));
+        provider = new(RetailerHttpClientTests.Client(missing), new(), new(new RetailerCatalog()), NullLogger<WoolworthsProductProvider>.Instance, extension: queue);
+        Assert.IsType<ProviderResult<ExtractedShopProduct>.Failure>(await provider.GetProductFromUrlAsync(WoolworthsProductParserTests.Url, default));
+        Assert.Equal(1, queue.Products);
+    }
+    private sealed class BrowserQueue : myshoppinglist_api.Services.IWoolworthsExtensionQueue
+    {
+        public int Products; public int Searches;
+        public Task<ProviderResult<ExtractedShopProduct>> ProductAsync(Uri url, CancellationToken token)
+        { Products++; throw new myshoppinglist_api.Services.ColesWorkPendingException(); }
+        public Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchAsync(string query, CancellationToken token)
+        { Searches++; throw new myshoppinglist_api.Services.ColesWorkPendingException(); }
+    }
+    private sealed class RestrictedSearch : IRetailerSearchBrowser
+    {
+        public Task<ProviderResult<RetailerPage>> ReadAsync(string shopCode, string query, CancellationToken token) =>
+            Task.FromResult<ProviderResult<RetailerPage>>(new ProviderResult<RetailerPage>.Failure(new(ProviderFailureKind.AccessRestricted, "retailer_access_restricted", "Restricted")));
+    }
+
     private static WoolworthsProductProvider Provider(RetailerHttpClient client) =>
         new(client, new(), new(new RetailerCatalog()), NullLogger<WoolworthsProductProvider>.Instance);
 }

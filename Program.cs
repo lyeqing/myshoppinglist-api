@@ -45,6 +45,7 @@ try
     builder.Services.AddScoped<SourceProductCacheService>();
     builder.Services.AddScoped<ColesExtensionTaskService>();
     builder.Services.AddScoped<IColesExtensionQueue>(s => s.GetRequiredService<ColesExtensionTaskService>());
+    builder.Services.AddScoped<IWoolworthsExtensionQueue>(s => s.GetRequiredService<ColesExtensionTaskService>());
     builder.Services.AddOptions<ColesExtensionOptions>().BindConfiguration(ColesExtensionOptions.SectionName);
     builder.Services.AddOptions<RetailerSearchOptions>().BindConfiguration(RetailerSearchOptions.SectionName)
         .ValidateDataAnnotations().ValidateOnStart();

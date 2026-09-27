@@ -26,6 +26,42 @@ public class ColesExtensionTaskTests
         Assert.IsType<ProviderResult<ExtractedShopProduct>.Failure>(await new ColesProductParser().ParseAsync(
             new(new("https://www.coles.com.au/product/999"), html, DateTimeOffset.UtcNow), default));
     }
+    [Fact]
+    public async Task Woolworths_evidence_roundtrips_and_task_keys_cannot_collide_with_Coles()
+    {
+        var url = new Uri("https://www.woolworths.com.au/shop/productdetails/916772");
+        Assert.NotEqual(ColesExtensionTaskService.ProductKey(url), ColesExtensionTaskService.ProductKey(new("https://www.coles.com.au/product/916772")));
+        var main = JsonSerializer.Serialize(new { Stockcode = 916772, DisplayName = "Panadol Rapid 16 pack", Price = 6, Unit = "Each" });
+        var ld = """{"@type":"Product","sku":"916772","name":"Panadol Rapid 16 pack","offers":{"price":6,"priceCurrency":"AUD"}}""";
+        var html = ColesExtensionTaskService.EvidenceHtml(new(main, [ld]), "woolworths")!;
+        var parser = new myshoppinglist_api.Providers.Woolworths.WoolworthsProductParser();
+        var result = Assert.IsType<ProviderResult<ExtractedShopProduct>.Success>(await parser.ParseAsync(new(url, html, DateTimeOffset.UtcNow), default));
+        Assert.Equal("woolworths", result.Value.ShopCode);
+        Assert.Equal(6m, Assert.IsType<ProviderResult<ShopProductOffer>.Success>(result.Value.Offer).Value.Price);
+        Assert.IsType<ProviderResult<ExtractedShopProduct>.Failure>(await parser.ParseAsync(new(new("https://www.woolworths.com.au/shop/productdetails/999"), html, DateTimeOffset.UtcNow), default));
+    }
+    [PostgreSqlFact]
+    public async Task Woolworths_queue_rejects_Coles_links_and_persists_under_Woolworths()
+    {
+        await using var f = new Fixture();
+        IWoolworthsExtensionQueue queue = f.Service;
+        var query = "queue-test-" + f.Code;
+        await Assert.ThrowsAsync<ColesWorkPendingException>(() => queue.SearchAsync(query, default));
+        var search = await f.Db.ColesExtensionTasks.AsNoTracking().SingleAsync(t => t.Query == query);
+        var claim = (await f.Service.ClaimAsync(search.Id, "worker-test", default))!;
+        Assert.Equal("invalid_product_link", await f.Service.SubmitAsync(search.Id, new("worker-test", claim.ClaimToken, search.Url, true, Links: [f.Url.AbsoluteUri]), default));
+        f.Db.ChangeTracker.Clear();
+        var url = new Uri("https://www.woolworths.com.au/shop/productdetails/" + f.Code);
+        Assert.Null(await f.Service.SubmitAsync(search.Id, new("worker-test", claim.ClaimToken, search.Url, true, Links: [url.AbsoluteUri]), default));
+        await Assert.ThrowsAsync<ColesWorkPendingException>(() => queue.SearchAsync(query, default));
+        var task = await f.Db.ColesExtensionTasks.AsNoTracking().SingleAsync(t => t.Key == ColesExtensionTaskService.ProductKey(url));
+        var productClaim = (await f.Service.ClaimAsync(task.Id, "worker-test", default))!;
+        var evidence = Evidence(f.Code) with { JsonLd = [Evidence(f.Code).JsonLd![0].Replace(f.Url.AbsoluteUri, url.AbsoluteUri)] };
+        Assert.Null(await f.Service.SubmitAsync(task.Id, new("worker-test", productClaim.ClaimToken, url.AbsoluteUri, true, evidence), default));
+        var product = Assert.IsType<ProviderResult<ExtractedShopProduct>.Success>(await queue.ProductAsync(url, default));
+        Assert.Equal("woolworths", product.Value.ShopCode);
+        Assert.Single(await f.Db.ShopProducts.Where(p => p.ShopProductCode == f.Code && p.Shop.Code == "woolworths").ToListAsync());
+    }
     [PostgreSqlFact]
     public async Task Product_deduplicates_claims_saves_atomically_and_reuses_fresh_cache()
     {
@@ -114,7 +150,7 @@ public class ColesExtensionTaskTests
         public async ValueTask DisposeAsync()
         {
             Db.ChangeTracker.Clear(); var other = (long.Parse(Code) + 1).ToString();
-            await Db.ColesExtensionTasks.Where(t => t.Key == "product:" + Code || t.Key == "product:" + other || t.Query == "queue-test-" + Code).ExecuteDeleteAsync();
+            await Db.ColesExtensionTasks.Where(t => t.Key == "woolworths:product:" + Code || t.Key == "product:" + Code || t.Key == "product:" + other || t.Query == "queue-test-" + Code).ExecuteDeleteAsync();
             var mappings = await Db.ShopProducts.Where(p => p.ShopProductCode == Code || p.ShopProductCode == other).ToListAsync();
             var ids = mappings.Select(p => p.Id).ToArray(); var products = mappings.Select(p => p.ProductId).ToArray();
             await Db.ShopProductPrices.Where(p => ids.Contains(p.ShopProductId)).ExecuteDeleteAsync();

@@ -1,3 +1,4 @@
+using myshoppinglist_api.Services;
 using Microsoft.Extensions.Options;
 using myshoppinglist_api.Configuration;
 using myshoppinglist_api.Providers.Http;
@@ -8,7 +9,7 @@ namespace myshoppinglist_api.Providers.Woolworths;
 
 public sealed class WoolworthsProductProvider(RetailerHttpClient http, WoolworthsProductParser parser,
     ProductUrlValidator validator, ILogger<WoolworthsProductProvider> logger,
-    IRetailerSearchBrowser? searchBrowser = null, IOptions<RetailerSearchOptions>? searchOptions = null) : IShopProductProvider
+    IRetailerSearchBrowser? searchBrowser = null, IOptions<RetailerSearchOptions>? searchOptions = null, IWoolworthsExtensionQueue? extension = null) : IShopProductProvider
 {
     public string ShopCode => "woolworths";
 
@@ -22,7 +23,9 @@ public sealed class WoolworthsProductProvider(RetailerHttpClient http, Woolworth
                 "invalid_woolworths_url", "Use a supported Woolworths product page URL."));
         var response = await http.GetPageAsync(validation.ProductUrl!, ShopCode, cancellationToken);
         if (response is ProviderResult<RetailerPage>.Failure failure)
-            return new ProviderResult<ExtractedShopProduct>.Failure(failure.Error);
+            return failure.Error.Kind == ProviderFailureKind.AccessRestricted && extension is not null
+                ? await extension.ProductAsync(productUrl, cancellationToken)
+                : new ProviderResult<ExtractedShopProduct>.Failure(failure.Error);
         var page = ((ProviderResult<RetailerPage>.Success)response).Value;
         if (WoolworthsProductParser.ProductCode(page.Url) != code)
             return new ProviderResult<ExtractedShopProduct>.Failure(new(ProviderFailureKind.InvalidProduct,
@@ -30,6 +33,8 @@ public sealed class WoolworthsProductProvider(RetailerHttpClient http, Woolworth
         var result = await parser.ParseAsync(page, cancellationToken);
         logger.LogInformation("Woolworths extraction for product {ShopProductCode}: {Outcome}", code,
             result is ProviderResult<ExtractedShopProduct>.Success ? "Identified" : "Failed");
+        if (result is ProviderResult<ExtractedShopProduct>.Failure blocked && blocked.Error.Kind == ProviderFailureKind.AccessRestricted && extension is not null)
+            return await extension.ProductAsync(productUrl, cancellationToken);
         return result;
     }
 
@@ -50,15 +55,20 @@ public sealed class WoolworthsProductProvider(RetailerHttpClient http, Woolworth
         try
         {
             var rendered = await searchBrowser.ReadAsync(ShopCode, query, deadline.Token);
-            if (rendered is ProviderResult<RetailerPage>.Failure failed) return SearchFailure(failed.Error);
+            if (rendered is ProviderResult<RetailerPage>.Failure failed)
+                return failed.Error.Kind == ProviderFailureKind.AccessRestricted && extension is not null
+                    ? await extension.SearchAsync(query, cancellationToken) : SearchFailure(failed.Error);
             var links = await new WoolworthsSearchParser().ParseAsync(((ProviderResult<RetailerPage>.Success)rendered).Value,
                 query, settings.MaximumCandidates, deadline.Token);
-            if (links is ProviderResult<IReadOnlyList<Uri>>.Failure invalid) return SearchFailure(invalid.Error);
+            if (links is ProviderResult<IReadOnlyList<Uri>>.Failure invalid)
+                return invalid.Error.Kind == ProviderFailureKind.AccessRestricted && extension is not null
+                    ? await extension.SearchAsync(query, cancellationToken) : SearchFailure(invalid.Error);
             var candidates = new List<ShopProductSearchResult>();
-            // Two product reads at a time; results retain the search ranking regardless of completion order.
+            // Keep search ranking and read sequentially because browser fallbacks share a scoped database context.
             foreach (var batch in ((ProviderResult<IReadOnlyList<Uri>>.Success)links).Value.Chunk(2))
             {
-                var results = await Task.WhenAll(batch.Select(url => GetProductFromUrlAsync(url, deadline.Token)));
+                var results = new List<ProviderResult<ExtractedShopProduct>>();
+                foreach (var url in batch) results.Add(await GetProductFromUrlAsync(url, deadline.Token));
                 foreach (var result in results)
                 {
                     if (result is ProviderResult<ExtractedShopProduct>.Success identified)
