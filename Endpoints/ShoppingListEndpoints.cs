@@ -9,6 +9,13 @@ public static class ShoppingListEndpoints
 {
     public static void MapShoppingListEndpoints(this IEndpointRouteBuilder routes)
     {
+        routes.MapPost("/api/shopping-lists/default", async (HttpContext context, ShoppingListService service, CancellationToken token) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            var id = await service.EnsureDefaultAsync(AccountId(context), token);
+            return id.HasValue ? Results.Ok(new { shoppingListId = id.Value })
+                : Results.Problem(statusCode: 401, title: "Your session is unavailable.");
+        }).RequireAuthorization().WithTags("Shopping lists");
         routes.MapGet("/api/shopping-lists", async (HttpContext context, InStoreShoppingService service, CancellationToken token) =>
         {
             context.Response.Headers.CacheControl = "no-store";

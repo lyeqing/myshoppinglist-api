@@ -10,6 +10,28 @@ public sealed record ShoppingListUpdateResult(ShoppingListItemResponse? Item, in
 
 public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider clock)
 {
+    public async Task<long?> EnsureDefaultAsync(long accountId, CancellationToken token)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(token);
+        try
+        {
+            var user = await db.UserAccounts.FromSqlInterpolated($"""SELECT * FROM "UserAccounts" WHERE "Id" = {accountId} FOR UPDATE""").SingleOrDefaultAsync(token);
+            var now = clock.GetUtcNow().UtcDateTime;
+            if (user is null || !user.IsActive || user.IsTrial && !(user.ExpiresDate > now)) return null;
+            var existing = await db.ShoppingLists.Where(l => l.UserAccountId == accountId && !l.IsArchived
+                && (l.ExpiresDate == null || l.ExpiresDate > now)).OrderBy(l => l.Id).Select(l => (long?)l.Id).FirstOrDefaultAsync(token);
+            if (existing.HasValue) { await transaction.CommitAsync(token); return existing; }
+            var list = new ShoppingList { UserAccountId = accountId, Name = "My shopping list", CreatedDate = now,
+                UpdatedDate = now, ExpiresDate = user.IsTrial ? user.ExpiresDate : null };
+            db.ShoppingLists.Add(list);
+            await db.SaveChangesAsync(token);
+            if (user.IsTrial && !(user.ExpiresDate > clock.GetUtcNow().UtcDateTime)) return null;
+            await transaction.CommitAsync(token);
+            return list.Id;
+        }
+        finally { db.ChangeTracker.Clear(); }
+    }
+
     public async Task<ShoppingListItemPage?> ReadAsync(long accountId, long listId, long? beforeId, int pageSize,
         bool includeHidden, bool includePurchased, CancellationToken token)
     {

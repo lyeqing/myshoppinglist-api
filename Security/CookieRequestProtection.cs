@@ -1,3 +1,7 @@
+using Microsoft.Extensions.Options;
+using myshoppinglist_api.Configuration;
+using myshoppinglist_api.Endpoints;
+
 namespace myshoppinglist_api.Security;
 
 // Custom-header protection relies on the same-origin policy: no credentialed CORS is enabled.
@@ -10,6 +14,10 @@ public sealed class CookieRequestProtection(RequestDelegate next)
         var request = context.Request;
         if (!request.Path.StartsWithSegments("/api") || HttpMethods.IsGet(request.Method)
             || HttpMethods.IsHead(request.Method) || HttpMethods.IsOptions(request.Method))
+        { await next(context); return; }
+        if (request.Path == UserExtensionEndpoints.LoginPath && HttpMethods.IsPost(request.Method)
+            && request.Headers[HeaderName].Count == 1 && request.Headers[HeaderName] == "1"
+            && context.RequestServices.GetRequiredService<IOptions<UserExtensionOptions>>().Value.Allows(request))
         { await next(context); return; }
         var bearer = context.User.Identity?.IsAuthenticated == true
             && context.User.FindFirst(SessionTokenAuthenticationHandler.TransportClaim)?.Value == "bearer";

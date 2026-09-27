@@ -94,6 +94,7 @@ try
     builder.Services.AddScoped<ProductImportSubmissionService>();
     builder.Services.AddScoped<ProductImportStatusService>();
     builder.Services.AddScoped<ShoppingListService>();
+    builder.Services.Configure<UserExtensionOptions>(builder.Configuration.GetSection(UserExtensionOptions.SectionName));
     builder.Services.AddScoped<InStoreShoppingService>();
     builder.Services.AddSingleton<ProductNormalisationService>();
     builder.Services.AddSingleton<ProductMatchingService>();
@@ -163,6 +164,7 @@ try
     app.UseMiddleware<CookieRequestProtection>();
     app.UseRateLimiter();
     app.MapAuthEndpoints();
+    app.MapUserExtensionEndpoints();
     app.MapColesExtensionEndpoints();
     app.MapProductImportEndpoints();
     app.MapShoppingListEndpoints();
