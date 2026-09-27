@@ -15,16 +15,21 @@ public sealed class ColesProductProvider(IColesExtensionQueue queue) : IShopProd
                 new(ProviderFailureKind.InvalidUrl, "invalid_coles_url", "Use a supported Coles product URL.")));
         return queue.ProductAsync(url, token);
     }
-    public Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchAsync(
+    public async Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchAsync(
         ProductIdentity product, ShopLocationContext? location, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        var query = ProductSearchQueryBuilder.Build(product);
-        if (location is not null || query is null)
-            return Task.FromResult<ProviderResult<IReadOnlyList<ShopProductSearchResult>>>(
-                new ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Failure(
-                    new(ProviderFailureKind.NotSupported, "unsupported_search_context", "A product name and anonymous search context are required.")));
-        return queue.SearchAsync(query, token);
+        var queries = ProductSearchQueryBuilder.BuildColesSearches(product);
+        if (location is not null || queries.Count == 0)
+            return new ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Failure(
+                new(ProviderFailureKind.NotSupported, "unsupported_search_context", "A product name and anonymous search context are required."));
+        foreach (var query in queries)
+        {
+            var result = await queue.SearchAsync(query, token);
+            if (result is not ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Success success || success.Value.Count > 0)
+                return result;
+        }
+        return new ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Success([]);
     }
     public async Task<ProviderResult<ShopProductOffer>> GetOfferAsync(
         ShopProductSearchResult product, ShopLocationContext? location, CancellationToken cancellationToken)

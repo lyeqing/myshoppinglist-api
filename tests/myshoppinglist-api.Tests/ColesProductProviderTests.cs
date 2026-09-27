@@ -6,6 +6,35 @@ namespace myshoppinglist_api.Tests;
 
 public class ColesProductProviderTests
 {
+    private static readonly ProductIdentity Palmolive = new() { Name = "Palmolive Body Wash Shower Gel Naturals Milk Honey 1L", Brand = "Palmolive" };
+    [Fact]
+    public async Task Empty_full_search_tries_one_shorter_query_and_returns_its_candidates()
+    {
+        var queue = new Queue { EmptyFirst = true };
+        var result = await new ColesProductProvider(queue).SearchAsync(Palmolive, null, default);
+        Assert.Single(Assert.IsType<ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Success>(result).Value);
+        Assert.Equal(new[] { "palmolive body wash shower gel naturals milk honey 1l", "palmolive naturals milk honey 1l" }, queue.Queries);
+    }
+    [Fact]
+    public async Task Successful_full_search_does_not_enqueue_a_fallback()
+    {
+        var queue = new Queue();
+        await new ColesProductProvider(queue).SearchAsync(Palmolive, null, default);
+        Assert.Single(queue.Queries);
+    }
+    [Fact]
+    public async Task Pending_or_failed_search_never_becomes_an_empty_search()
+    {
+        var pending = new Queue { SearchPending = true };
+        await Assert.ThrowsAsync<ColesWorkPendingException>(() => new ColesProductProvider(pending).SearchAsync(Palmolive, null, default));
+        Assert.Single(pending.Queries);
+        var failure = new Queue { SearchFailure = true };
+        Assert.IsType<ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Failure>(await new ColesProductProvider(failure).SearchAsync(Palmolive, null, default));
+        Assert.Single(failure.Queries);
+        var empty = new Queue { AlwaysEmpty = true };
+        Assert.Empty(Assert.IsType<ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Success>(await new ColesProductProvider(empty).SearchAsync(Palmolive, null, default)).Value);
+        Assert.Equal(2, empty.Queries.Count);
+    }
     [Fact]
     public async Task Product_and_search_use_extension_queue_only()
     {
@@ -50,6 +79,8 @@ public class ColesProductProviderTests
     private sealed class Queue : IColesExtensionQueue
     {
         public int Products; public int Searches; public bool Pending;
+        public bool EmptyFirst, AlwaysEmpty, SearchPending, SearchFailure;
+        public List<string> Queries { get; } = [];
         public async Task<ProviderResult<ExtractedShopProduct>> ProductAsync(Uri url, CancellationToken token)
         {
             Products++; if (Pending) throw new ColesWorkPendingException();
@@ -58,6 +89,10 @@ public class ColesProductProviderTests
         public async Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchAsync(string query, CancellationToken token)
         {
             Searches++;
+            Queries.Add(query);
+            if (SearchPending) throw new ColesWorkPendingException();
+            if (SearchFailure) return new ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Failure(new(ProviderFailureKind.AccessRestricted, "restricted", "Restricted"));
+            if (AlwaysEmpty || EmptyFirst && Searches == 1) return new ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Success([]);
             var result = await new ColesProductParser().ParseAsync(new(ColesProductParserTests.Url, ColesProductParserTests.Fixture, ColesProductParserTests.Checked), token);
             return new ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Success([new(((ProviderResult<ExtractedShopProduct>.Success)result).Value)]);
         }

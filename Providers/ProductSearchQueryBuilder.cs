@@ -7,6 +7,23 @@ namespace myshoppinglist_api.Providers;
 
 public static class ProductSearchQueryBuilder
 {
+    public static IReadOnlyList<string> BuildColesSearches(ProductIdentity product)
+    {
+        var full = Build(product);
+        if (full is null) return [];
+        if (string.IsNullOrWhiteSpace(product.Brand)) return [full];
+        // Broaden discovery only; matching still uses the original identity, barcode and pack.
+        var descriptive = new HashSet<string>(["body", "wash", "shower", "gel", "soft", "drink", "bottle", "frozen", "potato", "chips"]);
+        var protectedWords = (Build(new ProductIdentity { Name = product.Brand, Variant = product.Variant }) ?? "")
+            .Split(' ').ToHashSet(StringComparer.Ordinal);
+        var brandWords = (Build(new ProductIdentity { Name = product.Brand }) ?? "").Split(' ').ToHashSet(StringComparer.Ordinal);
+        var words = full.Split(' ');
+        var retained = words.Where(w => !descriptive.Contains(w) || protectedWords.Contains(w)).ToArray();
+        var distinctive = retained.Count(w => !brandWords.Contains(w) && !w.Any(char.IsDigit));
+        var shorter = string.Join(' ', retained);
+        return shorter != full && distinctive >= 2 ? [full, shorter] : [full];
+    }
+
     public static string? Build(ProductIdentity product)
     {
         if (string.IsNullOrWhiteSpace(product.Name) || product.Name.Length > 500) return null;
