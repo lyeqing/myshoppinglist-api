@@ -94,6 +94,7 @@ try
     builder.Services.AddScoped<ProductImportSubmissionService>();
     builder.Services.AddScoped<ProductImportStatusService>();
     builder.Services.AddScoped<ShoppingListService>();
+    builder.Services.AddScoped<InStoreShoppingService>();
     builder.Services.AddSingleton<ProductNormalisationService>();
     builder.Services.AddSingleton<ProductMatchingService>();
     builder.Services.AddScoped<ProductService>();

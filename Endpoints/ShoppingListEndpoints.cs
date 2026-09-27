@@ -9,6 +9,17 @@ public static class ShoppingListEndpoints
 {
     public static void MapShoppingListEndpoints(this IEndpointRouteBuilder routes)
     {
+        routes.MapGet("/api/shopping-lists", async (HttpContext context, InStoreShoppingService service, CancellationToken token) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            return Results.Ok(await service.ListsAsync(AccountId(context), token));
+        }).RequireAuthorization().WithTags("Shopping lists");
+        routes.MapGet("/api/shopping-lists/{listId:long}/in-store", async (long listId, HttpContext context, InStoreShoppingService service, CancellationToken token) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            var detail = await service.DetailAsync(AccountId(context), listId, token);
+            return detail is null ? Results.Problem(statusCode: 404, title: "The shopping list was not found.") : Results.Ok(detail);
+        }).RequireAuthorization().WithTags("Shopping lists");
         routes.MapGet("/api/shopping-lists/{listId:long}/items", ReadAsync).RequireAuthorization()
             .WithTags("Shopping lists").Produces<ShoppingListItemPage>().ProducesProblem(400).ProducesProblem(401).ProducesProblem(404);
         routes.MapPut("/api/shopping-lists/{listId:long}/items/{itemId:long}", UpdateAsync).RequireAuthorization()
