@@ -13,35 +13,12 @@ namespace myshoppinglist_api.Tests;
 
 public class RetailerSearchBrowserTests(ITestOutputHelper output)
 {
-    [Theory]
-    [InlineData("https://www.coles.com.au/product/coca-cola-1.25l-123011", true)]
-    [InlineData("https://coles.com.au/product/123011", true)]
-    [InlineData("https://www.coles.com.au/product/another-999", false)]
-    [InlineData("https://www.coles.com.au/search/products", false)]
-    [InlineData("https://www.coles.com.au/account", false)]
-    [InlineData("https://www.coles.com.au/cart", false)]
-    [InlineData("https://www.coles.com.au.evil.example/product/123011", false)]
-    [InlineData("http://www.coles.com.au/product/123011", false)]
-    [InlineData("https://www.coles.com.au:444/product/123011", false)]
-    [InlineData("https://user@www.coles.com.au/product/123011", false)]
-    public void Product_navigation_is_opt_in_and_identity_bound(string url, bool allowed)
-    {
-        var product = new Uri("https://www.coles.com.au/product/123011");
-        Assert.Equal(allowed, RetailerBrowserNetworkGuard.IsAllowedColesProductRequest(product, url, "GET", "document", true));
-        Assert.False(RetailerBrowserNetworkGuard.IsAllowedColesProductRequest(product, url, "POST", "document", true));
-        if (!url.EndsWith("/search/products"))
-            Assert.False(RetailerBrowserNetworkGuard.IsAllowedRequest("coles", url, "GET", "document", true));
-        Assert.True(RetailerBrowserNetworkGuard.IsAllowedRequest("coles", "https://www.coles.com.au/search/products", "GET", "document", true));
-        Assert.True(RetailerBrowserNetworkGuard.IsAllowedRequest("woolworths", "https://www.woolworths.com.au/shop/search/products", "GET", "document", true));
-        Assert.False(RetailerBrowserNetworkGuard.IsAllowedColesProductRequest(product, "https://localhost/script.js", "GET", "script", false));
-    }
-
     [Fact]
     public async Task Disabled_invalid_and_cancelled_searches_never_launch_a_browser()
     {
         using var disabled = Browser(new() { Enabled = false });
         Assert.Equal(ProviderFailureKind.NotSupported, Assert.IsType<ProviderResult<RetailerPage>.Failure>(
-            await disabled.ReadAsync("coles", "drink", CancellationToken.None)).Error.Kind);
+            await disabled.ReadAsync("woolworths", "drink", CancellationToken.None)).Error.Kind);
         using var browser = Browser(new());
         Assert.Equal(ProviderFailureKind.InvalidProduct, Assert.IsType<ProviderResult<RetailerPage>.Failure>(
             await browser.ReadAsync("evil", "drink", CancellationToken.None)).Error.Kind);
@@ -49,7 +26,6 @@ public class RetailerSearchBrowserTests(ITestOutputHelper output)
     }
 
     [LocalSearchBrowserTheory]
-    [InlineData("coles")]
     [InlineData("woolworths")]
     public async Task Controlled_browser_reads_rendered_and_shadow_dom_links_without_external_network(string shop)
     {
@@ -79,19 +55,19 @@ public class RetailerSearchBrowserTests(ITestOutputHelper output)
         var html = scenario switch
         {
             "challenge" => "<iframe src='/_Incapsula_Resource'></iframe>",
-            "empty" => "<h1>No results for &quot;coca-cola&quot;</h1>",
+            "empty" => "<h1>No results found for &quot;coca-cola&quot;</h1>",
             _ => "<p>Loading...</p>"
         };
-        await WithControlledPage("coles", html, async (service, page, url) =>
+        await WithControlledPage("woolworths", html, async (service, page, url) =>
         {
             if (scenario == "loading")
-            { await Assert.ThrowsAsync<TimeoutException>(() => service.ReadPageAsync(page, "coles", url, 300)); return; }
-            var result = await service.ReadPageAsync(page, "coles", url, 5000);
+            { await Assert.ThrowsAsync<TimeoutException>(() => service.ReadPageAsync(page, "woolworths", url, 300)); return; }
+            var result = await service.ReadPageAsync(page, "woolworths", url, 5000);
             if (scenario == "challenge")
                 Assert.Equal(ProviderFailureKind.AccessRestricted, Assert.IsType<ProviderResult<RetailerPage>.Failure>(result).Error.Kind);
             else
             {
-                var parsed = await new ColesSearchParser().ParseAsync(Assert.IsType<ProviderResult<RetailerPage>.Success>(result).Value,
+                var parsed = await new WoolworthsSearchParser().ParseAsync(Assert.IsType<ProviderResult<RetailerPage>.Success>(result).Value,
                     "coca-cola", 5, CancellationToken.None);
                 Assert.Empty(Assert.IsType<ProviderResult<IReadOnlyList<Uri>>.Success>(parsed).Value);
             }
@@ -126,7 +102,6 @@ public class RetailerSearchBrowserTests(ITestOutputHelper output)
     }
 
     [LiveRetailerSearchTheory]
-    [InlineData("coles")]
     [InlineData("woolworths")]
     public async Task Live_search_renders_verifiable_candidates_through_guarded_browser(string shop)
     {

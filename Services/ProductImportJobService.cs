@@ -12,6 +12,17 @@ public sealed class ProductImportJobService(MyShoppingListDbContext db, IOptions
 {
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
 
+    public Task<int> DeferForExtensionAsync(ProductImportClaim claim, CancellationToken token)
+    {
+        var now = Now;
+        return Owned(claim, now).ExecuteUpdateAsync(s => s.SetProperty(j => j.Status, ProductImportJobStatus.Queued)
+            .SetProperty(j => j.ProgressStage, ProductImportProgressStage.WaitingForExtension)
+            .SetProperty(j => j.AttemptCount, j => j.AttemptCount > 0 ? j.AttemptCount - 1 : 0)
+            .SetProperty(j => j.ClaimToken, (Guid?)null).SetProperty(j => j.LeaseExpiresDate, (DateTime?)null)
+            .SetProperty(j => j.NextAttemptDate, now.AddSeconds(30)).SetProperty(j => j.LastActivityDate, now)
+            .SetProperty(j => j.ErrorCode, "waiting_for_extension"), token);
+    }
+
     public async Task<ProductImportClaim?> ClaimNextAsync(CancellationToken token)
     {
         // A single statement locks and transitions one row. It never holds a lock during HTTP work.

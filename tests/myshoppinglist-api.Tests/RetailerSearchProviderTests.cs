@@ -12,7 +12,6 @@ namespace myshoppinglist_api.Tests;
 public class RetailerSearchProviderTests
 {
     [Theory]
-    [InlineData("coles")]
     [InlineData("woolworths")]
     public async Task Candidates_are_verified_using_product_pages_and_are_not_claimed_to_be_matches(string shop)
     {
@@ -27,7 +26,6 @@ public class RetailerSearchProviderTests
         Assert.Single(handler.Requests); Assert.Equal(url, handler.Requests[0]); Assert.Equal(1, browser.Calls);
     }
     [Theory]
-    [InlineData("coles")]
     [InlineData("woolworths")]
     public async Task Restrictions_and_candidate_read_failures_are_not_reported_as_no_matches(string shop)
     {
@@ -42,7 +40,6 @@ public class RetailerSearchProviderTests
         Assert.Single(handler.Requests);
     }
     [Theory]
-    [InlineData("coles")]
     [InlineData("woolworths")]
     public async Task Unsupported_location_invalid_query_and_cancelled_calls_never_start_browser(string shop)
     {
@@ -54,7 +51,6 @@ public class RetailerSearchProviderTests
         Assert.Equal(0, browser.Calls);
     }
     [Theory]
-    [InlineData("coles")]
     [InlineData("woolworths")]
     public async Task Candidate_count_and_simultaneous_reads_are_bounded(string shop)
     {
@@ -75,8 +71,7 @@ public class RetailerSearchProviderTests
     private static IShopProductProvider Provider(string shop, HttpMessageHandler handler, IRetailerSearchBrowser browser)
     {
         var http = RetailerHttpClientTests.Client(handler); var validator = new myshoppinglist_api.Security.ProductUrlValidator(new());
-        return shop == "coles" ? new ColesProductProvider(http, new(), validator, NullLogger<ColesProductProvider>.Instance, browser)
-            : new WoolworthsProductProvider(http, new(), validator, NullLogger<WoolworthsProductProvider>.Instance, browser);
+        return new WoolworthsProductProvider(http, new(), validator, NullLogger<WoolworthsProductProvider>.Instance, browser);
     }
     private sealed class FakeSearchBrowser(string shop, Uri productUrl) : IRetailerSearchBrowser
     {

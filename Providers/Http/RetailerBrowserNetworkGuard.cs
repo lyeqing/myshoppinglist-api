@@ -2,7 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using myshoppinglist_api.Configuration;
-using myshoppinglist_api.Providers.Coles;
+
 using myshoppinglist_api.Security;
 
 namespace myshoppinglist_api.Providers.Http;
@@ -38,8 +38,6 @@ public sealed class RetailerBrowserNetworkGuard : IAsyncDisposable
 
     public static bool IsAllowedHost(string shop, string host) => shop switch
     {
-        "coles" => host.Equals("www.coles.com.au", StringComparison.OrdinalIgnoreCase)
-            || host.Equals("coles.com.au", StringComparison.OrdinalIgnoreCase),
         "woolworths" => host.Equals("www.woolworths.com.au", StringComparison.OrdinalIgnoreCase)
             || host.Equals("woolworths.com.au", StringComparison.OrdinalIgnoreCase)
             || host.Equals("cdn0.woolworths.media", StringComparison.OrdinalIgnoreCase),
@@ -60,19 +58,10 @@ public sealed class RetailerBrowserNetworkGuard : IAsyncDisposable
             && resourceType is "xhr" or "fetch";
     }
 
-    public static bool IsAllowedColesProductRequest(Uri product, string url, string method, string resourceType, bool navigation)
-    {
-        if (ColesProductParser.ProductCode(product) is not { } code) return false;
-        if (!navigation) return IsAllowedRequest("coles", url, method, resourceType, false);
-        return method == "GET" && url.Length <= 8192 && !url.Contains('\\')
-            && Uri.TryCreate(url, UriKind.Absolute, out var destination)
-            && ColesProductParser.ProductCode(destination) == code;
-    }
-
     public static bool IsSearchPage(string shop, Uri uri) => uri.Scheme == "https" && uri.Port == 443
         && uri.UserInfo.Length == 0 && uri.IdnHost == $"www.{shop}.com.au"
-        && uri.AbsolutePath == (shop == "coles" ? "/search/products" : "/shop/search/products")
-        && shop is "coles" or "woolworths";
+        && (shop == "woolworths" && uri.AbsolutePath == "/shop/search/products"
+            || shop == "coles" && uri.AbsolutePath == "/search/products");
 
     public async ValueTask<Stream> ConnectPublicAsync(string host, int port, CancellationToken token)
     {

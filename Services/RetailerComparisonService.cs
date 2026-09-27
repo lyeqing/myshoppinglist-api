@@ -22,6 +22,8 @@ public sealed class RetailerComparisonService(IServiceScopeFactory scopes, IOpti
         if (job?.ProductId is null || job.ShoppingListProductId is null) return;
         var shopIds = await db.Shops.Where(s => s.IsActive && s.Id != job.SourceShopId).OrderBy(s => s.Id).Select(s => s.Id).ToListAsync(token);
         var retry = false;
+        var extensionPending = false;
+        ColesWorkFailedException? extensionFailure = null;
         TimeSpan? retryAfter = null;
         // Sequential bounded checks; each retailer gets an independent context, provider and transaction scope.
         foreach (var shopId in shopIds)
@@ -35,6 +37,18 @@ public sealed class RetailerComparisonService(IServiceScopeFactory scopes, IOpti
             ProviderFailure? failure;
             try { failure = await CheckAsync(services, store, claim, shopId, token); }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (ColesWorkPendingException)
+            {
+                extensionPending = true;
+                await store.SaveStatusAsync(claim, shopId, RetailerLookupStatus.Pending, "waiting_for_extension", token);
+                continue;
+            }
+            catch (ColesWorkFailedException error)
+            {
+                extensionFailure = error;
+                await store.SaveStatusAsync(claim, shopId, RetailerLookupStatus.CheckFailed, "extension_task_failed_" + error.TaskId, token);
+                continue;
+            }
             catch (Exception exception)
             {
                 logger.LogWarning("Comparison failed for job {JobId}, shop {ShopId}: {ExceptionType}", claim.JobId, shopId, exception.GetType().Name);
@@ -48,6 +62,8 @@ public sealed class RetailerComparisonService(IServiceScopeFactory scopes, IOpti
                 if (failure.RetryAfter is { } delay && (retryAfter is null || delay > retryAfter)) retryAfter = delay;
             }
         }
+        if (extensionFailure is not null) throw extensionFailure;
+        if (extensionPending) throw new ColesWorkPendingException();
         if (retry && await jobs.HasAccessAsync(claim, token))
             await jobs.FailAsync(claim, "comparison_retry_pending", true, token, retryAfter);
         else await jobs.CompleteSourceStageAsync(claim, token);

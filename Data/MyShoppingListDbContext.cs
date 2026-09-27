@@ -5,6 +5,7 @@ namespace myshoppinglist_api.Data;
 
 public class MyShoppingListDbContext(DbContextOptions<MyShoppingListDbContext> options) : DbContext(options)
 {
+    public DbSet<ColesExtensionTask> ColesExtensionTasks => Set<ColesExtensionTask>();
     public DbSet<UserAccount> UserAccounts => Set<UserAccount>();
     public DbSet<UserSession> UserSessions => Set<UserSession>();
     public DbSet<ShoppingList> ShoppingLists => Set<ShoppingList>();
@@ -24,4 +25,3 @@ public class MyShoppingListDbContext(DbContextOptions<MyShoppingListDbContext> o
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(MyShoppingListDbContext).Assembly);
     }
 }
-

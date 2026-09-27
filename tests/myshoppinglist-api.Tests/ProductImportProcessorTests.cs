@@ -18,6 +18,20 @@ namespace myshoppinglist_api.Tests;
 public class ProductImportProcessorTests
 {
     [PostgreSqlFact]
+    public async Task Extension_waiting_releases_import_claim_without_consuming_attempts()
+    {
+        await using var fixture = await ImportFixture.CreateAsync();
+        var provider = new StubSource(fixture.Scope.Source) { BeforeReturn = _ => throw new ColesWorkPendingException() };
+        await ProcessAsync(fixture, provider);
+        var job = await fixture.ReadAsync();
+        Assert.Equal(ProductImportJobStatus.Queued, job.Status);
+        Assert.Equal(ProductImportProgressStage.WaitingForExtension, job.ProgressStage);
+        Assert.Equal(0, job.AttemptCount); Assert.Null(job.ClaimToken); Assert.Null(job.LeaseExpiresDate);
+        Assert.Null(job.ProductId); Assert.Equal("waiting_for_extension", job.ErrorCode);
+        Assert.NotNull(job.NextAttemptDate);
+    }
+
+    [PostgreSqlFact]
     public async Task Source_import_runs_other_retailer_comparison_before_completion()
     {
         await using var fixture = await ImportFixture.CreateAsync();

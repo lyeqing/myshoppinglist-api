@@ -12,5 +12,5 @@ public enum ProductImportProgressStage
     SavingPrices = 7,
     Completed = 8,
     Failed = 9,
+    WaitingForExtension = 10,
 }
-

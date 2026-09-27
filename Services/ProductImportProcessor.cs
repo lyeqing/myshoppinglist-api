@@ -8,9 +8,15 @@ namespace myshoppinglist_api.Services;
 
 public sealed class ProductImportProcessor(ProductImportJobService jobs, SourceProductPersistenceService persistence,
     RetailerProviderRegistry providers, ProductUrlValidator urls, ILogger<ProductImportProcessor> logger,
-    RetailerComparisonService comparisons)
+    RetailerComparisonService comparisons, SourceProductCacheService? cache = null)
 {
     public async Task ProcessAsync(ProductImportClaim claim, CancellationToken token)
+    {
+        try { await ProcessCoreAsync(claim, token); }
+        catch (ColesWorkPendingException) { await jobs.DeferForExtensionAsync(claim, token); }
+        catch (ColesWorkFailedException error) { await jobs.FailAsync(claim, "extension_task_failed_" + error.TaskId, false, token); }
+    }
+    private async Task ProcessCoreAsync(ProductImportClaim claim, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         var job = await jobs.ReadAsync(claim, token);
@@ -29,7 +35,9 @@ public sealed class ProductImportProcessor(ProductImportJobService jobs, SourceP
         if (!await jobs.ProgressAsync(claim, ProductImportProgressStage.ReadingSourceProduct, token)) return;
         logger.LogInformation("Reading source {SourceShop} for import job {ProductImportJobId}, list {ShoppingListId}",
             provider.ShopCode, claim.JobId, claim.ShoppingListId);
-        var source = await provider.GetProductFromUrlAsync(validated.ProductUrl!, token);
+        var cached = cache is null ? null : await cache.FindAsync(provider.ShopCode, validated.ProductUrl!, token);
+        var source = cached is not null ? new ProviderResult<ExtractedShopProduct>.Success(cached)
+            : await provider.GetProductFromUrlAsync(validated.ProductUrl!, token);
         token.ThrowIfCancellationRequested();
         if (source is ProviderResult<ExtractedShopProduct>.Failure failure)
         {
@@ -38,7 +46,7 @@ public sealed class ProductImportProcessor(ProductImportJobService jobs, SourceP
         }
         if (!await jobs.ProgressAsync(claim, ProductImportProgressStage.SavingSourceProduct, token)) return;
         var result = await persistence.SaveAsync(claim.JobId, claim.UserAccountId, claim.Token,
-            ((ProviderResult<ExtractedShopProduct>.Success)source).Value, token);
+            ((ProviderResult<ExtractedShopProduct>.Success)source).Value, token, isFromCache: cached is not null);
         if (result.Status == ProductPersistenceStatus.Success)
             await comparisons.RunAsync(claim, token);
         else if (result.Status is not (ProductPersistenceStatus.LostClaim or ProductPersistenceStatus.NotFound))

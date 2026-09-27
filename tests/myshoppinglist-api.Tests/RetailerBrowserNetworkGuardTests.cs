@@ -33,20 +33,20 @@ public class RetailerBrowserNetworkGuardTests
     public async Task Mixed_public_private_dns_answers_never_connect(string privateAddress)
     {
         var connections = 0;
-        await using var guard = new RetailerBrowserNetworkGuard("coles", new(), CancellationToken.None,
+        await using var guard = new RetailerBrowserNetworkGuard("woolworths", new(), CancellationToken.None,
             (_, _) => Task.FromResult(new[] { IPAddress.Parse("8.8.8.8"), IPAddress.Parse(privateAddress) }),
             (_, _) => { connections++; return ValueTask.FromResult<Stream>(new MemoryStream()); });
-        await Assert.ThrowsAsync<UnsafeRetailerDestinationException>(async () => await guard.ConnectPublicAsync("www.coles.com.au", 443, CancellationToken.None));
+        await Assert.ThrowsAsync<UnsafeRetailerDestinationException>(async () => await guard.ConnectPublicAsync("www.woolworths.com.au", 443, CancellationToken.None));
         Assert.Equal(0, connections);
     }
     [Fact]
     public async Task Numeric_connection_is_pinned_to_the_single_validated_lookup()
     {
         var lookups = 0;
-        await using var guard = new RetailerBrowserNetworkGuard("coles", new(), CancellationToken.None,
+        await using var guard = new RetailerBrowserNetworkGuard("woolworths", new(), CancellationToken.None,
             (_, _) => { lookups++; return Task.FromResult(new[] { IPAddress.Parse(lookups == 1 ? "8.8.8.8" : "127.0.0.1") }); },
             (endpoint, _) => { Assert.Equal(IPAddress.Parse("8.8.8.8"), endpoint.Address); return ValueTask.FromResult<Stream>(new MemoryStream()); });
-        await using var connection = await guard.ConnectPublicAsync("www.coles.com.au", 443, CancellationToken.None);
+        await using var connection = await guard.ConnectPublicAsync("www.woolworths.com.au", 443, CancellationToken.None);
         Assert.Equal(1, lookups);
         await Assert.ThrowsAsync<UnsafeRetailerDestinationException>(async () => await guard.ConnectPublicAsync("evil.example", 443, CancellationToken.None));
         Assert.Equal(1, lookups);
@@ -54,7 +54,7 @@ public class RetailerBrowserNetworkGuardTests
     [Fact]
     public async Task Socks_proxy_rejects_literal_ip_and_udp_before_any_connection()
     {
-        await using var guard = new RetailerBrowserNetworkGuard("coles", new(), CancellationToken.None,
+        await using var guard = new RetailerBrowserNetworkGuard("woolworths", new(), CancellationToken.None,
             (_, _) => throw new InvalidOperationException("Must not resolve"));
         foreach (var request in new[] { new byte[] { 5, 1, 0, 1 }, new byte[] { 5, 3, 0, 3 } })
         {
@@ -69,14 +69,14 @@ public class RetailerBrowserNetworkGuardTests
     [Fact]
     public async Task Transfer_budget_closes_the_tunnel_instead_of_allowing_unbounded_data()
     {
-        await using var guard = new RetailerBrowserNetworkGuard("coles", new() { MaximumTransferBytes = 128 }, CancellationToken.None,
+        await using var guard = new RetailerBrowserNetworkGuard("woolworths", new() { MaximumTransferBytes = 128 }, CancellationToken.None,
             (_, _) => Task.FromResult(new[] { IPAddress.Parse("8.8.8.8") }),
             (_, _) => ValueTask.FromResult<Stream>(new MemoryStream(new byte[1024])));
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         using var client = new TcpClient(); await client.ConnectAsync(IPAddress.Loopback, new Uri(guard.ProxyUrl).Port, timeout.Token);
         var stream = client.GetStream(); await stream.WriteAsync(new byte[] { 5, 1, 0 }, timeout.Token);
         var greeting = new byte[2]; await stream.ReadExactlyAsync(greeting, timeout.Token);
-        var host = Encoding.ASCII.GetBytes("www.coles.com.au");
+        var host = Encoding.ASCII.GetBytes("www.woolworths.com.au");
         var request = new byte[] { 5, 1, 0, 3, (byte)host.Length }.Concat(host).Concat(new byte[] { 1, 187 }).ToArray();
         await stream.WriteAsync(request, timeout.Token);
         var reply = new byte[10]; await stream.ReadExactlyAsync(reply, timeout.Token); Assert.Equal(0, reply[1]);
@@ -87,7 +87,7 @@ public class RetailerBrowserNetworkGuardTests
     [Fact]
     public async Task Disposing_cancels_idle_proxy_handshakes_and_closes_listener()
     {
-        var guard = new RetailerBrowserNetworkGuard("coles", new(), CancellationToken.None);
+        var guard = new RetailerBrowserNetworkGuard("woolworths", new(), CancellationToken.None);
         using var client = new TcpClient(); var port = new Uri(guard.ProxyUrl).Port;
         await client.ConnectAsync(IPAddress.Loopback, port);
         await client.GetStream().WriteAsync(new byte[] { 5, 1, 0 });

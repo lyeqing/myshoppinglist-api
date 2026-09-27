@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using myshoppinglist_api.Data;
@@ -11,9 +12,11 @@ using myshoppinglist_api.Data;
 namespace myshoppinglist_api.Data.Migrations
 {
     [DbContext(typeof(MyShoppingListDbContext))]
-    partial class MyShoppingListDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260926000100_AddColesExtensionTasks")]
+    partial class AddColesExtensionTasks
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1178,3 +1181,4 @@ namespace myshoppinglist_api.Data.Migrations
         }
     }
 }
+

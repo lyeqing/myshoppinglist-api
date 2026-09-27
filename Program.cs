@@ -30,6 +30,11 @@ try
     builder.Services.AddSingleton(new RetailerCatalog());
     builder.Services.AddSingleton<ProductUrlValidator>();
     builder.Services.AddSingleton(TimeProvider.System);
+    builder.Services.AddSingleton<CatalogueFreshnessService>();
+    builder.Services.AddScoped<SourceProductCacheService>();
+    builder.Services.AddScoped<ColesExtensionTaskService>();
+    builder.Services.AddScoped<IColesExtensionQueue>(s => s.GetRequiredService<ColesExtensionTaskService>());
+    builder.Services.AddOptions<ColesExtensionOptions>().BindConfiguration(ColesExtensionOptions.SectionName);
     builder.Services.AddOptions<RetailerSearchOptions>().BindConfiguration(RetailerSearchOptions.SectionName)
         .ValidateDataAnnotations().ValidateOnStart();
     builder.Services.AddSingleton<IRetailerSearchBrowser, RetailerSearchBrowser>();
@@ -37,8 +42,11 @@ try
     builder.Services.AddScoped<TrialSessionService>();
     builder.Services.AddScoped<AccountAuthService>();
     builder.Services.AddAuthentication(SessionTokenAuthenticationHandler.SchemeName)
-        .AddScheme<AuthenticationSchemeOptions, SessionTokenAuthenticationHandler>(SessionTokenAuthenticationHandler.SchemeName, _ => { });
+        .AddScheme<AuthenticationSchemeOptions, SessionTokenAuthenticationHandler>(SessionTokenAuthenticationHandler.SchemeName, _ => { })
+        .AddScheme<AuthenticationSchemeOptions, ColesWorkerAuthenticationHandler>(ColesWorkerAuthenticationHandler.SchemeName, _ => { });
     builder.Services.AddAuthorization();
+    builder.Services.AddAuthorization(o => o.AddPolicy("ColesWorkerOnly", p => p
+        .AddAuthenticationSchemes(ColesWorkerAuthenticationHandler.SchemeName).RequireAuthenticatedUser().RequireClaim("coles_worker", "true")));
     builder.Services.AddRateLimiter(_ => { });
     builder.Services.AddOptions<RateLimiterOptions>().Configure<IOptions<AuthOptions>>((limits, auth) =>
     {
@@ -140,6 +148,7 @@ try
     app.UseMiddleware<CookieRequestProtection>();
     app.UseRateLimiter();
     app.MapAuthEndpoints();
+    app.MapColesExtensionEndpoints();
     app.MapProductImportEndpoints();
     app.MapShoppingListEndpoints();
     app.MapGet("/", () => "MyShoppingList API").ExcludeFromDescription();

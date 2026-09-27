@@ -16,6 +16,20 @@ namespace myshoppinglist_api.Tests;
 public class RetailerComparisonTests
 {
     [PostgreSqlFact]
+    public async Task Extension_wait_does_not_leave_later_retailers_unchecked()
+    {
+        await using var f = await ImportFixture.CreateAsync();
+        var claim = await PrepareAsync(f);
+        var provider = new ComparisonProvider(Other(f)) { BeforeSearch = () => throw new ColesWorkPendingException() };
+        await Assert.ThrowsAsync<ColesWorkPendingException>(() => RunAsync(f, claim, provider));
+        Assert.Equal(RetailerLookupStatus.Pending, (await ResultAsync(f)).Status);
+        var later = await f.Scope.Db.ProductImportRetailerResults.AsNoTracking()
+            .Where(r => r.ProductImportJobId == claim.JobId && r.ShopId > 2).ToListAsync();
+        Assert.Equal(3, later.Count);
+        Assert.All(later, r => Assert.Equal(RetailerLookupStatus.NotSupported, r.Status));
+    }
+
+    [PostgreSqlFact]
     public async Task Restart_after_comparison_commit_preserves_result_without_fetching_again()
     {
         await using var f = await ImportFixture.CreateAsync();
@@ -99,7 +113,7 @@ public class RetailerComparisonTests
         var source = Other(f);
         await SeedMappingAsync(f, claim, source);
         await f.Scope.Db.ShopProductPrices.Where(p => p.ShopProduct.ShopId == 2 && p.ShopProduct.ShopProductCode == f.Scope.Code)
-            .ExecuteUpdateAsync(s => s.SetProperty(p => p.CheckedDate, f.Scope.Clock.Now.UtcDateTime.AddHours(-7)));
+            .ExecuteUpdateAsync(s => s.SetProperty(p => p.CheckedDate, new CatalogueFreshnessService().Cutoff(f.Scope.Clock.Now).AddSeconds(-1)));
         var provider = new ComparisonProvider(source with { CheckedDate = f.Scope.Clock.Now,
             Offer = new ProviderResult<ShopProductOffer>.Success(((ProviderResult<ShopProductOffer>.Success)source.Offer!).Value with
             { Price = 18, CheckedDate = f.Scope.Clock.Now }) });

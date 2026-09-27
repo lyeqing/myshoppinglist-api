@@ -13,10 +13,10 @@ public class DatabaseModelTests
         .UseNpgsql("Host=localhost;Database=model_only").Options);
 
     [Fact]
-    public void Model_contains_only_the_twelve_application_entities()
+    public void Model_contains_only_the_thirteen_application_entities()
     {
         using var db = ModelContext();
-        Assert.Equal(12, db.Model.GetEntityTypes().Count());
+        Assert.Equal(13, db.Model.GetEntityTypes().Count());
         Assert.DoesNotContain(db.Model.GetEntityTypes(), e => e.Name.Contains("Company"));
         Assert.All(db.Model.GetEntityTypes().SelectMany(e => e.GetProperties()), p => Assert.False(p.IsShadowProperty()));
     }

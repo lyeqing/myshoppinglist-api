@@ -12,12 +12,12 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
     ProductUrlValidator urls, TimeProvider clock, ILogger<SourceProductPersistenceService> logger)
 {
     public async Task<ProductPersistenceResult> SaveAsync(long jobId, long userAccountId, Guid claimToken,
-        ExtractedShopProduct source, CancellationToken token)
+        ExtractedShopProduct source, CancellationToken token, bool isFromCache = false)
     {
         token.ThrowIfCancellationRequested();
         if (db.ChangeTracker.Entries().Any())
             throw new InvalidOperationException("Source persistence requires a fresh or cleared DbContext with no unrelated tracked entities.");
-        if (!ValidSource(source)) return new(ProductPersistenceStatus.InvalidData, "invalid_source_product");
+        if (!ValidSource(source, urls, normalisation, clock)) return new(ProductPersistenceStatus.InvalidData, "invalid_source_product");
         var ownsTransaction = db.Database.CurrentTransaction is null;
         var transaction = db.Database.CurrentTransaction ?? await db.Database.BeginTransactionAsync(token);
         var savepoint = "source_" + Guid.NewGuid().ToString("N");
@@ -92,7 +92,7 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
             retailerResult.MatchConfidence = mapping.MatchConfidence;
             retailerResult.CheckedDate = source.CheckedDate.UtcDateTime;
             retailerResult.CompletedDate = now; retailerResult.UpdatedDate = now;
-            retailerResult.IsFromCache = false;
+            retailerResult.IsFromCache = isFromCache;
             if (source.Offer is ProviderResult<ShopProductOffer>.Failure failure)
             {
                 retailerResult.Status = failure.Error.Status;
@@ -149,7 +149,8 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
         return null;
     }
 
-    private bool ValidSource(ExtractedShopProduct source)
+    internal static bool ValidSource(ExtractedShopProduct source, ProductUrlValidator urls,
+        ProductNormalisationService normalisation, TimeProvider clock)
     {
         var identity = source.Identity;
         var url = urls.Validate(source.ProductUrl.OriginalString);

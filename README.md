@@ -340,3 +340,24 @@ Configuration under `Auth` (environment variables use `Auth__`):
 | `SignInWindowSeconds` | 900 | 1–86400 |
 
 This stage uses the existing database schema; no migration is required. Tests cover hashing, validation, concurrent registration/conversion, preservation of edited trial data, expiry rollback, session rotation, login, browser protection and rate limits. Frontend registration/login controls and gateway routes belong to Stage 8B. Email ownership verification, password reset/change and account recovery are not implemented in this stage.
+
+## Coles extension queue (current implementation)
+
+Coles source imports and comparisons now use the shared catalogue and the Chrome extension in `D:\pra\myshoppinglist\extensions\coles-worker`. The backend no longer fetches Coles product/search pages or starts a Coles browser. Woolworths retains its existing provider and guarded browser search. This section supersedes the earlier Coles transport and six-hour cache descriptions above.
+
+Freshness for Coles and Woolworths starts at the latest Wednesday 00:00 Australia/Adelaide, including daylight saving. Source imports consult exact active catalogue mappings first. Cache reuse requires current AUD anonymous observations, no expired/future promotion, and no future check timestamp. Other retailers retain the configured comparison freshness interval.
+
+`20260926000100_AddColesExtensionTasks` adds a durable queue with unique product/search keys. The server returns the full eligible waiting list and retained failures. Workers claim one task at a time with a three-minute lease. Successful product evidence is parsed and saved with the completion record in one transaction; only then does the task leave the waiting list. Search tasks produce at most five candidate URLs, each queued for product validation. Server matching rules select exact comparisons. Results are idempotent for the same claim and submission; stale claims cannot overwrite newer assignments.
+
+Unclaimed tasks do not consume attempts. Imports awaiting the extension release their job claims and resume after 30 seconds without using their normal retry budget. Other retailer comparisons continue before the import is deferred. Temporary read/network failures and lost leases have a maximum of three attempts; access restrictions/invalid extraction are terminal. Failed tasks remain available for explicit retry. Retrying resets the queue task and requeues associated failed/partial imports. Completed tasks are retained for idempotency and refreshed after the next catalogue boundary. New unavailable product observations remove older anonymous current-price rows while retaining price history.
+
+Configure a random secret of at least 32 characters through `ColesExtension__WorkerKey`; the default empty value disables worker access. This credential authorizes only worker endpoints, not account/list endpoints. Use the same key in the extension popup and choose Start worker. The extension uses `http://localhost:5392` and polls every 30 seconds. See the extension README for startup, reload and retry instructions. Do not store the worker key in source control. Remote workers require an HTTPS deployment configuration in a later change.
+
+Worker routes (Bearer worker key required; responses are not cached):
+
+- `GET /api/coles-worker/tasks`: full eligible waiting list plus failed tasks.
+- `POST /api/coles-worker/tasks/{id}/claim`: `{ "workerId": "stable-worker-id" }`; returns one task and claim token, or 409 if unavailable.
+- `POST /api/coles-worker/tasks/{id}/result`: worker ID, claim token, requested URL, success flag and structured evidence or bounded search links. Valid results return `{ "saved": true }`; stale/conflicting claims return 409 and invalid evidence returns 400.
+- `POST /api/coles-worker/tasks/{id}/retry`: explicitly retry a failed task.
+
+The extension persists outgoing submissions until acknowledged, reuses one owned tab and processes tasks sequentially. Chrome must remain running; sleeping/offline computers delay processing. It never uploads full HTML, cookies or account state. Browser-observed prices retain unknown store scope.

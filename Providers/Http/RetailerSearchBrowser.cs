@@ -23,7 +23,7 @@ public sealed class RetailerSearchBrowser(IOptions<RetailerSearchOptions> option
     {
         token.ThrowIfCancellationRequested();
         if (!options.Value.Enabled) return Fail(ProviderFailureKind.NotSupported, "search_disabled");
-        if (shopCode is not ("coles" or "woolworths") || string.IsNullOrWhiteSpace(query) || query.Length > 160)
+        if (shopCode != "woolworths" || string.IsNullOrWhiteSpace(query) || query.Length > 160)
             return Fail(ProviderFailureKind.InvalidProduct, "invalid_search");
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
         deadline.CancelAfter(TimeSpan.FromSeconds(options.Value.TimeoutSeconds));
@@ -103,10 +103,8 @@ public sealed class RetailerSearchBrowser(IOptions<RetailerSearchOptions> option
               const blocked = /access denied|request unsuccessful|verify you are human|robot or human|just a moment/i.test(text + document.title)
                 || !!document.querySelector('iframe[src*="_Incapsula_Resource"]');
               const empty = /no results found|no products found|we couldn't find any|we couldn’t find any/i.test(text)
-                || (shop === 'coles' && /no results for/i.test(text));
-              const results = shop === 'coles'
-                ? document.querySelector('.coles-targeting-search-content-container a.product__link[href]')
-                : Array.from(document.querySelectorAll('[data-testid="search-results-product-scrollable-content"] wc-product-tile'))
+                ;
+              const results = Array.from(document.querySelectorAll('[data-testid="search-results-product-scrollable-content"] wc-product-tile'))
                     .some(tile => tile.shadowRoot?.querySelector('a[href*="/shop/productdetails/"]'));
               return blocked || empty || !!results;
             }
@@ -123,12 +121,12 @@ public sealed class RetailerSearchBrowser(IOptions<RetailerSearchOptions> option
               const text = snapshot.createElement('p'); text.setAttribute('data-search-visible-text', '');
               text.textContent = (document.body?.innerText || '').slice(0, 50000); snapshot.body.append(text);
               const container = snapshot.createElement('section');
-              const selector = shop === 'coles' ? '.coles-targeting-search-content-container' : '[data-testid="search-results-product-scrollable-content"]';
-              if (shop === 'coles') container.className = 'coles-targeting-search-content-container';
-              else container.setAttribute('data-testid','search-results-product-scrollable-content');
+              const selector = '[data-testid="search-results-product-scrollable-content"]';
+
+              container.setAttribute('data-testid','search-results-product-scrollable-content');
               const source = document.querySelector(selector);
               if (source) {
-                const roots = shop === 'coles' ? [source] : Array.from(source.querySelectorAll('wc-product-tile')).map(t=>t.shadowRoot).filter(Boolean);
+                const roots = Array.from(source.querySelectorAll('wc-product-tile')).map(t=>t.shadowRoot).filter(Boolean);
                 for (const root of roots.slice(0,100)) {
                   for (const a of Array.from(root.querySelectorAll('a[href]')).slice(0,200)) {
                     const link = snapshot.createElement('a'); link.setAttribute('href', a.getAttribute('href'));

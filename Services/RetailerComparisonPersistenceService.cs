@@ -34,7 +34,9 @@ public sealed class RetailerComparisonPersistenceService(MyShoppingListDbContext
             var mapping = known[0];
             var observations = await db.ShopProductPrices.Where(p => p.ShopProductId == mapping.Id).ToListAsync(token);
             var now = clock.GetUtcNow().UtcDateTime;
-            var cutoff = now.AddHours(-options.Value.ComparisonFreshHours);
+            var shopCode = await db.Shops.Where(s => s.Id == shopId).Select(s => s.Code).SingleAsync(token);
+            var cutoff = shopCode is "coles" or "woolworths" ? new CatalogueFreshnessService().Cutoff(clock.GetUtcNow())
+                : now.AddHours(-options.Value.ComparisonFreshHours);
             // The status API exposes all observations for a mapping. Do not label a mixed stale/store cache fresh.
             if (observations.Count == 0 || observations.Any(p => p.Currency != "AUD" || p.ShopLocationId != null
                 || p.PriceScope is not (PriceScope.Unknown or PriceScope.Online or PriceScope.National)
