@@ -158,7 +158,11 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
         if (!submission.Ok)
         {
             var retryable = submission.ErrorCode is "read_timeout" or "browser_error" or "tab_closed" or "network_error";
-            task.ErrorCode = submission.ErrorCode is "retailer_access_restricted" ? "retailer_access_restricted" : retryable ? submission.ErrorCode : "extraction_failed";
+            task.ErrorCode = submission.ErrorCode is "retailer_access_restricted" or "invalid_product_evidence"
+                or "same_barcode_conflict" or "existing_mapping_conflict" or "ambiguous_canonical_product"
+                or "product_identity_conflict" or "invalid_product_link" or "invalid_search_result"
+                or "ambiguous_retailer_mapping" or "unverified_mapping" or "invalid_offer"
+                ? submission.ErrorCode : retryable ? submission.ErrorCode : "extraction_failed";
             task.Status = retryable && task.Attempts < 3 ? "Waiting" : "Failed";
             task.NextAttemptAt = Now.AddSeconds(30 * task.Attempts); task.LeaseExpiresAt = null;
         }

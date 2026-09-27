@@ -16,7 +16,7 @@ public sealed class ProductMatchingService(ProductNormalisationService normalisa
         var b = normalisation.Normalise(second);
         var variantA = Variant(a);
         var variantB = Variant(b);
-        if (Different(a.GTIN, b.GTIN) || Different(a.Brand, b.Brand) || Different(a.Variant, b.Variant)
+        if (Different(a.GTIN, b.GTIN) || !Same(a.GTIN, b.GTIN) && Different(a.Brand, b.Brand) || Different(a.Variant, b.Variant)
             || Different(variantA, variantB) || Different(a.ManufacturerPartNumber, b.ManufacturerPartNumber)
             || Different(a.ModelNumber, b.ModelNumber)
             || a.PackQuantity.HasValue && b.PackQuantity.HasValue && a.PackQuantity != b.PackQuantity

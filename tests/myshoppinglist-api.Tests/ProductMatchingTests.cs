@@ -15,6 +15,18 @@ public class ProductMatchingTests
     };
 
     [Fact]
+    public void Equal_valid_barcode_tolerates_retailer_brand_labels_but_not_pack_or_variant_conflicts()
+    {
+        var a = new ProductIdentity { Name = "Pickers Cheesy Garlic Bread Dippers 230g", Brand = "Pickers", GTIN = "8710438132533", PackSize = 230, PackUnit = "g" };
+        var b = a with { Brand = "McCain", GTIN = "08710438132533" };
+        Assert.Equal(MatchType.Exact, _matcher.Match(a, b).Type);
+        Assert.True(_matcher.Match(a, b with { PackSize = 500 }).Contradiction);
+        Assert.True(_matcher.Match(a with { PackQuantity = 1 }, b with { PackQuantity = 2 }).Contradiction);
+        Assert.True(_matcher.Match(a with { Variant = "original" }, b with { Variant = "cherry" }).Contradiction);
+        Assert.True(_matcher.Match(a with { GTIN = null }, b).Contradiction);
+    }
+
+    [Fact]
     public void Exact_gtin_receives_full_confidence()
     {
         var match = _matcher.Match(Coke, Coke with { GTIN = "09300675014779" });
@@ -37,7 +49,7 @@ public class ProductMatchingTests
         foreach (var candidate in new[]
         {
             Coke with { Variant = "No sugar" }, Coke with { PackQuantity = 30 },
-            Coke with { PackSize = 250 }, Coke with { Brand = "Other" }, Coke with { PackUnit = "g" }
+            Coke with { PackSize = 250 }, Coke with { PackUnit = "g" }
         }) Assert.True(_matcher.Match(Coke, candidate).Contradiction);
     }
 

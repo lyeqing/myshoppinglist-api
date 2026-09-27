@@ -131,6 +131,19 @@ public class ColesExtensionTaskTests
         Assert.NotNull(await f.Service.ClaimAsync(candidates[0].Id, "worker-test", default));
         Assert.Null(await f.Service.ClaimAsync(candidates[1].Id, "worker-test", default));
     }
+    [PostgreSqlFact]
+    public async Task Server_rejection_reason_is_preserved_for_worker_retry_display()
+    {
+        await using var f = new Fixture();
+        await Assert.ThrowsAsync<ColesWorkPendingException>(() => f.Service.ProductAsync(f.Url, default));
+        var task = await f.Db.ColesExtensionTasks.AsNoTracking().SingleAsync(t => t.Key == ColesExtensionTaskService.ProductKey(f.Url));
+        var claim = (await f.Service.ClaimAsync(task.Id, "worker-test", default))!;
+        Assert.Null(await f.Service.SubmitAsync(task.Id, new("worker-test", claim.ClaimToken, f.Url.AbsoluteUri, false, ErrorCode: "same_barcode_conflict"), default));
+        var failed = await f.Db.ColesExtensionTasks.AsNoTracking().SingleAsync(t => t.Id == task.Id);
+        Assert.Equal("Failed", failed.Status);
+        Assert.Equal("same_barcode_conflict", failed.ErrorCode);
+    }
+
     internal static ColesEvidence Evidence(string code, string name = "Queue Test Product 1L") => new(null,
         [JsonSerializer.Serialize(new { @type = "Product", sku = code, name, offers = new { price = 7, priceCurrency = "AUD", url = "https://www.coles.com.au/product/" + code } }).Replace("\"type\"", "\"@type\"")]);
     private sealed class Fixture : IAsyncDisposable

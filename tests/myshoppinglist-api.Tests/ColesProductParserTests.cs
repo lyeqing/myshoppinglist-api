@@ -9,6 +9,15 @@ namespace myshoppinglist_api.Tests;
 public class ColesProductParserTests
 {
     [Theory]
+    [InlineData("four'n-twenty")]
+    [InlineData("four%27n-twenty")]
+    public void Apostrophes_in_product_slugs_are_supported(string brand)
+    {
+        Assert.Equal("5112318", ColesProductParser.ProductCode(new($"https://www.coles.com.au/product/{brand}-frozen-meat-pies-4-pack-700g-5112318?pid=tracking")));
+        Assert.Null(ColesProductParser.ProductCode(new("https://www.coles.com.au/product/four%2Fn-twenty-5112318")));
+    }
+
+    [Theory]
     [InlineData("https://www.coles.com.au/product/coca-cola-classic-soft-drink-bottle-1.25l-123011", "123011")]
     [InlineData("https://www.coles.com.au/product/123011", "123011")]
     [InlineData("https://evil.example/product/coca-cola-1.25l-123011", null)]
