@@ -13,12 +13,24 @@ public class DatabaseModelTests
         .UseNpgsql("Host=localhost;Database=model_only").Options);
 
     [Fact]
-    public void Model_contains_only_the_thirteen_application_entities()
+    public void Model_contains_only_the_fourteen_application_entities()
     {
         using var db = ModelContext();
-        Assert.Equal(13, db.Model.GetEntityTypes().Count());
+        Assert.Equal(14, db.Model.GetEntityTypes().Count());
         Assert.DoesNotContain(db.Model.GetEntityTypes(), e => e.Name.Contains("Company"));
         Assert.All(db.Model.GetEntityTypes().SelectMany(e => e.GetProperties()), p => Assert.False(p.IsShadowProperty()));
+    }
+
+    [Fact]
+    public void User_extension_tasks_have_unique_requests_and_one_task_per_job()
+    {
+        using var db = ModelContext();
+        var entity = db.Model.FindEntityType(typeof(UserExtensionImportTask))!;
+        foreach (var property in new[] { "RequestId", "ProductImportJobId" })
+            Assert.True(Assert.Single(entity.GetIndexes(), i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { property })).IsUnique);
+        var relation = Assert.Single(entity.GetForeignKeys());
+        Assert.Equal(typeof(ProductImportJob), relation.PrincipalEntityType.ClrType);
+        Assert.Equal(DeleteBehavior.Cascade, relation.DeleteBehavior);
     }
 
     [Fact]

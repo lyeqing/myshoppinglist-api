@@ -14,6 +14,7 @@ using myshoppinglist_api.Contracts;
 using myshoppinglist_api.Data;
 using myshoppinglist_api.Security;
 using myshoppinglist_api.Services;
+using myshoppinglist_api.Models;
 
 namespace myshoppinglist_api.Tests;
 
@@ -21,6 +22,58 @@ namespace myshoppinglist_api.Tests;
 public class UserExtensionTests
 {
     private const string ExtensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    [PostgreSqlFact]
+    public async Task Browser_import_validates_evidence_owns_steps_reuses_cache_and_survives_duplicate_deliveries()
+    {
+        await using var f = await ListFixture.CreateAsync();
+        var code = Random.Shared.NextInt64(10000000000, 99999999999).ToString();
+        var sourceUrl = "https://www.coles.com.au/product/" + code;
+        var otherUrl = "https://www.woolworths.com.au/shop/productdetails/" + code;
+        await f.Scope.Db.ShopProducts.Where(m => m.ShopProductCode == f.Scope.Code).ExecuteUpdateAsync(s => s
+            .SetProperty(m => m.ShopProductCode, code).SetProperty(m => m.ProductUrl, sourceUrl));
+        ColesEvidence Evidence(string url) => new(null, [JsonSerializer.Serialize(new {
+            @type = "Product", sku = code, name = f.Scope.Source.Identity.Name,
+            gtin = f.Scope.Source.Identity.GTIN, brand = new { name = f.Scope.Source.Identity.Brand },
+            offers = new { price = 7, priceCurrency = "AUD", url }
+        }).Replace("\"type\"", "\"@type\"")]);
+        try
+        {
+            await using var app = new ExtensionFactory(f);
+            using var scope = app.Services.CreateScope();
+            var service = scope.ServiceProvider.GetRequiredService<UserExtensionImportService>();
+            var start = new UserExtensionStart(f.Scope.ListId, sourceUrl, 2, Evidence(sourceUrl), Guid.NewGuid());
+            var work = await service.StartAsync(f.Scope.UserId, start, default);
+            Assert.True(work.SourceSaved); Assert.Equal("search", work.Stage);
+            Assert.Equal(404, (await Assert.ThrowsAsync<UserImportException>(() => service.ReadAsync(-1, work.JobId, default))).Status);
+            var invalid = new UserExtensionResult(work.StepToken, work.Url!, true, Links: [sourceUrl]);
+            Assert.Equal(400, (await Assert.ThrowsAsync<UserImportException>(() => service.ResultAsync(f.Scope.UserId, work.JobId, invalid, default))).Status);
+            var search = new UserExtensionResult(work.StepToken, work.Url!, true, Links: [otherUrl]);
+            var product = await service.ResultAsync(f.Scope.UserId, work.JobId, search, default);
+            Assert.Equal("product", product.Stage);
+            Assert.Equal(product.StepToken, (await service.ResultAsync(f.Scope.UserId, work.JobId, search, default)).StepToken);
+            var done = await service.ResultAsync(f.Scope.UserId, work.JobId, new(product.StepToken, product.Url!, true, Evidence(otherUrl)), default);
+            Assert.Equal("Completed", done.Status);
+            Assert.Equal(work.JobId, (await service.StartAsync(f.Scope.UserId, start, default)).JobId);
+            var cached = await service.StartAsync(f.Scope.UserId, start with { RequestId = Guid.NewGuid() }, default);
+            Assert.Equal("Completed", cached.Status);
+            Assert.True(await f.Scope.Db.ProductImportRetailerResults.AnyAsync(r => r.ProductImportJobId == cached.JobId && r.IsFromCache));
+            Assert.Equal(1, await f.Scope.Db.ShoppingListProducts.CountAsync(i => i.ShoppingListId == f.Scope.ListId));
+
+            // Once comparison data becomes stale, the browser is asked again; failure preserves the source.
+            await f.Scope.Db.ShopProductPrices.Where(p => p.ShopProduct.ShopProductCode == code && p.ShopProduct.Shop.Code == "woolworths")
+                .ExecuteUpdateAsync(s => s.SetProperty(p => p.CheckedDate, f.Scope.Clock.Now.UtcDateTime.AddDays(-8)));
+            var stale = await service.StartAsync(f.Scope.UserId, start with { RequestId = Guid.NewGuid() }, default);
+            Assert.Equal("search", stale.Stage);
+            var failed = await service.ResultAsync(f.Scope.UserId, stale.JobId, new(stale.StepToken, stale.Url!, false), default);
+            Assert.True(failed.SourceSaved); Assert.Equal("Failed", failed.Status);
+            Assert.Equal("search", (await service.RetryAsync(f.Scope.UserId, stale.JobId, default)).Stage);
+        }
+        finally
+        {
+            await f.Scope.Db.ShopProducts.Where(m => m.ShopProductCode == code).ExecuteUpdateAsync(s => s.SetProperty(m => m.ShopProductCode, f.Scope.Code));
+        }
+    }
 
     [Fact]
     public async Task Extension_login_exception_requires_configured_id_and_does_not_weaken_website_protection()

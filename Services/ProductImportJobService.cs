@@ -42,6 +42,7 @@ public sealed class ProductImportJobService(MyShoppingListDbContext db, IOptions
             WITH candidate AS (
                 SELECT "Id" FROM "ProductImportJobs"
                 WHERE "Status" = 'Queued' AND ("NextAttemptDate" IS NULL OR "NextAttemptDate" <= {now})
+                  AND NOT EXISTS (SELECT 1 FROM "UserExtensionImportTasks" u WHERE u."ProductImportJobId" = "ProductImportJobs"."Id")
                   AND "AttemptCount" < {options.Value.MaxAttempts}
                 ORDER BY "CreatedDate", "Id" LIMIT 1 FOR UPDATE SKIP LOCKED
             )
@@ -70,13 +71,13 @@ public sealed class ProductImportJobService(MyShoppingListDbContext db, IOptions
                 ORDER BY "CreatedDate", "Id" LIMIT 100 FOR UPDATE SKIP LOCKED
             )
             UPDATE "ProductImportJobs" j SET
-                "Status" = CASE WHEN j."AttemptCount" < {options.Value.MaxAttempts} THEN 'Queued'
+                "Status" = CASE WHEN j."AttemptCount" < {options.Value.MaxAttempts} AND NOT EXISTS (SELECT 1 FROM "UserExtensionImportTasks" u WHERE u."ProductImportJobId" = j."Id") THEN 'Queued'
                     WHEN j."ShoppingListProductId" IS NOT NULL THEN 'Partial' ELSE 'Failed' END,
-                "ProgressStage" = CASE WHEN j."AttemptCount" < {options.Value.MaxAttempts} THEN 'Queued'
+                "ProgressStage" = CASE WHEN j."AttemptCount" < {options.Value.MaxAttempts} AND NOT EXISTS (SELECT 1 FROM "UserExtensionImportTasks" u WHERE u."ProductImportJobId" = j."Id") THEN 'Queued'
                     WHEN j."ShoppingListProductId" IS NOT NULL THEN 'Completed' ELSE 'Failed' END,
                 "ClaimToken" = NULL, "LeaseExpiresDate" = NULL, "LastActivityDate" = {now},
-                "NextAttemptDate" = CASE WHEN j."AttemptCount" < {options.Value.MaxAttempts} THEN {now} ELSE NULL END,
-                "CompletedDate" = CASE WHEN j."AttemptCount" < {options.Value.MaxAttempts} THEN NULL ELSE {now} END,
+                "NextAttemptDate" = CASE WHEN j."AttemptCount" < {options.Value.MaxAttempts} AND NOT EXISTS (SELECT 1 FROM "UserExtensionImportTasks" u WHERE u."ProductImportJobId" = j."Id") THEN {now} ELSE NULL END,
+                "CompletedDate" = CASE WHEN j."AttemptCount" < {options.Value.MaxAttempts} AND NOT EXISTS (SELECT 1 FROM "UserExtensionImportTasks" u WHERE u."ProductImportJobId" = j."Id") THEN NULL ELSE {now} END,
                 "ErrorCode" = 'claim_expired', "ErrorMessage" = 'Processing was interrupted.'
             FROM expired e WHERE j."Id" = e."Id"
             """, token);

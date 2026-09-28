@@ -13,9 +13,10 @@ public sealed record ProductImportSubmissionResult(ProductImportAcceptedResponse
 public sealed class ProductImportSubmissionService(MyShoppingListDbContext db, ProductUrlValidator urls,
     RetailerProviderRegistry providers, TimeProvider clock, ILogger<ProductImportSubmissionService> logger)
 {
-    public async Task<ProductImportSubmissionResult> SubmitAsync(long accountId, long listId, ProductImportRequest request, CancellationToken token)
+    public async Task<ProductImportSubmissionResult> SubmitAsync(long accountId, long listId, ProductImportRequest request, CancellationToken token, bool userExtension = false, Guid? userRequestId = null)
     {
         if (request.Quantity <= 0) return new(null, 400, "invalid_quantity", "Quantity must be a positive whole number.");
+        if (userExtension && (userRequestId is null || userRequestId == Guid.Empty)) return new(null, 400, "invalid_request", "An import request ID is required.");
         var validated = urls.Validate(request.Url);
         if (!validated.IsValid) return new(null, 400, "invalid_url", "Enter a valid HTTPS product URL from a supported retailer.");
         if (providers.FindByCode(validated.Retailer!.Code)?.IsImplemented != true)
@@ -30,6 +31,17 @@ public sealed class ProductImportSubmissionService(MyShoppingListDbContext db, P
             var now = clock.GetUtcNow().UtcDateTime;
             var error = Access(user, list, now);
             if (error is not null) return error;
+            if (userExtension)
+            {
+                var previous = await db.UserExtensionImportTasks.AsNoTracking().Where(t => t.RequestId == userRequestId)
+                    .Select(t => t.ProductImportJob).SingleOrDefaultAsync(token);
+                if (previous is not null)
+                {
+                    if (previous.UserAccountId != accountId || previous.ShoppingListId != listId || previous.NormalisedSourceUrl != normalised || previous.RequestedQuantity != request.Quantity)
+                        return new(null, 409, "request_conflict", "The import request changed.");
+                    await transaction.CommitAsync(token); return Accepted(previous, true);
+                }
+            }
             // Serialising submitters on the list row also handles simultaneous HTTP requests in different instances.
             var existing = await db.ProductImportJobs.AsNoTracking().Where(j => j.ShoppingListId == listId
                 && j.UserAccountId == accountId && j.NormalisedSourceUrl == normalised
@@ -37,6 +49,8 @@ public sealed class ProductImportSubmissionService(MyShoppingListDbContext db, P
                 .OrderBy(j => j.CreatedDate).ThenBy(j => j.Id).FirstOrDefaultAsync(token);
             if (existing is not null)
             {
+                if (userExtension && !await db.UserExtensionImportTasks.AnyAsync(t => t.ProductImportJobId == existing.Id, token))
+                    return new(null, 409, "import_already_running", "This product is already being imported. Check its progress on your shopping list.");
                 error = Access(user, list, clock.GetUtcNow().UtcDateTime);
                 if (error is not null) return error;
                 await transaction.CommitAsync(token);
@@ -49,7 +63,14 @@ public sealed class ProductImportSubmissionService(MyShoppingListDbContext db, P
                 UserAccountId = accountId, ShoppingListId = listId, SourceUrl = normalised, NormalisedSourceUrl = normalised,
                 SourceShopId = shop.Id, RequestedQuantity = request.Quantity, CreatedDate = now, LastActivityDate = now
             };
+            if (userExtension)
+            {
+                job.Status = ProductImportJobStatus.Processing;
+                job.ClaimToken = Guid.NewGuid(); job.LeaseExpiresDate = now.AddMinutes(10);
+                job.ProgressStage = ProductImportProgressStage.WaitingForExtension;
+            }
             db.ProductImportJobs.Add(job);
+            if (userExtension) db.UserExtensionImportTasks.Add(new() { ProductImportJob = job, RequestId = userRequestId!.Value, Url = normalised, UpdatedDate = now });
             var shopIds = await db.Shops.Where(s => s.IsActive).Select(s => s.Id).ToListAsync(token);
             foreach (var shopId in shopIds) db.ProductImportRetailerResults.Add(new()
             { ProductImportJob = job, ShopId = shopId, Status = RetailerLookupStatus.Pending, CreatedDate = now, UpdatedDate = now });

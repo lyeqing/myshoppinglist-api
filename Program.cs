@@ -96,6 +96,7 @@ try
     builder.Services.AddScoped<ShoppingListService>();
     builder.Services.Configure<UserExtensionOptions>(builder.Configuration.GetSection(UserExtensionOptions.SectionName));
     builder.Services.AddScoped<InStoreShoppingService>();
+    builder.Services.AddScoped<UserExtensionImportService>();
     builder.Services.AddSingleton<ProductNormalisationService>();
     builder.Services.AddSingleton<ProductMatchingService>();
     builder.Services.AddScoped<ProductService>();
