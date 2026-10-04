@@ -12,7 +12,7 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
     ProductUrlValidator urls, TimeProvider clock, ILogger<SourceProductPersistenceService> logger)
 {
     public async Task<ProductPersistenceResult> SaveAsync(long jobId, long userAccountId, Guid claimToken,
-        ExtractedShopProduct source, CancellationToken token, bool isFromCache = false)
+        ExtractedShopProduct source, CancellationToken token, bool isFromCache = false, long? observation = null)
     {
         token.ThrowIfCancellationRequested();
         if (db.ChangeTracker.Entries().Any())
@@ -33,6 +33,7 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
             var user = await db.UserAccounts.FromSqlInterpolated($"""SELECT * FROM "UserAccounts" WHERE "Id" = {userAccountId} FOR UPDATE""")
                 .SingleOrDefaultAsync(token);
             var listId = jobInfo.ShoppingListId;
+            if (observation != null && user?.ContributionBlocked == true) return new(ProductPersistenceStatus.AccessDenied, "contribution_blocked");
             var list = await db.ShoppingLists.FromSqlInterpolated($"""SELECT * FROM "ShoppingLists" WHERE "Id" = {listId} FOR UPDATE""")
                 .SingleOrDefaultAsync(token);
             var job = await db.ProductImportJobs.FromSqlInterpolated($"""SELECT * FROM "ProductImportJobs" WHERE "Id" = {jobId} FOR UPDATE""")
@@ -64,7 +65,7 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
             var priceSaved = false;
             if (source.Offer is ProviderResult<ShopProductOffer>.Success offer)
             {
-                var result = await prices.SaveAsync(mapping, offer.Value, token);
+                var result = await prices.SaveAsync(mapping, offer.Value, token, observation);
                 if (result.Status == PriceUpdateStatus.InvalidOffer) return new(ProductPersistenceStatus.InvalidData, result.ErrorCode);
                 priceSaved = result.Status is PriceUpdateStatus.Saved or PriceUpdateStatus.Unchanged;
             }

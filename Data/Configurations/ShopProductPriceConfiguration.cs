@@ -9,6 +9,7 @@ public class ShopProductPriceConfiguration : IEntityTypeConfiguration<ShopProduc
     public void Configure(EntityTypeBuilder<ShopProductPrice> builder)
     {
         builder.HasKey(x => x.Id);
+        builder.HasOne<ContributionObservation>().WithMany().HasForeignKey(x => x.ContributionObservationId).OnDelete(DeleteBehavior.Restrict);
         builder.Property(x => x.Id).UseIdentityByDefaultColumn();
         builder.ToTable("ShopProductPrices", table =>
         {

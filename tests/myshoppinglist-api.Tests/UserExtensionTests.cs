@@ -68,6 +68,14 @@ public class UserExtensionTests
             var failed = await service.ResultAsync(f.Scope.UserId, stale.JobId, new(stale.StepToken, stale.Url!, false), default);
             Assert.True(failed.SourceSaved); Assert.Equal("Failed", failed.Status);
             Assert.Equal("search", (await service.RetryAsync(f.Scope.UserId, stale.JobId, default)).Stage);
+            Assert.True(await f.Scope.Db.ContributionObservations.AnyAsync(o => o.UserAccountId == f.Scope.UserId && o.Source == "PersonalAdd" && o.Outcome == "Accepted"));
+            await f.Scope.Db.UserAccounts.Where(a => a.Id == f.Scope.UserId).ExecuteUpdateAsync(s => s.SetProperty(a => a.ContributionBlocked, true).SetProperty(a => a.IsPaid, true));
+            var trusted = await service.RetryAsync(f.Scope.UserId, stale.JobId, default);
+            Assert.Equal("Queued", trusted.Status);
+            Assert.False(await f.Scope.Db.UserExtensionImportTasks.AnyAsync(t => t.ProductImportJobId == stale.JobId));
+            Assert.Equal(ProductImportJobStatus.Queued, await f.Scope.Db.ProductImportJobs.Where(j => j.Id == stale.JobId).Select(j => j.Status).SingleAsync());
+            var blockedAdd = await service.StartAsync(f.Scope.UserId, start with { RequestId = Guid.NewGuid(), Evidence = new(null, null) }, default);
+            Assert.Equal("Queued", blockedAdd.Status);
         }
         finally
         {
@@ -137,11 +145,12 @@ public class UserExtensionTests
         async Task<long?> Create()
         {
             await using var db = PersistenceScope.Context();
-            return await new ShoppingListService(db, f.Scope.Clock).EnsureDefaultAsync(f.Scope.UserId, default);
+            return await new ShoppingListService(db, f.Scope.Clock).EnsureDefaultAsync(f.Scope.UserId, default, "Australia/Adelaide");
         }
         var ids = await Task.WhenAll(Create(), Create());
         Assert.NotNull(ids[0]); Assert.Equal(ids[0], ids[1]); Assert.NotEqual(f.Scope.ListId, ids[0]);
         Assert.Equal(1, await f.Scope.Db.ShoppingLists.CountAsync(l => l.UserAccountId == f.Scope.UserId && !l.IsArchived));
+        Assert.Equal(ShoppingListNameService.First(f.Scope.Clock.Now.UtcDateTime, "Australia/Adelaide"), await f.Scope.Db.ShoppingLists.Where(l => l.Id == ids[0]).Select(l => l.Name).SingleAsync());
     }
 
     private sealed class ExtensionFactory(ListFixture fixture) : WebApplicationFactory<Program>

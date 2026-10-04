@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using myshoppinglist_api.Data;
@@ -11,9 +12,11 @@ using myshoppinglist_api.Data;
 namespace myshoppinglist_api.Data.Migrations
 {
     [DbContext(typeof(MyShoppingListDbContext))]
-    partial class MyShoppingListDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261004023446_AddCustomerContributionsAndAdministration")]
+    partial class AddCustomerContributionsAndAdministration
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -105,17 +108,9 @@ namespace myshoppinglist_api.Data.Migrations
                     b.Property<DateTime?>("NextAttemptAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<int>("Priority")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasDefaultValue(1);
-
                     b.Property<string>("Query")
                         .HasMaxLength(160)
                         .HasColumnType("character varying(160)");
-
-                    b.Property<DateTime?>("RefreshNotBefore")
-                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("ResultJson")
                         .HasColumnType("text");

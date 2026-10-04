@@ -40,7 +40,8 @@ public class AccountAuthServiceTests
     public async Task New_registration_normalises_email_and_login_uses_independent_sessions()
     {
         await using var f = new AccountFixture();
-        var registered = await f.Service.RegisterAsync(f.Request with { Email = " " + f.Email.ToUpperInvariant() + " ", DisplayName = " Shopper " }, null, null, default);
+        f.Clock.Now = new DateTimeOffset(2026, 10, 3, 16, 0, 0, TimeSpan.Zero);
+        var registered = await f.Service.RegisterAsync(f.Request with { Email = " " + f.Email.ToUpperInvariant() + " ", DisplayName = " Shopper " }, null, null, default, timezone: "Australia/Adelaide");
         Assert.Equal(201, registered.StatusCode); Assert.False(registered.Response!.Account.IsTrial);
         Assert.Null(registered.Response.Account.ExpiresDate); Assert.Equal("Shopper", registered.Response.Account.DisplayName);
         var user = await f.Db.UserAccounts.AsNoTracking().SingleAsync(u => u.Id == registered.Response.Account.Id);
@@ -48,6 +49,7 @@ public class AccountAuthServiceTests
         Assert.True(PasswordHasher.Verify(AccountFixture.Password, user.PasswordHash, user.PasswordSalt));
         var list = await f.Db.ShoppingLists.AsNoTracking().SingleAsync(l => l.Id == registered.Response.ShoppingListId);
         Assert.Null(list.ExpiresDate);
+        Assert.Equal("Shopping_List_04_10_2026_01", list.Name);
         var login = await f.Service.SignInAsync(new(f.Email.ToUpperInvariant(), AccountFixture.Password), default);
         Assert.Equal(200, login.StatusCode); Assert.Equal(registered.Response.ShoppingListId, login.Response!.ShoppingListId);
         Assert.NotEqual(registered.Token, login.Token);

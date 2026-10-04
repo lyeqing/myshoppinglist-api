@@ -9,14 +9,22 @@ namespace myshoppinglist_api.Tests;
 
 public class DatabaseModelTests
 {
+    [Fact]
+    public void Extension_tasks_persist_refresh_schedule_and_preserve_background_priority_zero()
+    {
+        using var db = ModelContext();
+        var entity = db.Model.FindEntityType(typeof(ColesExtensionTask))!;
+        Assert.Equal(-1, entity.FindProperty(nameof(ColesExtensionTask.Priority))!.Sentinel);
+        Assert.Equal(typeof(DateTime?), entity.FindProperty(nameof(ColesExtensionTask.RefreshNotBefore))!.ClrType);
+    }
     private static MyShoppingListDbContext ModelContext() => new(new DbContextOptionsBuilder<MyShoppingListDbContext>()
         .UseNpgsql("Host=localhost;Database=model_only").Options);
 
     [Fact]
-    public void Model_contains_only_the_fourteen_application_entities()
+    public void Model_contains_only_the_sixteen_application_entities()
     {
         using var db = ModelContext();
-        Assert.Equal(14, db.Model.GetEntityTypes().Count());
+        Assert.Equal(16, db.Model.GetEntityTypes().Count());
         Assert.DoesNotContain(db.Model.GetEntityTypes(), e => e.Name.Contains("Company"));
         Assert.All(db.Model.GetEntityTypes().SelectMany(e => e.GetProperties()), p => Assert.False(p.IsShadowProperty()));
     }
@@ -110,8 +118,12 @@ public class DatabaseModelTests
         db.AddRange(online, catalogue);
         db.Add(new ShopProductPriceHistory
         {
-            ShopProduct = mapping, Price = 12.3456m, UnitPrice = 0.1234m,
-            SourceUrl = mapping.ProductUrl, CheckedDate = DateTime.UtcNow, CreatedDate = DateTime.UtcNow
+            ShopProduct = mapping,
+            Price = 12.3456m,
+            UnitPrice = 0.1234m,
+            SourceUrl = mapping.ProductUrl,
+            CheckedDate = DateTime.UtcNow,
+            CreatedDate = DateTime.UtcNow
         });
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
@@ -164,9 +176,11 @@ public class DatabaseModelTests
         var list = List();
         var job = new ProductImportJob
         {
-            UserAccount = list.UserAccount, ShoppingList = list,
+            UserAccount = list.UserAccount,
+            ShoppingList = list,
             SourceUrl = "https://www.coles.com.au/product/test",
-            NormalisedSourceUrl = "https://www.coles.com.au/product/test", CreatedDate = DateTime.UtcNow
+            NormalisedSourceUrl = "https://www.coles.com.au/product/test",
+            CreatedDate = DateTime.UtcNow
         };
         first.Add(job);
         await first.SaveChangesAsync();
@@ -191,14 +205,20 @@ public class DatabaseModelTests
         var list = List();
         var job = new ProductImportJob
         {
-            UserAccount = list.UserAccount, ShoppingList = list,
+            UserAccount = list.UserAccount,
+            ShoppingList = list,
             SourceUrl = "https://www.coles.com.au/product/test",
-            NormalisedSourceUrl = "https://www.coles.com.au/product/test", CreatedDate = DateTime.UtcNow
+            NormalisedSourceUrl = "https://www.coles.com.au/product/test",
+            CreatedDate = DateTime.UtcNow
         };
         var result = new ProductImportRetailerResult
         {
-            ProductImportJob = job, ShopId = 2, Status = RetailerLookupStatus.Unavailable,
-            ErrorCode = "retailer_timeout", CreatedDate = DateTime.UtcNow, UpdatedDate = DateTime.UtcNow
+            ProductImportJob = job,
+            ShopId = 2,
+            Status = RetailerLookupStatus.Unavailable,
+            ErrorCode = "retailer_timeout",
+            CreatedDate = DateTime.UtcNow,
+            UpdatedDate = DateTime.UtcNow
         };
         db.Add(result);
         await db.SaveChangesAsync();
@@ -213,20 +233,32 @@ public class DatabaseModelTests
         .UseNpgsql(ConnectionString()).Options);
     private static UserAccount Trial() => new()
     {
-        IsTrial = true, DisplayName = "Schema verification", ExpiresDate = DateTime.UtcNow.AddHours(3),
-        CreatedDate = DateTime.UtcNow, UpdatedDate = DateTime.UtcNow
+        IsTrial = true,
+        DisplayName = "Schema verification",
+        ExpiresDate = DateTime.UtcNow.AddHours(3),
+        CreatedDate = DateTime.UtcNow,
+        UpdatedDate = DateTime.UtcNow
     };
     private static ShoppingList List() => new() { UserAccount = Trial(), Name = "Schema verification" };
     private static ShopProduct Mapping() => new()
     {
-        ShopId = 1, Product = new Product { Name = "Schema verification", CreatedDate = DateTime.UtcNow, UpdatedDate = DateTime.UtcNow },
-        NameAtShop = "Schema verification", ProductUrl = "https://www.coles.com.au/product/test",
-        ShopProductCode = Guid.NewGuid().ToString("N"), FirstFoundDate = DateTime.UtcNow, LastFoundDate = DateTime.UtcNow
+        ShopId = 1,
+        Product = new Product { Name = "Schema verification", CreatedDate = DateTime.UtcNow, UpdatedDate = DateTime.UtcNow },
+        NameAtShop = "Schema verification",
+        ProductUrl = "https://www.coles.com.au/product/test",
+        ShopProductCode = Guid.NewGuid().ToString("N"),
+        FirstFoundDate = DateTime.UtcNow,
+        LastFoundDate = DateTime.UtcNow
     };
     private static ShopProductPrice Price(ShopProduct mapping) => new()
     {
-        ShopProduct = mapping, Price = 12.3456m, PriceScope = PriceScope.Online,
-        SourceUrl = mapping.ProductUrl, CheckedDate = DateTime.UtcNow, CreatedDate = DateTime.UtcNow, UpdatedDate = DateTime.UtcNow
+        ShopProduct = mapping,
+        Price = 12.3456m,
+        PriceScope = PriceScope.Online,
+        SourceUrl = mapping.ProductUrl,
+        CheckedDate = DateTime.UtcNow,
+        CreatedDate = DateTime.UtcNow,
+        UpdatedDate = DateTime.UtcNow
     };
 }
 

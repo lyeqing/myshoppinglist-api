@@ -18,7 +18,7 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
     private static readonly (string Hash, string Salt) Dummy = PasswordHasher.Hash("Unknown account credential");
     private DateTime Now => new(clock.GetUtcNow().UtcTicks / 10 * 10, DateTimeKind.Utc);
 
-    public async Task<AccountAuthResult> RegisterAsync(RegisterRequest request, long? accountId, long? sessionId, CancellationToken token)
+    public async Task<AccountAuthResult> RegisterAsync(RegisterRequest request, long? accountId, long? sessionId, CancellationToken token, SessionDevice? device = null, string? timezone = null)
     {
         var email = NormaliseEmail(request.Email);
         if (email is null) return Fail(400, "Enter a valid email address.");
@@ -71,13 +71,13 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
             else
             {
                 user = new() { CreatedDate = now, IsActive = true };
-                list = new() { UserAccount = user, Name = "My shopping list", CreatedDate = now, UpdatedDate = now };
+                list = new() { UserAccount = user, Name = ShoppingListNameService.First(now, timezone), CreatedDate = now, UpdatedDate = now };
                 db.AddRange(user, list);
             }
             user.Email = email; user.DisplayName = request.DisplayName.Trim();
             user.PasswordHash = credential.Hash; user.PasswordSalt = credential.Salt;
             user.IsTrial = false; user.ExpiresDate = null; user.UpdatedDate = now;
-            var (session, raw) = NewSession(user, now);
+            var (session, raw) = NewSession(user, now, device);
             db.UserSessions.Add(session);
             await db.SaveChangesAsync(token);
             now = Now;
@@ -94,7 +94,7 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
         finally { db.ChangeTracker.Clear(); }
     }
 
-    public async Task<AccountAuthResult> SignInAsync(SignInRequest request, CancellationToken token)
+    public async Task<AccountAuthResult> SignInAsync(SignInRequest request, CancellationToken token, SessionDevice? device = null)
     {
         CleanContext();
         var email = NormaliseEmail(request.Email);
@@ -112,7 +112,7 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
             var now = Now;
             var listId = await db.ShoppingLists.Where(l => l.UserAccountId == user.Id && !l.IsArchived && (l.ExpiresDate == null || l.ExpiresDate > now))
                 .OrderBy(l => l.Id).Select(l => (long?)l.Id).FirstOrDefaultAsync(token);
-            var (session, raw) = NewSession(user, now);
+            var (session, raw) = NewSession(user, now, device);
             db.UserSessions.Add(session); await db.SaveChangesAsync(token);
             if (!(session.ExpiresDate > Now)) return InvalidCredentials();
             await transaction.CommitAsync(token);
@@ -121,11 +121,15 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
         finally { db.ChangeTracker.Clear(); }
     }
 
-    private (UserSession Session, string Raw) NewSession(UserAccount user, DateTime now)
+    private (UserSession Session, string Raw) NewSession(UserAccount user, DateTime now, SessionDevice? device)
     {
         var raw = SessionToken.Create();
         return (new() { UserAccount = user, TokenHash = SessionToken.Hash(raw), CreatedDate = now,
-            ExpiresDate = now.AddDays(options.Value.RegisteredSessionDays) }, raw);
+            ExpiresDate = now.AddDays(options.Value.RegisteredSessionDays), LastSeenDate = now,
+            Platform = device?.Platform, DeviceType = device?.DeviceType, DeviceModel = device?.DeviceModel,
+            OsVersion = device?.OsVersion, AppVersion = device?.AppVersion, UserAgent = device?.UserAgent,
+            Latitude = device?.Latitude, Longitude = device?.Longitude, LocationAccuracy = device?.LocationAccuracy,
+            LocationCapturedDate = device?.LocationCapturedDate }, raw);
     }
     private void CleanContext()
     { if (db.ChangeTracker.Entries().Any()) throw new InvalidOperationException("Account authentication requires a clean context."); }

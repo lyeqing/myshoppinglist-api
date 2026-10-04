@@ -16,6 +16,22 @@ namespace myshoppinglist_api.Tests;
 public class ColesExtensionTaskTests
 {
     [PostgreSqlFact]
+    public async Task Priority_orders_existing_worker_tasks_and_submission_still_persists_prices()
+    {
+        await using var f = new Fixture();
+        await Assert.ThrowsAsync<ColesWorkPendingException>(() => f.Service.ProductAsync(f.Url, default));
+        await Assert.ThrowsAsync<ColesWorkPendingException>(() => f.Service.ProductAsync(f.OtherUrl, default));
+        var otherKey = ColesExtensionTaskService.ProductKey(f.OtherUrl);
+        await f.Db.ColesExtensionTasks.Where(t => t.Key == otherKey).ExecuteUpdateAsync(s => s.SetProperty(t => t.Priority, 2));
+        var tasks = (await f.Service.ListAsync(default)).Where(t => t.Url == f.Url.AbsoluteUri || t.Url == f.OtherUrl.AbsoluteUri).ToArray();
+        Assert.Equal(f.OtherUrl.AbsoluteUri, tasks[0].Url);
+        var claim = (await f.Service.ClaimAsync(tasks[0].Id, "refresh-test", default))!;
+        var code = (long.Parse(f.Code) + 1).ToString();
+        Assert.Null(await f.Service.SubmitAsync(claim.Id, new("refresh-test", claim.ClaimToken, f.OtherUrl.AbsoluteUri, true, Evidence(code)), default));
+        Assert.Equal(7m, (await f.Db.ShopProductPrices.SingleAsync(p => p.ShopProduct.ShopProductCode == code)).Price);
+    }
+
+    [PostgreSqlFact]
     public async Task Result_wakes_waiting_import_and_result_before_deferral_is_not_lost()
     {
         await using var imports = await ImportFixture.CreateAsync();

@@ -14,10 +14,12 @@ public class TrialSessionTests
     public async Task Creates_matching_account_list_session_and_stores_only_hash()
     {
         await using var scope = await PersistenceScope.CreateAsync();
-        var result = await Service(scope).StartAsync(null, null, default);
+        scope.Clock.Now = new DateTimeOffset(2026, 10, 3, 16, 0, 0, TimeSpan.Zero);
+        var result = await Service(scope).StartAsync(null, null, default, "Australia/Adelaide");
         Assert.NotNull(result.Response); Assert.NotNull(result.Token);
         var account = await scope.Db.UserAccounts.SingleAsync(u => u.Id == result.Response.Account.Id);
         var list = await scope.Db.ShoppingLists.SingleAsync(l => l.Id == result.Response.ShoppingListId);
+        Assert.Equal("Shopping_List_04_10_2026_01", list.Name);
         var session = await scope.Db.UserSessions.SingleAsync(s => s.UserAccountId == account.Id);
         Assert.True(account.IsTrial); Assert.Null(account.Email); Assert.Null(account.PasswordHash); Assert.Null(account.PasswordSalt);
         Assert.Equal(account.Id, list.UserAccountId);

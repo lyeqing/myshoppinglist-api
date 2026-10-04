@@ -64,10 +64,11 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
             }
             if (stale) Reset(task);
         }
+        task.Priority = Math.Max(task.Priority, 1);
         await db.SaveChangesAsync(token); await tx.CommitAsync(token); db.ChangeTracker.Clear();
         return task;
     }
-    private static void Reset(ColesExtensionTask task)
+    internal static void Reset(ColesExtensionTask task)
     {
         task.Status = "Waiting"; task.Attempts = 0; task.NextAttemptAt = null; task.ErrorCode = null;
         task.ClaimToken = null; task.ClaimedAt = null; task.LeaseExpiresAt = null; task.WorkerId = null;
@@ -121,21 +122,24 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
         await RecoverAsync(token);
         var now = Now;
         return await db.ColesExtensionTasks.AsNoTracking().Where(t => t.Status == "Waiting" && (t.NextAttemptAt == null || t.NextAttemptAt <= now)
-            || t.Status == "Failed").OrderBy(t => t.CreatedAt).ThenBy(t => t.Id)
+            || t.Status == "Failed").OrderByDescending(t => t.Priority).ThenBy(t => t.CreatedAt).ThenBy(t => t.Id)
             .Select(t => new ColesTaskSummary(t.Id, t.Kind, t.Url, t.Query, t.Status, t.Attempts, t.ErrorCode)).ToListAsync(token);
     }
-    public async Task<ColesTaskClaim?> ClaimAsync(long id, string worker, CancellationToken token)
+    public async Task<ColesTaskClaim?> ClaimAsync(long id, string worker, CancellationToken token, long? contributor = null)
     {
         if (!ValidWorker(worker)) return null;
         await using var tx = await db.Database.BeginTransactionAsync(token);
         await ProductService.LockCatalogueAsync(db, token);
         await RecoverAsync(token);
+        if (contributor is { } account && !await db.UserAccounts.AnyAsync(a => a.Id == account && a.IsActive
+            && !a.IsTrial && !a.ContributionBlocked && a.ContributionEnabled, token)) return null;
         var now = Now;
         var active = await db.ColesExtensionTasks.SingleOrDefaultAsync(t => t.Status == "Processing" && t.WorkerId == worker, token);
-        if (active is not null) return active.Id == id ? Claim(active) : null;
+        if (active is not null) return active.Id == id && active.ContributorAccountId == contributor ? Claim(active) : null;
         var task = await db.ColesExtensionTasks.SingleOrDefaultAsync(t => t.Id == id, token);
         if (task is null || task.Status != "Waiting" || task.Attempts >= 3 || task.NextAttemptAt > now) return null;
         task.Status = "Processing"; task.WorkerId = worker; task.ClaimToken = Guid.NewGuid();
+        task.ContributorAccountId = contributor;
         task.ClaimedAt = now; task.LeaseExpiresAt = now.AddMinutes(3); task.Attempts++;
         task.ErrorCode = null; task.SubmissionHash = null;
         await db.SaveChangesAsync(token); await tx.CommitAsync(token); db.ChangeTracker.Clear();
@@ -143,7 +147,8 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
     }
     private static ColesTaskClaim Claim(ColesExtensionTask task) => new(task.Id, task.Kind, task.Url, task.Query, task.ClaimToken!.Value, task.LeaseExpiresAt!.Value);
 
-    public async Task<string?> SubmitAsync(long id, ColesTaskSubmission submission, CancellationToken token)
+    public async Task<string?> SubmitAsync(long id, ColesTaskSubmission submission, CancellationToken token,
+        long? contributor = null, long? observation = null)
     {
         if (!ValidWorker(submission.WorkerId) || submission.ClaimToken == Guid.Empty) return "invalid_submission";
         var digest = Hash(JsonSerializer.Serialize(submission));
@@ -151,6 +156,9 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
         await ProductService.LockCatalogueAsync(db, token);
         var task = await db.ColesExtensionTasks.SingleOrDefaultAsync(t => t.Id == id, token);
         if (task is null) return "task_not_found";
+        if (task.ContributorAccountId != contributor) return "claim_lost";
+        if (contributor is { } account && !await db.UserAccounts.AnyAsync(a => a.Id == account && a.IsActive
+            && !a.IsTrial && !a.ContributionBlocked && a.ContributionEnabled, token)) return "contribution_disabled";
         if (task.WorkerId != submission.WorkerId || task.ClaimToken != submission.ClaimToken) return "claim_lost";
         if (task.SubmissionHash is not null) return task.SubmissionHash == digest ? null : "submission_conflict";
         if (task.Status != "Processing" || task.LeaseExpiresAt <= Now) return "claim_lost";
@@ -183,6 +191,19 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
         }
         else
         {
+            if (observation is null)
+            {
+                var provenance = new ContributionObservation
+                {
+                    TaskId = id,
+                    Source = "DedicatedWorker",
+                    Url = task.Url,
+                    CollectedAt = task.ClaimedAt!.Value,
+                    ReceivedAt = Now,
+                    Outcome = "Accepted"
+                };
+                db.ContributionObservations.Add(provenance); await db.SaveChangesAsync(token); observation = provenance.Id;
+            }
             if (!Uri.TryCreate(submission.Url, UriKind.Absolute, out var uri) || Code(uri) is not { } code
                 || ProductKey(uri) != task.Key) return "product_identity_conflict";
             var html = EvidenceHtml(submission.Evidence, Retailer(uri));
@@ -205,7 +226,7 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
                     && p.CheckedDate <= task.ClaimedAt).ExecuteDeleteAsync(token);
             if (source.Offer is ProviderResult<ShopProductOffer>.Success offer)
             {
-                var saved = await prices.SaveAsync(mapping, offer.Value, token);
+                var saved = await prices.SaveAsync(mapping, offer.Value, token, observation);
                 if (saved.Status == PriceUpdateStatus.InvalidOffer) return saved.ErrorCode ?? "invalid_offer";
             }
             task.ResultJson = html; task.Status = "Completed"; task.CompletedAt = Now; task.LeaseExpiresAt = null;

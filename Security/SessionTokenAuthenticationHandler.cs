@@ -9,7 +9,8 @@ using myshoppinglist_api.Data;
 namespace myshoppinglist_api.Security;
 
 public sealed class SessionTokenAuthenticationHandler(IOptionsMonitor<AuthenticationSchemeOptions> options,
-    ILoggerFactory logger, UrlEncoder encoder, MyShoppingListDbContext db, TimeProvider clock)
+    ILoggerFactory logger, UrlEncoder encoder, MyShoppingListDbContext db, TimeProvider clock,
+    IOptions<myshoppinglist_api.Configuration.AdminOptions> admins)
     : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
 {
     public const string SchemeName = "SessionToken";
@@ -44,6 +45,7 @@ public sealed class SessionTokenAuthenticationHandler(IOptionsMonitor<Authentica
             new Claim(SessionIdClaim, session.Id.ToString(CultureInfo.InvariantCulture)),
             new Claim(TransportClaim, bearer ? "bearer" : "cookie")
         }, SchemeName);
+        if (admins.Value.AccountIds.Contains(session.UserAccountId)) identity.AddClaim(new Claim("administrator", "true"));
         return AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName));
     }
     protected override Task HandleChallengeAsync(AuthenticationProperties properties) =>

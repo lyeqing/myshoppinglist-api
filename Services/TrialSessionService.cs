@@ -15,6 +15,10 @@ public sealed class TrialSessionService(MyShoppingListDbContext db, IOptions<Aut
     public async Task<CurrentSessionResponse?> CurrentAsync(long accountId, long sessionId, CancellationToken token)
     {
         var now = clock.GetUtcNow().UtcDateTime;
+        await db.UserSessions.Where(s => s.Id == sessionId && s.UserAccountId == accountId
+            && s.RevokedDate == null && s.ExpiresDate > now && s.UserAccount.IsActive
+            && (!s.UserAccount.IsTrial || s.UserAccount.ExpiresDate > now))
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.LastSeenDate, now), token);
         return await db.UserSessions.AsNoTracking().Where(s => s.Id == sessionId && s.UserAccountId == accountId
             && s.RevokedDate == null && s.ExpiresDate > now && s.UserAccount.IsActive
             && (!s.UserAccount.IsTrial || s.UserAccount.ExpiresDate > now))
@@ -25,7 +29,7 @@ public sealed class TrialSessionService(MyShoppingListDbContext db, IOptions<Aut
             .SingleOrDefaultAsync(token);
     }
 
-    public async Task<TrialSessionResult> StartAsync(long? accountId, long? sessionId, CancellationToken token)
+    public async Task<TrialSessionResult> StartAsync(long? accountId, long? sessionId, CancellationToken token, string? timezone = null)
     {
         if (accountId.HasValue || sessionId.HasValue)
         {
@@ -42,7 +46,7 @@ public sealed class TrialSessionService(MyShoppingListDbContext db, IOptions<Aut
         var raw = SessionToken.Create();
         var user = new UserAccount { DisplayName = "Trial shopper", IsTrial = true, IsActive = true,
             CreatedDate = now, UpdatedDate = now, ExpiresDate = expires };
-        var list = new ShoppingList { UserAccount = user, Name = "My shopping list", CreatedDate = now, UpdatedDate = now, ExpiresDate = expires };
+        var list = new ShoppingList { UserAccount = user, Name = ShoppingListNameService.First(now, timezone), CreatedDate = now, UpdatedDate = now, ExpiresDate = expires };
         var session = new UserSession { UserAccount = user, TokenHash = SessionToken.Hash(raw), CreatedDate = now, ExpiresDate = expires };
         db.AddRange(user, list, session);
         // One SaveChanges transaction commits all three rows or none of them.

@@ -20,12 +20,46 @@ public sealed record UserImportCandidate(string Url, ColesEvidence Evidence);
 public sealed class UserExtensionImportService(MyShoppingListDbContext db, ProductImportSubmissionService submissions,
     SourceProductPersistenceService sourcePersistence, RetailerComparisonPersistenceService comparisons,
     ProductImportJobService jobs, ProductUrlValidator urls, ColesProductParser coles, WoolworthsProductParser woolworths,
-    ProductMatchingService matching, TimeProvider clock)
+    ProductMatchingService matching, TimeProvider clock, IHttpContextAccessor? http = null)
 {
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
+    private async Task<long> Observe(long account, long? job, string url, CancellationToken ct)
+    {
+        var observation = new ContributionObservation { UserAccountId = account, ImportJobId = job, Url = url, Source = "PersonalAdd",
+            ReceivedAt = Now, CollectedAt = Now, ExtensionVersion = ContributionService.Version(http?.HttpContext?.Request.Headers["X-Extension-Version"].ToString()) };
+        db.ContributionObservations.Add(observation); await db.SaveChangesAsync(ct); db.ChangeTracker.Clear(); return observation.Id;
+    }
+    private Task Outcome(long id, string outcome, CancellationToken ct) => db.ContributionObservations.Where(o => o.Id == id)
+        .ExecuteUpdateAsync(s => s.SetProperty(o => o.Outcome, outcome), ct);
+    private async Task QueueTrusted(long account, long jobId, CancellationToken ct)
+    {
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        await ProductService.LockCatalogueAsync(db, ct);
+        var removed = await db.UserExtensionImportTasks.Where(t => t.ProductImportJobId == jobId && t.ProductImportJob.UserAccountId == account).ExecuteDeleteAsync(ct);
+        if (removed > 0) await db.ProductImportJobs.Where(j => j.Id == jobId && j.UserAccountId == account).ExecuteUpdateAsync(s => s
+            .SetProperty(j => j.Status, ProductImportJobStatus.Queued).SetProperty(j => j.ProgressStage, ProductImportProgressStage.Queued)
+            .SetProperty(j => j.ClaimToken, (Guid?)null).SetProperty(j => j.LeaseExpiresDate, (DateTime?)null)
+            .SetProperty(j => j.AttemptCount, 0).SetProperty(j => j.ErrorCode, (string?)null).SetProperty(j => j.ErrorMessage, (string?)null)
+            .SetProperty(j => j.NextAttemptDate, (DateTime?)null).SetProperty(j => j.CompletedDate, (DateTime?)null), ct);
+        await tx.CommitAsync(ct); db.ChangeTracker.Clear();
+    }
     public async Task<UserExtensionWork> StartAsync(long account, UserExtensionStart request, CancellationToken ct)
     {
-        var source = await ParseAsync(request.Url, request.Evidence, ct);
+        if (await db.UserAccounts.AnyAsync(a => a.Id == account && a.ContributionBlocked, ct)) {
+            var queued = await submissions.SubmitAsync(account, request.ListId, new(request.Url, request.Quantity), ct);
+            if (queued.Response is null) throw new UserImportException(queued.StatusCode, queued.Message ?? "Could not queue import.");
+            await QueueTrusted(account, queued.Response.JobId, ct);
+            return new(queued.Response.JobId, "Queued", false, "trusted", Guid.Empty, null, null, null);
+        }
+        ExtractedShopProduct source;
+        try { source = await ParseAsync(request.Url, request.Evidence, ct); }
+        catch (UserImportException) {
+            if (urls.Validate(request.Url).IsValid) {
+                var rejected = await Observe(account, null, request.Url, ct);
+                await Outcome(rejected, "InvalidSourceEvidence", ct);
+            }
+            throw;
+        }
         var submitted = await submissions.SubmitAsync(account, request.ListId, new(request.Url, request.Quantity), ct, userExtension: true, userRequestId: request.RequestId);
         if (submitted.Response is null) throw new UserImportException(submitted.StatusCode, submitted.Message ?? "Could not start import.");
         return await Locked(account, submitted.Response.JobId, async (task, job) =>
@@ -34,7 +68,9 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
             var claim = await Claim(job, ct);
             if (job.ShoppingListProductId is null)
             {
-                var saved = await sourcePersistence.SaveAsync(job.Id, account, claim.Token, source, ct);
+                var observation = await Observe(account, job.Id, request.Url, ct);
+                var saved = await sourcePersistence.SaveAsync(job.Id, account, claim.Token, source, ct, observation: observation);
+                await Outcome(observation, saved.Status == ProductPersistenceStatus.Success ? "Accepted" : saved.ErrorCode ?? "Rejected", ct);
                 if (saved.Status != ProductPersistenceStatus.Success)
                     return await Fail(task, job, claim, saved.ErrorCode ?? "invalid_source_evidence", ct);
             }
@@ -48,6 +84,10 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
 
     public Task<UserExtensionWork> RetryAsync(long account, long jobId, CancellationToken ct) => Locked(account, jobId, async (task, job) =>
     {
+        if (await db.UserAccounts.AnyAsync(a => a.Id == account && a.ContributionBlocked, ct)) {
+            await QueueTrusted(account, jobId, ct);
+            return new(jobId, "Queued", job.ShoppingListProductId != null, "trusted", Guid.Empty, null, null, null);
+        }
         if (job.ShoppingListProductId is null) throw new UserImportException(409, "Open the original product page and click Add again to read it.");
         if (task.Status != "Failed" && job.Status is not (ProductImportJobStatus.Partial or ProductImportJobStatus.Failed)) return View(task, job);
         var claim = await Claim(job, ct);
@@ -61,10 +101,16 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
 
     public Task<UserExtensionWork> ResultAsync(long account, long jobId, UserExtensionResult result, CancellationToken ct) => Locked(account, jobId, async (task, job) =>
     {
+        if (await db.UserAccounts.AnyAsync(a => a.Id == account && a.ContributionBlocked, ct)) {
+            await QueueTrusted(account, jobId, ct);
+            return new(jobId, "Queued", job.ShoppingListProductId != null, "trusted", Guid.Empty, null, null, null);
+        }
         // Duplicate deliveries return the current step, never apply old evidence to a newer step.
         if (task.StepToken != result.StepToken || task.Status != "Waiting") return View(task, job);
         if (task.Stage == "source") throw new UserImportException(409, "Submit the source using Add.");
         if (result.Url != task.Url) throw new UserImportException(400, "The result does not belong to this task URL.");
+        var received = await Observe(account, jobId, task.Url, ct);
+        await Outcome(received, result.Ok ? "ReceivedForValidation" : "ExtractionFailed", ct);
         if (job.Status is ProductImportJobStatus.Partial or ProductImportJobStatus.Failed)
             throw new UserImportException(409, "This comparison expired. Use Retry comparison.");
         var claim = await Claim(job, ct);
@@ -110,7 +156,10 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
         if (exact.Count == 1)
         {
             var candidate = await ParseAsync(exact[0].Url, exact[0].Evidence, ct);
-            if (!await comparisons.SaveExactAsync(claim, other.Id, candidate, ct))
+            var observation = await Observe(account, jobId, exact[0].Url, ct);
+            var saved = await comparisons.SaveExactAsync(claim, other.Id, candidate, ct, observation);
+            await Outcome(observation, saved ? "Accepted" : "Rejected", ct);
+            if (!saved)
                 return await Fail(task, job, claim, "comparison_validation_failed", ct);
         }
         else

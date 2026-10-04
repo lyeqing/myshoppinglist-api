@@ -13,6 +13,25 @@ namespace myshoppinglist_api.Tests;
 public class PriceServiceTests
 {
     [PostgreSqlFact]
+    public async Task Replaying_customer_price_preserves_provenance_and_blocked_updates_are_rejected()
+    {
+        await using var scope = await PersistenceScope.CreateAsync();
+        var saved = await scope.SaveAsync();
+        var mapping = await scope.Db.ShopProducts.SingleAsync(p => p.Id == saved.ShopProductId);
+        var observation = new ContributionObservation { UserAccountId = scope.UserId, Source = "SharedCustomer",
+            Url = scope.Source.ProductUrl.AbsoluteUri, CollectedAt = scope.Clock.Now.UtcDateTime, ReceivedAt = scope.Clock.Now.UtcDateTime };
+        scope.Db.Add(observation); await scope.Db.SaveChangesAsync();
+        var offer = scope.Offer with { Price = 19, CheckedDate = scope.Clock.Now };
+        var service = Service(scope);
+        await service.SaveAsync(mapping, offer, default, observation.Id);
+        await service.SaveAsync(mapping, offer, default);
+        Assert.Equal(observation.Id, (await scope.Db.ShopProductPrices.SingleAsync(p => p.ShopProductId == mapping.Id)).ContributionObservationId);
+        Assert.True(await scope.Db.ShopProductPriceHistory.AnyAsync(p => p.ShopProductId == mapping.Id && p.ContributionObservationId == observation.Id));
+        await scope.Db.UserAccounts.Where(a => a.Id == scope.UserId).ExecuteUpdateAsync(s => s.SetProperty(a => a.ContributionBlocked, true));
+        scope.Clock.Now += TimeSpan.FromSeconds(1);
+        Assert.Equal(PriceUpdateStatus.InvalidOffer, (await service.SaveAsync(mapping, offer with { Price = 1, CheckedDate = scope.Clock.Now }, default, observation.Id)).Status);
+    }
+    [PostgreSqlFact]
     public async Task Changes_and_periodic_samples_record_history_without_duplicate_refresh_rows()
     {
         await using var scope = await PersistenceScope.CreateAsync();

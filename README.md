@@ -361,3 +361,13 @@ Worker routes (Bearer worker key required; responses are not cached):
 - `POST /api/coles-worker/tasks/{id}/retry`: explicitly retry a failed task.
 
 The extension persists outgoing submissions until acknowledged, reuses one owned tab and processes tasks sequentially. Chrome must remain running; sleeping/offline computers delay processing. It never uploads full HTML, cookies or account state. Browser-observed prices retain unknown store scope.
+
+## Native Android/iOS sessions
+
+The Expo application uses `POST /api/auth/mobile/login` with `{ email, password, device }` and `POST /api/auth/mobile/register` with `{ email, password, displayName, device }`. Both require the existing `X-MyShoppingList-Request: 1` header, retain browser-origin checks and share the existing login/registration rate limits. They return `{ account, shoppingListId, sessionExpiresDate, token }` with `Cache-Control: no-store` and no session cookie. Keep the token in platform-secure storage and use `Authorization: Bearer <token>` for the existing shopping, `/api/auth/me`, and `/api/auth/logout` endpoints. Website cookie responses remain unchanged.
+
+Device metadata is stored on the existing `UserSessions` row. `device` requires `platform` (`android` or `ios`) and `deviceType` (`phone`, `tablet`, `desktop`, `tv`, or `unknown`). Optional fields are `deviceModel`, `osVersion`, `appVersion`, `userAgent`, `latitude`, `longitude`, `locationAccuracy` (metres) and `locationCapturedDate` (UTC). Coordinates must be supplied as a pair and pass range validation. These values are client-reported metadata, not trusted proof of device identity or location. Last-seen time is refreshed when a valid session calls `/auth/me`; it is not a record of every shopping action.
+
+The mobile UI requests location only after the user opts in at login/registration. Denied/unavailable location is omitted and does not block authentication. No background location collection or analytics table is introduced.
+
+Migration `20260928112541_AddSessionDeviceTracking` adds nullable columns to `UserSessions` and coordinate constraints. It is prepared but not automatically applied. Back up and review the target database before applying with the normal `dotnet ef database update` workflow. Until it is applied, the updated API model is incompatible with the old database schema. Existing sessions remain valid after migration and have null device metadata; new browser sessions share the table but do not supply native metadata.

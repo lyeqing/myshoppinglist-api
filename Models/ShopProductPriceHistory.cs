@@ -3,6 +3,7 @@ namespace myshoppinglist_api.Models;
 public class ShopProductPriceHistory
 {
     public long Id { get; set; }
+    public long? ContributionObservationId { get; set; }
     public long ShopProductId { get; set; }
     public ShopProduct ShopProduct { get; set; } = null!;
     public long? ShopLocationId { get; set; }

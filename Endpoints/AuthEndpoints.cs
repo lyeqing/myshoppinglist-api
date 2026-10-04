@@ -14,6 +14,8 @@ public static class AuthEndpoints
     public static void MapAuthEndpoints(this IEndpointRouteBuilder routes)
     {
         var group = routes.MapGroup("/api/auth").WithTags("Authentication");
+        group.MapPost("/mobile/login", MobileSignInAsync).RequireRateLimiting(SignInRatePolicy);
+        group.MapPost("/mobile/register", MobileRegisterAsync).RequireRateLimiting(RegistrationRatePolicy);
         group.MapPost("/register", RegisterAsync).RequireRateLimiting(RegistrationRatePolicy)
             .Produces<CurrentSessionResponse>(201).ProducesProblem(400).ProducesProblem(401).ProducesProblem(403).ProducesProblem(409).ProducesProblem(429);
         group.MapPost("/login", SignInAsync).RequireRateLimiting(SignInRatePolicy)
@@ -22,6 +24,29 @@ public static class AuthEndpoints
             .Produces<TrialStartResponse>(201).Produces<TrialStartResponse>().ProducesProblem(403).ProducesProblem(409).ProducesProblem(429);
         group.MapGet("/me", MeAsync).RequireAuthorization().Produces<CurrentSessionResponse>().ProducesProblem(401);
         group.MapPost("/logout", LogoutAsync).RequireAuthorization().Produces(204).ProducesProblem(401).ProducesProblem(403);
+    }
+    private static async Task<IResult> MobileSignInAsync(MobileSignInRequest request, HttpContext context,
+        AccountAuthService service, CancellationToken token)
+    {
+        NoStore(context);
+        if (request.Device is null || !request.Device.IsValid())
+            return Results.Problem(statusCode: 400, title: "Invalid device or location information.");
+        return MobileResult(await service.SignInAsync(new(request.Email, request.Password), token, request.Device));
+    }
+    private static async Task<IResult> MobileRegisterAsync(MobileRegisterRequest request, HttpContext context,
+        AccountAuthService service, CancellationToken token)
+    {
+        NoStore(context);
+        if (request.Device is null || !request.Device.IsValid())
+            return Results.Problem(statusCode: 400, title: "Invalid device or location information.");
+        // Native registration creates a new account; it never consumes a browser trial cookie.
+        return MobileResult(await service.RegisterAsync(new(request.Email, request.Password, request.DisplayName), null, null, token, request.Device, context.Request.Headers["X-Client-Timezone"].ToString()));
+    }
+    private static IResult MobileResult(AccountAuthResult result)
+    {
+        if (result.Response is not { } response) return Results.Problem(statusCode: result.StatusCode, title: result.Message);
+        var body = new MobileSessionResponse(response.Account, response.ShoppingListId, response.SessionExpiresDate, result.Token!);
+        return result.StatusCode == 201 ? Results.Created("/api/auth/me", body) : Results.Ok(body);
     }
     private static (long Account, long Session) Identity(HttpContext context) =>
         (long.Parse(context.User.FindFirstValue(ClaimTypes.NameIdentifier)!, CultureInfo.InvariantCulture),
@@ -37,7 +62,7 @@ public static class AuthEndpoints
         if (!authenticated && (context.Request.Headers.ContainsKey("Authorization") || context.Request.Cookies.ContainsKey(SessionCookie.Name)))
             return Results.Problem(statusCode: 401, title: "The session is unavailable. Start registration without the expired session to create a new account.");
         var identity = authenticated ? Identity(context) : ((long Account, long Session)?)null;
-        var result = await service.RegisterAsync(request, identity?.Account, identity?.Session, token);
+        var result = await service.RegisterAsync(request, identity?.Account, identity?.Session, token, timezone: context.Request.Headers["X-Client-Timezone"].ToString());
         return AccountResult(context, result, environment);
     }
     private static async Task<IResult> SignInAsync(SignInRequest request, HttpContext context, AccountAuthService service,
@@ -61,7 +86,7 @@ public static class AuthEndpoints
         if (context.Request.Headers.ContainsKey("Authorization") && context.User.Identity?.IsAuthenticated != true)
             return Results.Problem(statusCode: 401, title: "A valid session is required.");
         var identity = context.User.Identity?.IsAuthenticated == true ? Identity(context) : ((long Account, long Session)?)null;
-        var result = await service.StartAsync(identity?.Account, identity?.Session, token);
+        var result = await service.StartAsync(identity?.Account, identity?.Session, token, context.Request.Headers["X-Client-Timezone"].ToString());
         if (result.Response is null) return Results.Problem(statusCode: result.ErrorCode == "invalid_session" ? 401 : 409,
             title: result.ErrorCode == "registered_session" ? "You are already signed in to a registered account." : "The trial session is unavailable.");
         if (result.Token is not null) SessionCookie.Write(context, result.Token, result.Response.SessionExpiresDate,

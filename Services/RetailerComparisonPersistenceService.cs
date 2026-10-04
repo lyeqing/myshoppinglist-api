@@ -50,8 +50,9 @@ public sealed class RetailerComparisonPersistenceService(MyShoppingListDbContext
         }, token);
 
     public Task<bool> SaveExactAsync(ProductImportClaim claim, long shopId, ExtractedShopProduct source,
-        CancellationToken token) => WriteAsync(claim, shopId, async (job, result) =>
+        CancellationToken token, long? observation = null) => WriteAsync(claim, shopId, async (job, result) =>
         {
+            if (observation != null && await db.UserAccounts.AnyAsync(a => a.Id == job.UserAccountId && a.ContributionBlocked, token)) return false;
             var shop = await db.Shops.SingleAsync(s => s.Id == shopId, token);
             var product = await db.Products.SingleAsync(p => p.Id == job.ProductId && !p.IsDeleted, token);
             var url = urls.Validate(source.ProductUrl.OriginalString);
@@ -73,7 +74,7 @@ public sealed class RetailerComparisonPersistenceService(MyShoppingListDbContext
             if (source.Offer is ProviderResult<ShopProductOffer>.Success offer)
             {
                 if (offer.Value.SourceUrl != source.ProductUrl) return false;
-                var saved = await prices.SaveAsync(mapping, offer.Value, token);
+                var saved = await prices.SaveAsync(mapping, offer.Value, token, observation);
                 if (saved.Status == PriceUpdateStatus.InvalidOffer) return false;
             }
             var failure = (source.Offer as ProviderResult<ShopProductOffer>.Failure)?.Error;

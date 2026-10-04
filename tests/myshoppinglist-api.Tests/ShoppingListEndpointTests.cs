@@ -16,6 +16,40 @@ namespace myshoppinglist_api.Tests;
 public class ShoppingListEndpointTests
 {
     [PostgreSqlFact]
+    public async Task Planning_and_delete_routes_require_ownership_session_and_request_protection()
+    {
+        await using var f = await ListFixture.CreateAsync();
+        await using var other = await ListFixture.CreateAsync();
+        await using var app = new ListApiFactory(f);
+        using var client = await app.ClientAsync();
+        using var anonymous = app.CreateClient();
+        var path = $"/api/shopping-lists/{f.Scope.ListId}/plan";
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/shopping-lists/{other.Scope.ListId}/plan")).StatusCode);
+        var response = await client.GetAsync(path);
+        Assert.True(response.Headers.CacheControl!.NoStore);
+        Assert.Single((await response.Content.ReadFromJsonAsync<ShoppingListPlan>())!.Items);
+        var refresh = $"/api/shopping-lists/{f.Scope.ListId}/refresh-prices";
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync(refresh, new { })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsJsonAsync($"/api/shopping-lists/{other.Scope.ListId}/refresh-prices", new { })).StatusCode);
+        client.DefaultRequestHeaders.Remove(CookieRequestProtection.HeaderName);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync(refresh, new { })).StatusCode);
+        client.DefaultRequestHeaders.Add(CookieRequestProtection.HeaderName, "1");
+        var item = await f.ItemAsync();
+        async Task<HttpResponseMessage> Delete(HttpClient http, string route, DateTime version) => await http.SendAsync(new(HttpMethod.Delete, route)
+        { Content = JsonContent.Create(new ShoppingListItemDeleteRequest(version)) });
+        var route = Route(f) + $"/{item.Id}";
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Delete(anonymous, route, item.UpdatedDate)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Delete(client, Route(other) + $"/{other.ItemId}", item.UpdatedDate)).StatusCode);
+        client.DefaultRequestHeaders.Remove(CookieRequestProtection.HeaderName);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Delete(client, route, item.UpdatedDate)).StatusCode);
+        client.DefaultRequestHeaders.Add(CookieRequestProtection.HeaderName, "1");
+        Assert.Equal(HttpStatusCode.Conflict, (await Delete(client, route, item.UpdatedDate.AddSeconds(-1))).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await Delete(client, route, item.UpdatedDate)).StatusCode);
+        Assert.Empty((await client.GetFromJsonAsync<ShoppingListPlan>(path))!.Items);
+    }
+
+    [PostgreSqlFact]
     public async Task Owner_can_read_update_hide_restore_and_detect_stale_edits()
     {
         await using var f = await ListFixture.CreateAsync();
@@ -33,7 +67,7 @@ public class ShoppingListEndpointTests
         Assert.Single((await client.GetFromJsonAsync<ShoppingListItemPage>(Route(f) + "?includeHidden=true"))!.Items);
         Assert.Equal(HttpStatusCode.Conflict, (await client.PutAsJsonAsync(Route(f) + $"/{item.Id}", request)).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync(Route(f) + $"/{item.Id}", request with
-            { IsHidden = false, IsPurchased = false, Notes = null, ExpectedUpdatedDate = saved.UpdatedDate })).StatusCode);
+        { IsHidden = false, IsPurchased = false, Notes = null, ExpectedUpdatedDate = saved.UpdatedDate })).StatusCode);
         Assert.Null((await client.GetFromJsonAsync<ShoppingListItemPage>(Route(f)))!.Items[0].PurchasedDate);
     }
 
@@ -99,8 +133,13 @@ public class ShoppingListEndpointTests
         public async Task<HttpClient> ClientAsync()
         {
             var token = SessionToken.Create();
-            fixture.Scope.Db.UserSessions.Add(new() { UserAccountId = fixture.Scope.UserId, TokenHash = SessionToken.Hash(token),
-                CreatedDate = fixture.Scope.Clock.Now.UtcDateTime, ExpiresDate = fixture.Scope.Clock.Now.UtcDateTime.AddHours(3) });
+            fixture.Scope.Db.UserSessions.Add(new()
+            {
+                UserAccountId = fixture.Scope.UserId,
+                TokenHash = SessionToken.Hash(token),
+                CreatedDate = fixture.Scope.Clock.Now.UtcDateTime,
+                ExpiresDate = fixture.Scope.Clock.Now.UtcDateTime.AddHours(3)
+            });
             await fixture.Scope.Db.SaveChangesAsync(); fixture.Scope.Db.ChangeTracker.Clear();
             var client = CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new("https://localhost"), AllowAutoRedirect = false, HandleCookies = false });
             client.DefaultRequestHeaders.Add("Cookie", "myshoppinglist_session=" + token);

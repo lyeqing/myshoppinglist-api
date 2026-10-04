@@ -12,9 +12,14 @@ namespace myshoppinglist_api.Services;
 public sealed class PriceService(MyShoppingListDbContext db, IOptions<PriceOptions> options,
     TimeProvider clock, ProductUrlValidator urls)
 {
-    public async Task<PriceUpdateResult> SaveAsync(ShopProduct mapping, ShopProductOffer offer, CancellationToken token)
+    public async Task<PriceUpdateResult> SaveAsync(ShopProduct mapping, ShopProductOffer offer, CancellationToken token, long? observation = null)
     {
         await ProductService.LockCatalogueAsync(db, token);
+        if (observation is { } observed) {
+            var contributor = await db.ContributionObservations.Where(o => o.Id == observed).Select(o => o.UserAccountId).SingleAsync(token);
+            if (contributor is { } account && !await db.UserAccounts.AnyAsync(a => a.Id == account && a.IsActive && !a.ContributionBlocked, token))
+                return Invalid("contribution_blocked");
+        }
         var shop = await db.Shops.SingleAsync(s => s.Id == mapping.ShopId, token);
         var sourceUrl = urls.Validate(offer.SourceUrl.OriginalString);
         if (!string.Equals(offer.ShopCode, shop.Code, StringComparison.OrdinalIgnoreCase) || !sourceUrl.IsValid
@@ -57,6 +62,14 @@ public sealed class PriceService(MyShoppingListDbContext db, IOptions<PriceOptio
             .MaxAsync(p => (DateTime?)p.CheckedDate, token);
         var recordHistory = changed || latestHistory is null || checkedDate - latestHistory >= TimeSpan.FromHours(options.Value.HistorySampleHours);
         var now = clock.GetUtcNow().UtcDateTime;
+        // Import processing may replay a price already saved by the extension queue.
+        // Preserve its contributor rather than relabeling the same observation as server data.
+        if (observation is null && current?.CheckedDate == checkedDate) observation = current.ContributionObservationId;
+        if (observation is null) {
+            var provenance = new ContributionObservation { Source = "Server", Url = sourceUrl.ProductUrl!.AbsoluteUri,
+                CollectedAt = checkedDate, ReceivedAt = now, Outcome = "Accepted" };
+            db.ContributionObservations.Add(provenance); await db.SaveChangesAsync(token); observation = provenance.Id;
+        }
         if (current is null)
         {
             current = new() { ShopProductId = mapping.Id, ShopLocationId = locationId, Currency = currency, PriceScope = offer.PriceScope, CreatedDate = now };
@@ -67,6 +80,7 @@ public sealed class PriceService(MyShoppingListDbContext db, IOptions<PriceOptio
         current.SpecialStartDate = specialStart; current.SpecialEndDate = specialEnd;
         current.InStock = offer.InStock; current.SourceType = offer.SourceType; current.SourceUrl = sourceUrl.ProductUrl!.AbsoluteUri;
         current.CheckedDate = checkedDate; current.UpdatedDate = now;
+        current.ContributionObservationId = observation;
         if (recordHistory) db.ShopProductPriceHistory.Add(new()
         {
             ShopProductId = mapping.Id, ShopLocationId = locationId, Currency = currency,
@@ -74,7 +88,7 @@ public sealed class PriceService(MyShoppingListDbContext db, IOptions<PriceOptio
             SpecialType = current.SpecialType, SpecialDescription = current.SpecialDescription,
             SpecialStartDate = current.SpecialStartDate, SpecialEndDate = current.SpecialEndDate,
             PriceScope = current.PriceScope, SourceType = current.SourceType, SourceUrl = current.SourceUrl,
-            CheckedDate = checkedDate, CreatedDate = now
+            CheckedDate = checkedDate, CreatedDate = now, ContributionObservationId = observation
         });
         await db.SaveChangesAsync(token);
         return new(changed ? PriceUpdateStatus.Saved : PriceUpdateStatus.Unchanged, recordHistory);

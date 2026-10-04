@@ -10,7 +10,19 @@ public class UserSessionConfiguration : IEntityTypeConfiguration<UserSession>
     {
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).UseIdentityByDefaultColumn();
-        builder.ToTable("UserSessions");
+        builder.ToTable("UserSessions", table => {
+            table.HasCheckConstraint("CK_UserSessions_Latitude", "\"Latitude\" BETWEEN -90 AND 90");
+            table.HasCheckConstraint("CK_UserSessions_Longitude", "\"Longitude\" BETWEEN -180 AND 180");
+        });
+        builder.Property(x => x.Platform).HasMaxLength(20);
+        builder.Property(x => x.DeviceType).HasMaxLength(20);
+        builder.Property(x => x.DeviceModel).HasMaxLength(200);
+        builder.Property(x => x.OsVersion).HasMaxLength(100);
+        builder.Property(x => x.AppVersion).HasMaxLength(100);
+        builder.Property(x => x.UserAgent).HasMaxLength(512);
+        builder.Property(x => x.Latitude).HasPrecision(9, 6);
+        builder.Property(x => x.Longitude).HasPrecision(9, 6);
+        builder.Property(x => x.LocationAccuracy).HasPrecision(12, 3);
         builder.Property(x => x.TokenHash).HasMaxLength(100).IsRequired();
         builder.HasIndex(x => x.TokenHash).IsUnique();
         builder.HasIndex(x => x.ExpiresDate);

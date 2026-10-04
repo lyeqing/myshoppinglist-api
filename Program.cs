@@ -29,11 +29,14 @@ try
     // Local credentials are excluded from source control. Environment variables take precedence.
     builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true).AddEnvironmentVariables();
     builder.Services.AddSerilog((services, configuration) => configuration
-        .ReadFrom.Configuration(builder.Configuration).ReadFrom.Services(services).Enrich.FromLogContext()
+        .ReadFrom.Configuration(builder.Configuration).ReadFrom.Services(services)
+        .MinimumLevel.Override("myshoppinglist_api.Workers.PriceRefreshWorker", LogEventLevel.Information)
+        .Enrich.FromLogContext()
         .Filter.ByIncludingOnly(entry => entry.Level >= LogEventLevel.Error ||
             entry.Level == LogEventLevel.Information &&
             entry.Properties.TryGetValue("SourceContext", out var source) && source is ScalarValue { Value: string name } &&
             name is "myshoppinglist_api.Workers.ProductImportWorker" or
+                "myshoppinglist_api.Workers.PriceRefreshWorker" or
                 "myshoppinglist_api.Services.ProductImportJobService" or
                 "myshoppinglist_api.Services.ProductImportSubmissionService"));
     builder.Services.AddDbContext<MyShoppingListDbContext>(options =>
@@ -53,6 +56,11 @@ try
     builder.Services.AddOptions<AuthOptions>().BindConfiguration(AuthOptions.SectionName).ValidateDataAnnotations().ValidateOnStart();
     builder.Services.AddScoped<TrialSessionService>();
     builder.Services.AddScoped<AccountAuthService>();
+    builder.Services.AddHttpContextAccessor();
+    builder.Services.Configure<AdminOptions>(builder.Configuration.GetSection("Admin"));
+    builder.Services.AddScoped<AdminAccountService>();
+    builder.Services.AddScoped<ContributionService>();
+    builder.Services.AddAuthorization(o => o.AddPolicy("Administrator", p => p.RequireAuthenticatedUser().RequireClaim("administrator", "true")));
     builder.Services.AddAuthentication(SessionTokenAuthenticationHandler.SchemeName)
         .AddScheme<AuthenticationSchemeOptions, SessionTokenAuthenticationHandler>(SessionTokenAuthenticationHandler.SchemeName, _ => { })
         .AddScheme<AuthenticationSchemeOptions, ColesWorkerAuthenticationHandler>(ColesWorkerAuthenticationHandler.SchemeName, _ => { });
@@ -60,6 +68,9 @@ try
     builder.Services.AddAuthorization(o => o.AddPolicy("ColesWorkerOnly", p => p
         .AddAuthenticationSchemes(ColesWorkerAuthenticationHandler.SchemeName).RequireAuthenticatedUser().RequireClaim("coles_worker", "true")));
     builder.Services.AddRateLimiter(_ => { });
+    builder.Services.Configure<RateLimiterOptions>(limits => limits.AddPolicy("Contribution", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "anonymous",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true })));
     builder.Services.AddOptions<RateLimiterOptions>().Configure<IOptions<AuthOptions>>((limits, auth) =>
     {
         foreach (var policy in new[] { AuthEndpoints.RegistrationRatePolicy, AuthEndpoints.SignInRatePolicy })
@@ -68,13 +79,16 @@ try
                 {
                     PermitLimit = policy == AuthEndpoints.RegistrationRatePolicy ? auth.Value.RegistrationRequestsPerWindow : auth.Value.SignInRequestsPerWindow,
                     Window = TimeSpan.FromSeconds(policy == AuthEndpoints.RegistrationRatePolicy ? auth.Value.RegistrationWindowSeconds : auth.Value.SignInWindowSeconds),
-                    QueueLimit = 0, AutoReplenishment = true
+                    QueueLimit = 0,
+                    AutoReplenishment = true
                 }));
         limits.AddPolicy(AuthEndpoints.TrialRatePolicy, context => RateLimitPartition.GetFixedWindowLimiter(
             context.Connection.RemoteIpAddress?.MapToIPv6().ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = auth.Value.TrialRequestsPerWindow, Window = TimeSpan.FromSeconds(auth.Value.TrialWindowSeconds),
-                QueueLimit = 0, AutoReplenishment = true
+                PermitLimit = auth.Value.TrialRequestsPerWindow,
+                Window = TimeSpan.FromSeconds(auth.Value.TrialWindowSeconds),
+                QueueLimit = 0,
+                AutoReplenishment = true
             }));
         limits.OnRejected = async (context, token) =>
         {
@@ -89,7 +103,9 @@ try
             context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "anonymous", _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = imports.Value.SubmissionRequestsPerWindow,
-                Window = TimeSpan.FromSeconds(imports.Value.SubmissionWindowSeconds), QueueLimit = 0, AutoReplenishment = true
+                Window = TimeSpan.FromSeconds(imports.Value.SubmissionWindowSeconds),
+                QueueLimit = 0,
+                AutoReplenishment = true
             })));
     builder.Services.AddScoped<ProductImportSubmissionService>();
     builder.Services.AddScoped<ProductImportStatusService>();
@@ -112,6 +128,10 @@ try
         .Validate(o => o.RenewalSeconds * 2 < o.LeaseSeconds, "Lease duration must exceed twice the renewal interval.")
         .ValidateOnStart();
     builder.Services.AddHostedService<ProductImportWorker>();
+    builder.Services.AddOptions<PriceRefreshOptions>().BindConfiguration(PriceRefreshOptions.SectionName)
+        .ValidateDataAnnotations().ValidateOnStart();
+    builder.Services.AddScoped<PriceRefreshService>();
+    builder.Services.AddHostedService<PriceRefreshWorker>();
     builder.Services.AddOptions<PriceOptions>().BindConfiguration(PriceOptions.SectionName)
         .ValidateDataAnnotations().ValidateOnStart();
     builder.Services.AddSingleton(services => new SafeRetailerConnection(services.GetRequiredService<RetailerCatalog>()));
@@ -124,9 +144,12 @@ try
         client.DefaultRequestHeaders.Accept.ParseAdd("text/html");
     }).ConfigurePrimaryHttpMessageHandler(services => new SocketsHttpHandler
     {
-        AllowAutoRedirect = false, UseCookies = false, UseProxy = false,
+        AllowAutoRedirect = false,
+        UseCookies = false,
+        UseProxy = false,
         AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
-        MaxConnectionsPerServer = 4, PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+        MaxConnectionsPerServer = 4,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(2),
         MaxResponseHeadersLength = 32,
         ConnectCallback = (context, token) => services.GetRequiredService<SafeRetailerConnection>().ConnectAsync(context.DnsEndPoint, token)
     });
@@ -165,6 +188,8 @@ try
     app.UseMiddleware<CookieRequestProtection>();
     app.UseRateLimiter();
     app.MapAuthEndpoints();
+    app.MapAdminAccountEndpoints();
+    app.MapContributionEndpoints();
     app.MapUserExtensionEndpoints();
     app.MapColesExtensionEndpoints();
     app.MapProductImportEndpoints();

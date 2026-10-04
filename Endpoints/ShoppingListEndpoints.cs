@@ -9,10 +9,31 @@ public static class ShoppingListEndpoints
 {
     public static void MapShoppingListEndpoints(this IEndpointRouteBuilder routes)
     {
+        routes.MapPost("/api/shopping-lists/{listId:long}/refresh-prices", async (long listId,
+            HttpContext context, PriceRefreshService service, CancellationToken token) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            var count = await service.RequestAsync(AccountId(context), listId, token);
+            return count is null ? Results.Problem(statusCode: 404, title: "The shopping list was not found.")
+                : Results.Ok(new { queued = count.Value });
+        }).RequireAuthorization().WithTags("Shopping lists");
+        routes.MapGet("/api/shopping-lists/{listId:long}/plan", async (long listId, HttpContext context, ShoppingListService service, CancellationToken token) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            var plan = await service.PlanAsync(AccountId(context), listId, token);
+            return plan is null ? Results.Problem(statusCode: 404, title: "The shopping list was not found.") : Results.Ok(plan);
+        }).RequireAuthorization().WithTags("Shopping lists");
+        routes.MapDelete("/api/shopping-lists/{listId:long}/items/{itemId:long}", async (long listId, long itemId,
+            [Microsoft.AspNetCore.Mvc.FromBody] ShoppingListItemDeleteRequest request, HttpContext context, ShoppingListService service, CancellationToken token) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            var result = await service.DeleteAsync(AccountId(context), listId, itemId, request, token);
+            return result.StatusCode == 204 ? Results.NoContent() : Results.Problem(statusCode: result.StatusCode, title: result.Message);
+        }).RequireAuthorization().WithTags("Shopping lists");
         routes.MapPost("/api/shopping-lists/default", async (HttpContext context, ShoppingListService service, CancellationToken token) =>
         {
             context.Response.Headers.CacheControl = "no-store";
-            var id = await service.EnsureDefaultAsync(AccountId(context), token);
+            var id = await service.EnsureDefaultAsync(AccountId(context), token, context.Request.Headers["X-Client-Timezone"].ToString());
             return id.HasValue ? Results.Ok(new { shoppingListId = id.Value })
                 : Results.Problem(statusCode: 401, title: "Your session is unavailable.");
         }).RequireAuthorization().WithTags("Shopping lists");
