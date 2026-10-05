@@ -10,9 +10,10 @@ public sealed record ShoppingListItemResponse(long Id, long ShoppingListId, Shop
 public sealed record ShoppingListItemPage(IReadOnlyList<ShoppingListItemResponse> Items, long? NextBeforeId);
 
 public sealed record ShoppingListItemDeleteRequest([property: JsonRequired] DateTime ExpectedUpdatedDate);
+public sealed record ShoppingListMultibuy(int Quantity, decimal Total, decimal UnitPrice, decimal Savings);
 public sealed record ShoppingListPrice(long ShopId, string ShopName, decimal? Price, bool IncludedInTotal,
     string Status, string? ProductUrl, DateTime? CheckedDate, string? SpecialDescription,
-    string? RefreshStatus = null);
+    string? RefreshStatus = null, ShoppingListMultibuy? Multibuy = null);
 public sealed record ShoppingListPlanningItem(ShoppingListItemResponse Item, ShoppingListPrice[] Prices);
 public sealed record ShoppingListMissingItem(long ItemId, string Name, string Reason);
 public sealed record ShoppingListBasket(long? ShopId, string Name, decimal Subtotal, int PricedCount,

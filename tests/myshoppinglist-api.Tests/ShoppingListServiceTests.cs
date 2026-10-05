@@ -9,6 +9,32 @@ namespace myshoppinglist_api.Tests;
 [Collection("Import worker database")]
 public class ShoppingListServiceTests
 {
+    [PostgreSqlFact]
+    public async Task Multibuy_is_separate_from_single_price_totals_and_stale_offers_are_not_promoted()
+    {
+        await using var f = await ListFixture.CreateAsync();
+        await f.Scope.Db.ShopProductPrices.Where(p => p.ShopProduct.ShopProductCode == f.Scope.Code)
+            .ExecuteUpdateAsync(s => s.SetProperty(p => p.Price, 30m).SetProperty(p => p.SourceType, SourceType.RetailerPage)
+                .SetProperty(p => p.SourceUrl, "https://www.coles.com.au/product/1115507")
+                .SetProperty(p => p.SpecialType, "MULTI_SAVE").SetProperty(p => p.SpecialDescription, "Pick any 2 for $30"));
+        var original = await f.ItemAsync();
+        await f.UpdateAsync(new(1, null, false, false, original.UpdatedDate));
+        var plan = (await f.Service.PlanAsync(f.Scope.UserId, f.Scope.ListId, default))!;
+        var price = Assert.Single(Assert.Single(plan.Items).Prices);
+        Assert.Equal("Fresh", price.Status); Assert.True(price.IncludedInTotal);
+        Assert.Equal(new ShoppingListMultibuy(2, 30, 15, 30), price.Multibuy);
+        Assert.Equal(30m, plan.Lowest.Subtotal); Assert.Empty(plan.Lowest.MissingItems);
+        var item = await f.ItemAsync();
+        await f.UpdateAsync(new(2, null, false, false, item.UpdatedDate));
+        Assert.Equal(60m, (await f.Service.PlanAsync(f.Scope.UserId, f.Scope.ListId, default))!.Lowest.Subtotal);
+        await f.Scope.Db.ShopProductPrices.Where(p => p.ShopProduct.ShopProductCode == f.Scope.Code)
+            .ExecuteUpdateAsync(s => s.SetProperty(p => p.CheckedDate, f.Scope.Clock.Now.UtcDateTime.AddDays(-8)));
+        plan = (await f.Service.PlanAsync(f.Scope.UserId, f.Scope.ListId, default))!;
+        Assert.Null(plan.Items[0].Prices[0].Multibuy);
+        Assert.Equal(0m, plan.Lowest.Subtotal);
+        Assert.Equal("Pick any 2 for $30", plan.Items[0].Prices[0].SpecialDescription);
+    }
+
     [Fact]
     public void Planning_totals_include_all_quantities_and_report_missing_prices_without_inventing_savings()
     {

@@ -55,7 +55,8 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
                     refreshStatus = task.Status switch { "Waiting" => "Waiting", "Processing" => "Updating", "Failed" => "RetryLater", _ => null };
                 return new ShoppingListPrice(mapping.ShopId, mapping.Shop.Name,
                     price is { Currency: "AUD", Price: >= 0 } ? price.Price : null, status == "Fresh", status,
-                    mapping.ProductUrl, price?.CheckedDate, price?.SpecialDescription, refreshStatus);
+                    mapping.ProductUrl, price?.CheckedDate, price?.SpecialDescription, refreshStatus,
+                    status == "Fresh" ? InStoreShoppingService.SinglePriceMultibuy(price) : null);
             }).OrderBy(p => p.ShopName).ToArray())).ToArray();
         if (!Accessible(list?.UserAccount, list, accountId)) return null;
         var plan = SummarizePlan(list!.Id, list.Name, rows, shops.Select(s => (s.Id, s.Name)).ToArray());

@@ -54,6 +54,58 @@ public class InStoreShoppingTests
         price.SpecialEndDate = null; price.Currency = "USD"; Assert.Equal("Not comparable", Status());
     }
 
+    [Fact]
+    public async Task Parsed_Coles_single_price_remains_comparable_with_a_separate_multibuy()
+    {
+        var result = await new myshoppinglist_api.Providers.Coles.ColesProductParser().ParseAsync(
+            new(ColesProductParserTests.Url, ColesProductParserTests.Fixture, ColesProductParserTests.Checked), default);
+        var product = Assert.IsType<myshoppinglist_api.Providers.Models.ProviderResult<myshoppinglist_api.Providers.Models.ExtractedShopProduct>.Success>(result).Value;
+        var offer = Assert.IsType<myshoppinglist_api.Providers.Models.ProviderResult<myshoppinglist_api.Providers.Models.ShopProductOffer>.Success>(product.Offer).Value;
+        var price = new ShopProductPrice
+        {
+            Price = offer.Price,
+            SourceType = offer.SourceType,
+            SourceUrl = offer.SourceUrl.AbsoluteUri,
+            SpecialType = offer.SpecialType,
+            SpecialDescription = offer.SpecialDescription,
+            CheckedDate = offer.CheckedDate.UtcDateTime
+        };
+        Assert.Equal("Fresh", InStoreShoppingService.PriceStatus(price, offer.CheckedDate, new()));
+        var deal = Assert.IsType<ShoppingListMultibuy>(InStoreShoppingService.SinglePriceMultibuy(price));
+        Assert.Equal(2, deal.Quantity); Assert.Equal(23m, deal.Total); Assert.Equal(11.5m, deal.UnitPrice);
+    }
+
+    [Fact]
+    public void Multibuy_requires_verified_single_price_and_never_bypasses_freshness_or_membership()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var price = new ShopProductPrice
+        {
+            Price = 30,
+            SourceType = SourceType.RetailerPage,
+            SourceUrl = "https://www.coles.com.au/product/1115507",
+            SpecialType = "MULTI_SAVE",
+            SpecialDescription = "Pick any 2 for $30",
+            CheckedDate = now.UtcDateTime
+        };
+        Assert.Equal(new ShoppingListMultibuy(2, 30, 15, 30), InStoreShoppingService.SinglePriceMultibuy(price));
+        Assert.Equal("Fresh", InStoreShoppingService.PriceStatus(price, now, new()));
+        price.CheckedDate = now.UtcDateTime.AddDays(-8);
+        Assert.Equal("Stale price", InStoreShoppingService.PriceStatus(price, now, new()));
+        price.CheckedDate = now.UtcDateTime; price.SpecialEndDate = now.UtcDateTime.AddMinutes(-1);
+        Assert.Equal("Offer not current", InStoreShoppingService.PriceStatus(price, now, new()));
+        price.SpecialEndDate = null;
+        foreach (var text in new[] { "Members: Pick any 2 for $30", "Pick any 2 for $30 with loyalty card", "2 for $0", "0 for $30", "2 for $300", "2 for $30 and spend $100" })
+        {
+            price.SpecialDescription = text;
+            Assert.Null(InStoreShoppingService.SinglePriceMultibuy(price));
+            Assert.Equal("Conditional offer", InStoreShoppingService.PriceStatus(price, now, new()));
+        }
+        price.SpecialDescription = "Pick any 2 for $30"; price.SourceType = SourceType.Manual;
+        Assert.Null(InStoreShoppingService.SinglePriceMultibuy(price));
+        Assert.Equal("Conditional offer", InStoreShoppingService.PriceStatus(price, now, new()));
+    }
+
     [PostgreSqlFact]
     public async Task Read_is_owned_excludes_hidden_and_reads_all_items_and_saved_prices()
     {

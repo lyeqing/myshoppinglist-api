@@ -1,4 +1,5 @@
 using System.Data;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using myshoppinglist_api.Contracts;
@@ -70,8 +71,28 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
         if (price.InStock == false) return "Out of stock";
         if (price.Currency != "AUD" || price.Price < 0 || price.ShopLocationId != null) return "Not comparable";
         if (price.SpecialStartDate > now.UtcDateTime || price.SpecialEndDate < now.UtcDateTime) return "Offer not current";
-        if (Regex.IsMatch($"{price.SpecialType} {price.SpecialDescription}", @"multi.?buy|member|loyalty|\bbuy\s+\d|\d\s+for\b", RegexOptions.IgnoreCase)) return "Conditional offer";
+        if (SinglePriceMultibuy(price) is not null) return "Fresh";
+        if (Regex.IsMatch($"{price.SpecialType} {price.SpecialDescription}", @"multi.?buy|multi.?save|member|loyalty|\bbuy\s+\d|\d\s+for\b", RegexOptions.IgnoreCase)) return "Conditional offer";
         return "Fresh";
+    }
+
+    public static ShoppingListMultibuy? SinglePriceMultibuy(ShopProductPrice? price)
+    {
+        // Coles' parser keeps pricing.now as the single-pack price, separate from multibuy promotions.
+        // Do not reinterpret unverified, member-only or other retailer offers as ordinary prices.
+        if (price is not { SourceType: SourceType.RetailerPage, Currency: "AUD", Price: > 0 }
+            || price.SpecialType is not ("MULTI_SAVE" or "SPECIAL")
+            || !Uri.TryCreate(price.SourceUrl, UriKind.Absolute, out var url) || url.Scheme != "https"
+            || url.Host is not ("www.coles.com.au" or "coles.com.au")) return null;
+        var match = Regex.Match(price.SpecialDescription ?? "",
+            @"\A\s*(?:(?:pick\s+any|any|buy)\s+)?(?<quantity>[2-9]|[1-9][0-9])\s+for\s+\$(?<total>[0-9]{1,6}(?:\.[0-9]{1,2})?)\s*\z",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!match.Success) return null;
+        var quantity = int.Parse(match.Groups["quantity"].Value, CultureInfo.InvariantCulture);
+        var total = decimal.Parse(match.Groups["total"].Value, CultureInfo.InvariantCulture);
+        var savings = price.Price * quantity - total;
+        if (total <= 0 || savings <= 0) return null;
+        return new(quantity, total, total / quantity, savings);
     }
 
     public static InStoreDetail Summarize(long id, string name, InStoreRetailer[] retailers, InStoreItem[] items)
