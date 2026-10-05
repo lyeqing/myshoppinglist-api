@@ -28,7 +28,7 @@ public class ProductImportSubmissionTests
     }
 
     [PostgreSqlFact]
-    public async Task Concurrent_normalised_duplicates_share_job_and_original_quantity()
+    public async Task Different_quantities_get_ordered_requests_and_identical_duplicates_share_job()
     {
         await using var scope = await SubmissionScope.CreateAsync();
         var first = await scope.SubmitAsync(new(scope.Url, 4));
@@ -38,8 +38,9 @@ public class ProductImportSubmissionTests
             return await scope.Service(db).SubmitAsync(scope.AccountId, scope.ListId, new(scope.Url + "#fragment", quantity), default);
         }
         var results = await Task.WhenAll(Submit(7), Submit(9));
-        Assert.All(results, r => { Assert.True(r.Response!.Reused); Assert.Equal(first.Response!.JobId, r.Response.JobId); Assert.Equal(4, r.Response.Quantity); });
-        Assert.Equal(1, await scope.Db.ProductImportJobs.CountAsync(j => j.ShoppingListId == scope.ListId));
+        Assert.All(results, r => { Assert.False(r.Response!.Reused); Assert.NotEqual(first.Response!.JobId, r.Response.JobId); });
+        Assert.Equal(7, results[0].Response!.Quantity); Assert.Equal(9, results[1].Response!.Quantity);
+        Assert.Equal(3, await scope.Db.ProductImportJobs.CountAsync(j => j.ShoppingListId == scope.ListId));
         // A different URL submitted concurrently must also create only one row.
         var newUrl = scope.Url + "-other";
         async Task<ProductImportSubmissionResult> Fresh()

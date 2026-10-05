@@ -50,7 +50,10 @@ public class AccountAuthServiceTests
         var list = await f.Db.ShoppingLists.AsNoTracking().SingleAsync(l => l.Id == registered.Response.ShoppingListId);
         Assert.Null(list.ExpiresDate);
         Assert.Equal("Shopping_List_04_10_2026_01", list.Name);
+        Assert.False(registered.Response.Account.IsPaid);
+        await f.Db.UserAccounts.Where(a => a.Id == user.Id).ExecuteUpdateAsync(s => s.SetProperty(a => a.IsPaid, true));
         var login = await f.Service.SignInAsync(new(f.Email.ToUpperInvariant(), AccountFixture.Password), default);
+        Assert.True(login.Response!.Account.IsPaid);
         Assert.Equal(200, login.StatusCode); Assert.Equal(registered.Response.ShoppingListId, login.Response!.ShoppingListId);
         Assert.NotEqual(registered.Token, login.Token);
         Assert.Equal(f.Clock.Now.UtcDateTime.AddDays(30).Ticks / 10, login.Response.SessionExpiresDate.Ticks / 10);
@@ -99,14 +102,18 @@ public class AccountAuthServiceTests
         var service = new AccountAuthService(f.Scope.Db, Options.Create(new AuthOptions()), f.Scope.Clock);
         var result = await service.RegisterAsync(new(f.Scope.Code + "@example.test", AccountFixture.Password, "Permanent shopper"), f.Scope.UserId, session, default);
         Assert.Equal(201, result.StatusCode); Assert.Equal(f.Scope.UserId, result.Response!.Account.Id);
-        Assert.Equal(f.Scope.ListId, result.Response.ShoppingListId); Assert.False(result.Response.Account.IsTrial);
-        Assert.Equal(edited, await f.ItemAsync());
+        Assert.Null(result.Response.ShoppingListId); Assert.False(result.Response.Account.IsTrial);
+        Assert.True(edited.ListArchived);
+        Assert.Null(await f.Service.ReadAsync(f.Scope.UserId, f.Scope.ListId, null, 20, true, true, default));
         Assert.Null((await f.Scope.Db.ShoppingLists.AsNoTracking().SingleAsync(l => l.Id == f.Scope.ListId)).ExpiresDate);
         Assert.Equal(f.ItemId, (await f.Scope.Db.ProductImportJobs.AsNoTracking().SingleAsync(j => j.Id == f.Scope.Job.Id)).ShoppingListProductId);
         Assert.All(await f.Scope.Db.UserSessions.AsNoTracking().Where(s => s.Id == session || s.Id == second).ToListAsync(), s => Assert.NotNull(s.RevokedDate));
         Assert.Equal(1, await f.Scope.Db.UserSessions.CountAsync(s => s.UserAccountId == f.Scope.UserId && s.RevokedDate == null));
         f.Scope.Clock.Now += TimeSpan.FromHours(4);
-        Assert.Equal(edited, await f.ItemAsync());
+        var saved = await f.Scope.Db.ShoppingListProducts.AsNoTracking().SingleAsync(i => i.Id == f.ItemId);
+        Assert.Equal(edited.Quantity, saved.Quantity); Assert.Equal(edited.Notes, saved.Notes);
+        Assert.True(saved.IsPurchased); Assert.True(saved.IsHidden);
+        Assert.True(await f.Scope.Db.ShoppingLists.Where(l => l.Id == f.Scope.ListId).Select(l => l.IsArchived).SingleAsync());
     }
 
     [PostgreSqlFact]
@@ -158,8 +165,13 @@ public class AccountAuthServiceTests
     internal static async Task<long> AddTrialSession(ListFixture f)
     {
         var now = f.Scope.Clock.Now.UtcDateTime;
-        var session = new myshoppinglist_api.Models.UserSession { UserAccountId = f.Scope.UserId, CreatedDate = now,
-            ExpiresDate = now.AddHours(3), TokenHash = SessionToken.Hash(SessionToken.Create()) };
+        var session = new myshoppinglist_api.Models.UserSession
+        {
+            UserAccountId = f.Scope.UserId,
+            CreatedDate = now,
+            ExpiresDate = now.AddHours(3),
+            TokenHash = SessionToken.Hash(SessionToken.Create())
+        };
         f.Scope.Db.UserSessions.Add(session); await f.Scope.Db.SaveChangesAsync(); f.Scope.Db.ChangeTracker.Clear();
         await f.Scope.Db.ShoppingLists.Where(l => l.Id == f.Scope.ListId).ExecuteUpdateAsync(s => s.SetProperty(l => l.ExpiresDate, now.AddHours(3)));
         return session.Id;

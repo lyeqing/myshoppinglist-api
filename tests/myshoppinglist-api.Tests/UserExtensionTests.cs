@@ -45,6 +45,13 @@ public class UserExtensionTests
             var start = new UserExtensionStart(f.Scope.ListId, sourceUrl, 2, Evidence(sourceUrl), Guid.NewGuid());
             var work = await service.StartAsync(f.Scope.UserId, start, default);
             Assert.True(work.SourceSaved); Assert.Equal("search", work.Stage);
+            // A manual quantity edit must not cause a fresh Add to be mistaken for
+            // a delivery retry of the already-running comparison.
+            await f.Scope.Db.ShoppingListProducts.Where(i => i.ShoppingListId == f.Scope.ListId)
+                .ExecuteUpdateAsync(s => s.SetProperty(i => i.Quantity, 9));
+            var addedAgain = await service.StartAsync(f.Scope.UserId, start with { RequestId = Guid.NewGuid() }, default);
+            Assert.NotEqual(work.JobId, addedAgain.JobId);
+            Assert.Equal(2, await f.Scope.Db.ShoppingListProducts.Where(i => i.ShoppingListId == f.Scope.ListId).Select(i => i.Quantity).SingleAsync());
             Assert.Equal(404, (await Assert.ThrowsAsync<UserImportException>(() => service.ReadAsync(-1, work.JobId, default))).Status);
             var invalid = new UserExtensionResult(work.StepToken, work.Url!, true, Links: [sourceUrl]);
             Assert.Equal(400, (await Assert.ThrowsAsync<UserImportException>(() => service.ResultAsync(f.Scope.UserId, work.JobId, invalid, default))).Status);
@@ -55,10 +62,13 @@ public class UserExtensionTests
             var done = await service.ResultAsync(f.Scope.UserId, work.JobId, new(product.StepToken, product.Url!, true, Evidence(otherUrl)), default);
             Assert.Equal("Completed", done.Status);
             Assert.Equal(work.JobId, (await service.StartAsync(f.Scope.UserId, start, default)).JobId);
-            var cached = await service.StartAsync(f.Scope.UserId, start with { RequestId = Guid.NewGuid() }, default);
+            var cached = await service.StartAsync(f.Scope.UserId, start with { RequestId = Guid.NewGuid(), Quantity = 5 }, default);
             Assert.Equal("Completed", cached.Status);
             Assert.True(await f.Scope.Db.ProductImportRetailerResults.AnyAsync(r => r.ProductImportJobId == cached.JobId && r.IsFromCache));
             Assert.Equal(1, await f.Scope.Db.ShoppingListProducts.CountAsync(i => i.ShoppingListId == f.Scope.ListId));
+            Assert.Equal(5, await f.Scope.Db.ShoppingListProducts.Where(i => i.ShoppingListId == f.Scope.ListId).Select(i => i.Quantity).SingleAsync());
+            await service.StartAsync(f.Scope.UserId, start, default);
+            Assert.Equal(5, await f.Scope.Db.ShoppingListProducts.Where(i => i.ShoppingListId == f.Scope.ListId).Select(i => i.Quantity).SingleAsync());
 
             // Once comparison data becomes stale, the browser is asked again; failure preserves the source.
             await f.Scope.Db.ShopProductPrices.Where(p => p.ShopProduct.ShopProductCode == code && p.ShopProduct.Shop.Code == "woolworths")

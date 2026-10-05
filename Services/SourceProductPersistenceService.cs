@@ -79,7 +79,20 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
                 db.ShoppingListProducts.Add(item);
                 list!.UpdatedDate = now;
             }
-            // Existing quantity, notes, purchased state and hidden state are deliberately preserved on retries.
+            else if (job.ShoppingListProductId is null
+                && !await db.ProductImportJobs.AnyAsync(j => j.ShoppingListId == listId && j.Id > job.Id
+                    && (j.ProductId == product.Id || j.NormalisedSourceUrl == job.NormalisedSourceUrl), token))
+            {
+                // Apply a new Add once. Older jobs and delivery retries cannot undo a
+                // newer Add. Delivery retries also preserve subsequent manual edits.
+                if (item.Quantity != job.RequestedQuantity)
+                {
+                    item.Quantity = job.RequestedQuantity;
+                    item.UpdatedDate = now;
+                    list!.UpdatedDate = now;
+                }
+            }
+            // Notes, purchased state and hidden state are preserved on every import.
             job.Product = product; job.ShoppingListProduct = item; job.SourceShopId = shop.Id;
             job.LastActivityDate = now; job.ProgressStage = ProductImportProgressStage.CheckingRetailers;
             var retailerResult = await db.ProductImportRetailerResults.SingleOrDefaultAsync(r => r.ProductImportJobId == jobId && r.ShopId == shop.Id, token);

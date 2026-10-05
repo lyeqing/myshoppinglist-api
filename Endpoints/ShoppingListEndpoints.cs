@@ -9,6 +9,18 @@ public static class ShoppingListEndpoints
 {
     public static void MapShoppingListEndpoints(this IEndpointRouteBuilder routes)
     {
+        routes.MapGet("/api/shopping-lists/manage", (HttpContext context, ShoppingListService service, CancellationToken token) =>
+            ListAction(context, async () => Results.Ok(await service.ManageAsync(AccountId(context), token)))).RequireAuthorization();
+        routes.MapPost("/api/shopping-lists", (ShoppingListCreateRequest request, HttpContext context, ShoppingListService service, CancellationToken token) =>
+            ListAction(context, async () => Results.Ok(await service.CreateAsync(AccountId(context), request, context.Request.Headers["X-Client-Timezone"].ToString(), token)))).RequireAuthorization();
+        routes.MapPost("/api/shopping-lists/{listId:long}/archive", (long listId, ShoppingListActionRequest request, HttpContext context, ShoppingListService service, CancellationToken token) =>
+            ListAction(context, async () => { await service.ChangeListAsync(AccountId(context), listId, request, true, token); return Results.NoContent(); })).RequireAuthorization();
+        routes.MapDelete("/api/shopping-lists/{listId:long}", (long listId, [Microsoft.AspNetCore.Mvc.FromBody] ShoppingListActionRequest request, HttpContext context, ShoppingListService service, CancellationToken token) =>
+            ListAction(context, async () => { await service.ChangeListAsync(AccountId(context), listId, request, false, token); return Results.NoContent(); })).RequireAuthorization();
+        routes.MapGet("/api/shopping-lists/history", (HttpContext context, ShoppingListService service, CancellationToken token) =>
+            ListAction(context, async () => Results.Ok(await service.HistoryAsync(AccountId(context), token)))).RequireAuthorization();
+        routes.MapGet("/api/shopping-lists/{listId:long}/history", (long listId, HttpContext context, ShoppingListService service, CancellationToken token) =>
+            ListAction(context, async () => Results.Ok(await service.HistoryDetailAsync(AccountId(context), listId, token)))).RequireAuthorization();
         routes.MapPost("/api/shopping-lists/{listId:long}/refresh-prices", async (long listId,
             HttpContext context, PriceRefreshService service, CancellationToken token) =>
         {
@@ -55,6 +67,12 @@ public static class ShoppingListEndpoints
             .ProducesProblem(403).ProducesProblem(404).ProducesProblem(409);
     }
     private static long AccountId(HttpContext context) => long.Parse(context.User.FindFirstValue(ClaimTypes.NameIdentifier)!, CultureInfo.InvariantCulture);
+    private static async Task<IResult> ListAction(HttpContext context, Func<Task<IResult>> action)
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        try { return await action(); }
+        catch (UserImportException error) { return Results.Problem(statusCode: error.Status, title: error.Message); }
+    }
     private static async Task<IResult> ReadAsync(long listId, long? beforeId, int? pageSize, bool? includeHidden,
         bool? includePurchased, HttpContext context, ShoppingListService service, CancellationToken token)
     {

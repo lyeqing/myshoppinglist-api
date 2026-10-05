@@ -44,10 +44,14 @@ public sealed class ProductImportSubmissionService(MyShoppingListDbContext db, P
             }
             // Serialising submitters on the list row also handles simultaneous HTTP requests in different instances.
             var existing = await db.ProductImportJobs.AsNoTracking().Where(j => j.ShoppingListId == listId
-                && j.UserAccountId == accountId && j.NormalisedSourceUrl == normalised
-                && (j.Status == ProductImportJobStatus.Queued || j.Status == ProductImportJobStatus.Processing))
-                .OrderBy(j => j.CreatedDate).ThenBy(j => j.Id).FirstOrDefaultAsync(token);
-            if (existing is not null)
+                && j.UserAccountId == accountId && j.NormalisedSourceUrl == normalised)
+                .OrderByDescending(j => j.Id).FirstOrDefaultAsync(token);
+            // Keep request quantities immutable: replaying an older extension request must
+            // never turn it into a new quantity change. Different quantities get new jobs.
+            if (existing is not null && existing.RequestedQuantity == request.Quantity
+                && (existing.ShoppingListProductId is null || !await db.ShoppingListProducts.AnyAsync(
+                    i => i.Id == existing.ShoppingListProductId && i.Quantity != request.Quantity, token))
+                && (existing.Status == ProductImportJobStatus.Queued || existing.Status == ProductImportJobStatus.Processing))
             {
                 if (userExtension && !await db.UserExtensionImportTasks.AnyAsync(t => t.ProductImportJobId == existing.Id, token))
                     return new(null, 409, "import_already_running", "This product is already being imported. Check its progress on your shopping list.");
@@ -60,8 +64,14 @@ public sealed class ProductImportSubmissionService(MyShoppingListDbContext db, P
             if (shop is null) return new(null, 400, "source_not_supported", "This retailer is currently unavailable for imports.");
             var job = new ProductImportJob
             {
-                UserAccountId = accountId, ShoppingListId = listId, SourceUrl = normalised, NormalisedSourceUrl = normalised,
-                SourceShopId = shop.Id, RequestedQuantity = request.Quantity, CreatedDate = now, LastActivityDate = now
+                UserAccountId = accountId,
+                ShoppingListId = listId,
+                SourceUrl = normalised,
+                NormalisedSourceUrl = normalised,
+                SourceShopId = shop.Id,
+                RequestedQuantity = request.Quantity,
+                CreatedDate = now,
+                LastActivityDate = now
             };
             if (userExtension)
             {

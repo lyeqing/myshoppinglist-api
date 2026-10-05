@@ -9,6 +9,71 @@ namespace myshoppinglist_api.Tests;
 [Collection("Import worker database")]
 public class ShoppingListServiceTests
 {
+    internal static async Task RegisterFixtureAsync(ListFixture f, bool paid)
+    {
+        var password = myshoppinglist_api.Security.PasswordHasher.Hash("Testing123!");
+        await f.Scope.Db.UserAccounts.Where(a => a.Id == f.Scope.UserId).ExecuteUpdateAsync(s => s
+            .SetProperty(a => a.IsTrial, false).SetProperty(a => a.IsPaid, paid)
+            .SetProperty(a => a.Email, f.Scope.Code + "@example.test")
+            .SetProperty(a => a.PasswordHash, password.Hash).SetProperty(a => a.PasswordSalt, password.Salt)
+            .SetProperty(a => a.ExpiresDate, (DateTime?)null));
+        f.Scope.Db.ChangeTracker.Clear();
+    }
+    [PostgreSqlFact]
+    public async Task List_limits_are_serialized_and_archive_delete_free_slots_with_paid_only_history()
+    {
+        await using var f = await ListFixture.CreateAsync();
+        await RegisterFixtureAsync(f, false);
+        async Task<bool> Create()
+        {
+            await using var db = PersistenceScope.Context();
+            try { await new ShoppingListService(db, f.Scope.Clock).CreateAsync(f.Scope.UserId, new(null), "Australia/Adelaide", default); return true; }
+            catch (UserImportException e) when (e.Status == 409) { return false; }
+        }
+        var concurrent = await Task.WhenAll(Create(), Create());
+        Assert.Single(concurrent, success => success);
+        var free = await f.Service.ManageAsync(f.Scope.UserId, default);
+        Assert.Equal(2, free.Limit); Assert.Equal(2, free.Lists.Length);
+        Assert.Equal(403, (await Assert.ThrowsAsync<UserImportException>(() => f.Service.HistoryAsync(f.Scope.UserId, default))).Status);
+        Assert.Equal(403, (await Assert.ThrowsAsync<UserImportException>(() => f.Service.ChangeListAsync(f.Scope.UserId, free.Lists[0].Id, new(free.Lists[0].UpdatedDate), true, default))).Status);
+        await f.Scope.Db.UserAccounts.Where(a => a.Id == f.Scope.UserId).ExecuteUpdateAsync(s => s.SetProperty(a => a.IsPaid, true));
+        for (var i = 0; i < 3; i++) await f.Service.CreateAsync(f.Scope.UserId, new(null), "Australia/Adelaide", default);
+        Assert.Equal(409, (await Assert.ThrowsAsync<UserImportException>(() => f.Service.CreateAsync(f.Scope.UserId, new("Sixth"), null, default))).Status);
+        var full = await f.Service.ManageAsync(f.Scope.UserId, default);
+        Assert.Equal(5, full.Lists.Length); Assert.Equal(5, full.Limit);
+        var first = full.Lists[0];
+        await f.Service.ChangeListAsync(f.Scope.UserId, first.Id, new(first.UpdatedDate), true, default);
+        Assert.Single(await f.Service.HistoryAsync(f.Scope.UserId, default));
+        Assert.Single((await f.Service.HistoryDetailAsync(f.Scope.UserId, first.Id, default)).Items);
+        await f.Service.CreateAsync(f.Scope.UserId, new("Replacement"), null, default);
+        var archived = (await f.Service.HistoryAsync(f.Scope.UserId, default))[0];
+        await f.Service.ChangeListAsync(f.Scope.UserId, archived.Id, new(archived.UpdatedDate), false, default);
+        Assert.Empty(await f.Service.HistoryAsync(f.Scope.UserId, default));
+        Assert.Equal(404, (await Assert.ThrowsAsync<UserImportException>(() => f.Service.HistoryDetailAsync(f.Scope.UserId, first.Id, default))).Status);
+        Assert.False(await f.Scope.Db.ShoppingListProducts.AnyAsync(i => i.ShoppingListId == first.Id));
+        Assert.True(await f.Scope.Db.Products.AnyAsync(p => p.Name == f.Scope.Source.Identity.Name));
+    }
+
+    [PostgreSqlFact]
+    public async Task Automatic_archiving_requires_nonempty_list_and_every_item_hidden_or_purchased()
+    {
+        foreach (var paid in new[] { false, true })
+        {
+            await using var f = await ListFixture.CreateAsync();
+            await RegisterFixtureAsync(f, paid);
+            var empty = await f.Service.CreateAsync(f.Scope.UserId, new("Empty"), null, default);
+            Assert.False(await f.Scope.Db.ShoppingLists.Where(l => l.Id == empty.Id).Select(l => l.IsArchived).SingleAsync());
+            await f.AddItemAsync(hidden: true);
+            var original = await f.ItemAsync();
+            var saved = await f.UpdateAsync(new(original.Quantity, "Keep note", true, false, original.UpdatedDate));
+            Assert.True(saved.Item!.ListArchived);
+            Assert.Null(await f.Service.PlanAsync(f.Scope.UserId, f.Scope.ListId, default));
+            Assert.Single((await f.Service.ManageAsync(f.Scope.UserId, default)).Lists);
+            Assert.Equal(ProductImportJobStatus.Cancelled, await f.Scope.Db.ProductImportJobs.Where(j => j.Id == f.Scope.Job.Id).Select(j => j.Status).SingleAsync());
+            if (paid) Assert.Equal(2, (await f.Service.HistoryDetailAsync(f.Scope.UserId, f.Scope.ListId, default)).Items.Length);
+            else Assert.Equal(403, (await Assert.ThrowsAsync<UserImportException>(() => f.Service.HistoryDetailAsync(f.Scope.UserId, f.Scope.ListId, default))).Status);
+        }
+    }
     [PostgreSqlFact]
     public async Task Multibuy_is_separate_from_single_price_totals_and_stale_offers_are_not_promoted()
     {
@@ -109,6 +174,7 @@ public class ShoppingListServiceTests
     public async Task Edits_preserve_identity_and_manage_purchase_dates_without_deletion()
     {
         await using var f = await ListFixture.CreateAsync();
+        await f.AddItemAsync();
         var original = await f.ItemAsync();
         var purchased = (await f.UpdateAsync(new(4, "Two for the pantry", true, true, original.UpdatedDate))).Item!;
         Assert.Equal(4, purchased.Quantity); Assert.True(purchased.IsHidden); Assert.NotNull(purchased.PurchasedDate);
@@ -120,7 +186,7 @@ public class ShoppingListServiceTests
         var unmarked = (await f.UpdateAsync(new(5, null, false, false, edited.UpdatedDate))).Item!;
         Assert.Null(unmarked.PurchasedDate); Assert.False(unmarked.IsPurchased);
         Assert.True(await f.Scope.Db.Products.AnyAsync(p => p.Id == original.Product.Id && !p.IsDeleted));
-        Assert.Single(await f.Scope.Db.ShoppingListProducts.Where(i => i.ShoppingListId == f.Scope.ListId).ToListAsync());
+        Assert.Equal(2, await f.Scope.Db.ShoppingListProducts.CountAsync(i => i.ShoppingListId == f.Scope.ListId));
     }
 
     [PostgreSqlFact]
@@ -209,17 +275,23 @@ public class ShoppingListServiceTests
     }
 
     [PostgreSqlFact]
-    public async Task Reimport_keeps_edited_quantity_notes_and_purchase_state_without_duplicate_items()
+    public async Task Reimport_replaces_quantity_preserving_notes_and_purchase_state_without_duplicate_items()
     {
         await using var f = await ListFixture.CreateAsync();
+        await f.AddItemAsync();
         var original = await f.ItemAsync();
         var edited = (await f.UpdateAsync(new(9, "Keep this", true, true, original.UpdatedDate))).Item!;
+        f.Scope.Clock.Now += TimeSpan.FromSeconds(1);
         var job = await f.Scope.AddJobAsync(f.Scope.Source);
         var saved = await f.Scope.SaveAsync(job);
         Assert.Equal(ProductPersistenceStatus.Success, saved.Status);
         Assert.Equal(f.ItemId, saved.ShoppingListProductId);
-        Assert.Equal(edited, await f.ItemAsync());
-        Assert.Single((await f.Service.ReadAsync(f.Scope.UserId, f.Scope.ListId, null, 20, true, true, default))!.Items);
+        var updated = await f.ItemAsync();
+        Assert.Equal(job.RequestedQuantity, updated.Quantity);
+        Assert.Equal(edited.Notes, updated.Notes);
+        Assert.Equal(edited.IsPurchased, updated.IsPurchased);
+        Assert.Equal(edited.IsHidden, updated.IsHidden);
+        Assert.Equal(2, (await f.Service.ReadAsync(f.Scope.UserId, f.Scope.ListId, null, 20, true, true, default))!.Items.Count);
     }
 
     private sealed class ExpiringClock(DateTimeOffset start, int expireOnCall) : TimeProvider

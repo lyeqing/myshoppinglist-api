@@ -12,6 +12,112 @@ public sealed record ShoppingListDeleteResult(int StatusCode, string? Message = 
 
 public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider clock)
 {
+    private async Task<UserAccount> RegisteredAsync(long accountId, CancellationToken token, bool paidOnly = false)
+    {
+        var account = await db.UserAccounts.AsNoTracking().SingleOrDefaultAsync(a => a.Id == accountId && a.IsActive, token);
+        if (account is null) throw new UserImportException(401, "Sign in to manage your lists.");
+        if (account.IsTrial) throw new UserImportException(403, "Create an account to manage multiple lists.");
+        if (paidOnly && !account.IsPaid) throw new UserImportException(403, "History and manual archiving are available to paid accounts.");
+        return account;
+    }
+
+    public async Task<ShoppingListManagement> ManageAsync(long accountId, CancellationToken token)
+    {
+        var account = await RegisteredAsync(accountId, token);
+        var now = clock.GetUtcNow().UtcDateTime;
+        var lists = await db.ShoppingLists.AsNoTracking().Where(l => l.UserAccountId == accountId && !l.IsArchived
+            && (l.ExpiresDate == null || l.ExpiresDate > now)).OrderBy(l => l.Id)
+            .Select(l => new ShoppingListSummary(l.Id, l.Name, l.CreatedDate, l.UpdatedDate)).ToArrayAsync(token);
+        return new(account.IsPaid ? 5 : 2, account.IsPaid, lists);
+    }
+
+    public async Task<ShoppingListSummary> CreateAsync(long accountId, ShoppingListCreateRequest request, string? timezone, CancellationToken token)
+    {
+        if (request.Name?.Trim().Length > 200) throw new UserImportException(400, "Use a list name of at most 200 characters.");
+        await using var transaction = await db.Database.BeginTransactionAsync(token);
+        try
+        {
+            // All creators, including automatic default creation, serialize on this account.
+            await db.UserAccounts.FromSqlInterpolated($"""SELECT * FROM "UserAccounts" WHERE "Id" = {accountId} FOR UPDATE""").SingleOrDefaultAsync(token);
+            var account = await RegisteredAsync(accountId, token);
+            var now = new DateTime(clock.GetUtcNow().UtcTicks / 10 * 10, DateTimeKind.Utc);
+            var limit = account.IsPaid ? 5 : 2;
+            if (await db.ShoppingLists.CountAsync(l => l.UserAccountId == accountId && !l.IsArchived && (l.ExpiresDate == null || l.ExpiresDate > now), token) >= limit)
+                throw new UserImportException(409, account.IsPaid ? "You have 5 active lists. Delete or archive a list to create another." : "You have 2 active lists. Delete a list to create another.");
+            var list = new ShoppingList
+            {
+                UserAccountId = accountId,
+                Name = string.IsNullOrWhiteSpace(request.Name)
+                ? await ShoppingListNameService.NextAsync(db, accountId, now, timezone, token) : request.Name.Trim(),
+                CreatedDate = now,
+                UpdatedDate = now
+            };
+            db.ShoppingLists.Add(list);
+            await db.SaveChangesAsync(token);
+            await transaction.CommitAsync(token);
+            return new(list.Id, list.Name, list.CreatedDate, list.UpdatedDate);
+        }
+        finally { db.ChangeTracker.Clear(); }
+    }
+
+    public async Task ChangeListAsync(long accountId, long listId, ShoppingListActionRequest request, bool archive, CancellationToken token)
+    {
+        if (request.ExpectedUpdatedDate == default || request.ExpectedUpdatedDate.Kind != DateTimeKind.Utc)
+            throw new UserImportException(400, "A current list timestamp is required.");
+        await using var transaction = await db.Database.BeginTransactionAsync(token);
+        try
+        {
+            await db.UserAccounts.FromSqlInterpolated($"""SELECT * FROM "UserAccounts" WHERE "Id" = {accountId} FOR UPDATE""").SingleOrDefaultAsync(token);
+            var account = await RegisteredAsync(accountId, token, archive);
+            var list = await db.ShoppingLists.FromSqlInterpolated($"""SELECT * FROM "ShoppingLists" WHERE "Id" = {listId} AND "UserAccountId" = {accountId} FOR UPDATE""").SingleOrDefaultAsync(token);
+            if (list is null || list.IsArchived && !account.IsPaid) throw new UserImportException(404, "The shopping list was not found.");
+            if (list.UpdatedDate != request.ExpectedUpdatedDate) throw new UserImportException(409, "This list changed. Refresh before trying again.");
+            await CancelListJobsAsync(listId, token);
+            if (archive) { list.IsArchived = true; list.UpdatedDate = clock.GetUtcNow().UtcDateTime; }
+            else db.ShoppingLists.Remove(list);
+            await db.SaveChangesAsync(token);
+            await transaction.CommitAsync(token);
+        }
+        finally { db.ChangeTracker.Clear(); }
+    }
+
+    private async Task CancelListJobsAsync(long listId, CancellationToken token)
+    {
+        var now = clock.GetUtcNow().UtcDateTime;
+        await db.UserExtensionImportTasks.Where(t => t.ProductImportJob.ShoppingListId == listId && t.Status == "Waiting")
+            .ExecuteUpdateAsync(s => s.SetProperty(t => t.Status, "Failed").SetProperty(t => t.ErrorCode, "list_unavailable").SetProperty(t => t.UpdatedDate, now), token);
+        await db.ProductImportJobs.Where(j => j.ShoppingListId == listId && (j.Status == ProductImportJobStatus.Queued || j.Status == ProductImportJobStatus.Processing))
+            .ExecuteUpdateAsync(s => s.SetProperty(j => j.Status, ProductImportJobStatus.Cancelled).SetProperty(j => j.ClaimToken, (Guid?)null)
+                .SetProperty(j => j.LeaseExpiresDate, (DateTime?)null).SetProperty(j => j.NextAttemptDate, (DateTime?)null)
+                .SetProperty(j => j.CompletedDate, now).SetProperty(j => j.ErrorCode, "list_unavailable"), token);
+    }
+
+    private async Task<bool> AutoArchiveAsync(ShoppingList list, CancellationToken token)
+    {
+        if (!await db.ShoppingListProducts.AnyAsync(i => i.ShoppingListId == list.Id, token)
+            || await db.ShoppingListProducts.AnyAsync(i => i.ShoppingListId == list.Id && !i.IsPurchased && !i.IsHidden, token)) return false;
+        list.IsArchived = true;
+        list.UpdatedDate = clock.GetUtcNow().UtcDateTime;
+        await CancelListJobsAsync(list.Id, token);
+        await db.SaveChangesAsync(token);
+        return true;
+    }
+
+    public async Task<ShoppingListSummary[]> HistoryAsync(long accountId, CancellationToken token)
+    {
+        await RegisteredAsync(accountId, token, true);
+        return await db.ShoppingLists.AsNoTracking().Where(l => l.UserAccountId == accountId && l.IsArchived)
+            .OrderByDescending(l => l.UpdatedDate).Select(l => new ShoppingListSummary(l.Id, l.Name, l.CreatedDate, l.UpdatedDate)).ToArrayAsync(token);
+    }
+
+    public async Task<ShoppingListHistory> HistoryDetailAsync(long accountId, long listId, CancellationToken token)
+    {
+        await RegisteredAsync(accountId, token, true);
+        var list = await db.ShoppingLists.AsNoTracking().SingleOrDefaultAsync(l => l.Id == listId && l.UserAccountId == accountId && l.IsArchived, token)
+            ?? throw new UserImportException(404, "The archived list was not found.");
+        var items = await db.ShoppingListProducts.AsNoTracking().Include(i => i.Product).Where(i => i.ShoppingListId == listId).OrderBy(i => i.Id).ToArrayAsync(token);
+        return new(new(list.Id, list.Name, list.CreatedDate, list.UpdatedDate), items.Select(i => Response(i) with { ListArchived = true }).ToArray());
+    }
     public async Task<ShoppingListPlan?> PlanAsync(long accountId, long listId, CancellationToken token)
     {
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.RepeatableRead, token);
@@ -133,6 +239,7 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
             list!.UpdatedDate = now > list.UpdatedDate ? now : list.UpdatedDate.AddTicks(10);
             await db.SaveChangesAsync(token);
             if (!Accessible(user, list, accountId)) return new(404, "The shopping list or item was not found.");
+            await AutoArchiveAsync(list, token);
             await transaction.CommitAsync(token);
             return new(204);
         }
@@ -218,7 +325,8 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
                 await db.SaveChangesAsync(token);
             }
             if (!Accessible(user, list, accountId)) return Missing();
-            var response = Response(item, product);
+            var archived = await AutoArchiveAsync(list!, token);
+            var response = Response(item, product) with { ListArchived = archived };
             await transaction.CommitAsync(token);
             return new(response, 200);
         }

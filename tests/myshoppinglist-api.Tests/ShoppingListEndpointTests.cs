@@ -16,6 +16,36 @@ namespace myshoppinglist_api.Tests;
 public class ShoppingListEndpointTests
 {
     [PostgreSqlFact]
+    public async Task List_management_routes_enforce_tier_ownership_versions_and_request_protection()
+    {
+        await using var f = await ListFixture.CreateAsync();
+        await using var other = await ListFixture.CreateAsync();
+        await ShoppingListServiceTests.RegisterFixtureAsync(f, false);
+        await using var app = new ListApiFactory(f);
+        using var client = await app.ClientAsync();
+        using var anonymous = app.CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/shopping-lists/history")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/shopping-lists/history")).StatusCode);
+        var management = (await client.GetFromJsonAsync<ShoppingListManagement>("/api/shopping-lists/manage"))!;
+        var list = Assert.Single(management.Lists);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync($"/api/shopping-lists/{list.Id}/archive", new ShoppingListActionRequest(list.UpdatedDate))).StatusCode);
+        client.DefaultRequestHeaders.Remove(CookieRequestProtection.HeaderName);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/api/shopping-lists", new ShoppingListCreateRequest("New"))).StatusCode);
+        client.DefaultRequestHeaders.Add(CookieRequestProtection.HeaderName, "1");
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/shopping-lists", new ShoppingListCreateRequest("New"))).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync("/api/shopping-lists", new ShoppingListCreateRequest("Too many"))).StatusCode);
+        await f.Scope.Db.UserAccounts.Where(a => a.Id == f.Scope.UserId).ExecuteUpdateAsync(s => s.SetProperty(a => a.IsPaid, true));
+        Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsJsonAsync($"/api/shopping-lists/{other.Scope.ListId}/archive", new ShoppingListActionRequest(list.UpdatedDate))).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync($"/api/shopping-lists/{list.Id}/archive", new ShoppingListActionRequest(list.UpdatedDate.AddSeconds(-1)))).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await client.PostAsJsonAsync($"/api/shopping-lists/{list.Id}/archive", new ShoppingListActionRequest(list.UpdatedDate))).StatusCode);
+        var archived = Assert.Single((await client.GetFromJsonAsync<ShoppingListSummary[]>("/api/shopping-lists/history"))!);
+        Assert.Single((await client.GetFromJsonAsync<ShoppingListHistory>($"/api/shopping-lists/{list.Id}/history"))!.Items);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/shopping-lists/{other.Scope.ListId}/history")).StatusCode);
+        var deleted = await client.SendAsync(new(HttpMethod.Delete, $"/api/shopping-lists/{list.Id}") { Content = JsonContent.Create(new ShoppingListActionRequest(archived.UpdatedDate)) });
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+        Assert.Empty((await client.GetFromJsonAsync<ShoppingListSummary[]>("/api/shopping-lists/history"))!);
+    }
+    [PostgreSqlFact]
     public async Task Planning_and_delete_routes_require_ownership_session_and_request_protection()
     {
         await using var f = await ListFixture.CreateAsync();
@@ -58,13 +88,14 @@ public class ShoppingListEndpointTests
         var response = await client.GetAsync(Route(f));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode); Assert.True(response.Headers.CacheControl!.NoStore);
         var item = Assert.Single((await response.Content.ReadFromJsonAsync<ShoppingListItemPage>())!.Items);
+        await f.AddItemAsync();
         var request = new ShoppingListItemUpdateRequest(5, "Milk first", true, true, item.UpdatedDate);
         var edited = await client.PutAsJsonAsync(Route(f) + $"/{item.Id}", request);
         Assert.Equal(HttpStatusCode.OK, edited.StatusCode); Assert.True(edited.Headers.CacheControl!.NoStore);
         var saved = (await edited.Content.ReadFromJsonAsync<ShoppingListItemResponse>())!;
         Assert.Equal(5, saved.Quantity); Assert.NotNull(saved.PurchasedDate);
-        Assert.Empty((await client.GetFromJsonAsync<ShoppingListItemPage>(Route(f)))!.Items);
-        Assert.Single((await client.GetFromJsonAsync<ShoppingListItemPage>(Route(f) + "?includeHidden=true"))!.Items);
+        Assert.Single((await client.GetFromJsonAsync<ShoppingListItemPage>(Route(f)))!.Items);
+        Assert.Equal(2, (await client.GetFromJsonAsync<ShoppingListItemPage>(Route(f) + "?includeHidden=true"))!.Items.Count);
         Assert.Equal(HttpStatusCode.Conflict, (await client.PutAsJsonAsync(Route(f) + $"/{item.Id}", request)).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync(Route(f) + $"/{item.Id}", request with
         { IsHidden = false, IsPurchased = false, Notes = null, ExpectedUpdatedDate = saved.UpdatedDate })).StatusCode);

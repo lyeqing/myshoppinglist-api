@@ -23,7 +23,7 @@ public sealed class TrialSessionService(MyShoppingListDbContext db, IOptions<Aut
             && s.RevokedDate == null && s.ExpiresDate > now && s.UserAccount.IsActive
             && (!s.UserAccount.IsTrial || s.UserAccount.ExpiresDate > now))
             .Select(s => new CurrentSessionResponse(new AccountResponse(s.UserAccountId, s.UserAccount.DisplayName,
-                s.UserAccount.IsTrial, s.UserAccount.ExpiresDate),
+                s.UserAccount.IsTrial, s.UserAccount.ExpiresDate, s.UserAccount.IsPaid),
                 db.ShoppingLists.Where(l => l.UserAccountId == accountId && !l.IsArchived && (l.ExpiresDate == null || l.ExpiresDate > now))
                     .OrderBy(l => l.Id).Select(l => (long?)l.Id).FirstOrDefault(), s.ExpiresDate))
             .SingleOrDefaultAsync(token);
@@ -44,8 +44,15 @@ public sealed class TrialSessionService(MyShoppingListDbContext db, IOptions<Aut
         now = new DateTime(now.Ticks / 10 * 10, DateTimeKind.Utc);
         var expires = now.AddHours(options.Value.TrialLifetimeHours);
         var raw = SessionToken.Create();
-        var user = new UserAccount { DisplayName = "Trial shopper", IsTrial = true, IsActive = true,
-            CreatedDate = now, UpdatedDate = now, ExpiresDate = expires };
+        var user = new UserAccount
+        {
+            DisplayName = "Trial shopper",
+            IsTrial = true,
+            IsActive = true,
+            CreatedDate = now,
+            UpdatedDate = now,
+            ExpiresDate = expires
+        };
         var list = new ShoppingList { UserAccount = user, Name = ShoppingListNameService.First(now, timezone), CreatedDate = now, UpdatedDate = now, ExpiresDate = expires };
         var session = new UserSession { UserAccount = user, TokenHash = SessionToken.Hash(raw), CreatedDate = now, ExpiresDate = expires };
         db.AddRange(user, list, session);

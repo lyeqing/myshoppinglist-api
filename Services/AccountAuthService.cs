@@ -42,7 +42,7 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
             await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({"account-register:" + email}, 0))", token);
             if (await db.UserAccounts.AnyAsync(u => u.Email == email, token)) return Fail(409, "Registration could not be completed with this email.");
             UserAccount user;
-            ShoppingList list;
+            ShoppingList? list;
             UserSession? trialSession = null;
             DateTime? trialExpiry = null;
             List<ShoppingList> convertedLists = [];
@@ -59,10 +59,10 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
                 trialSession = await db.UserSessions.FromSqlInterpolated($"""SELECT * FROM "UserSessions" WHERE "Id" = {sessionId} AND "UserAccountId" = {id} FOR UPDATE""").SingleOrDefaultAsync(token);
                 if (trialSession is null || trialSession.RevokedDate is not null || !(trialSession.ExpiresDate > Now))
                     return Fail(401, "A valid trial session is required.");
-                convertedLists = lists.Where(l => !l.IsArchived && (l.ExpiresDate is null || l.ExpiresDate > Now)).ToList();
+                convertedLists = lists.Where(l => l.ExpiresDate is null || l.ExpiresDate > Now).ToList();
                 if (convertedLists.Count == 0) return Fail(409, "The trial shopping list is unavailable.");
                 originalListExpiries = convertedLists.Select(l => l.ExpiresDate).ToList();
-                list = convertedLists[0];
+                list = convertedLists.FirstOrDefault(l => !l.IsArchived);
                 foreach (var activeList in convertedLists) { activeList.ExpiresDate = null; activeList.UpdatedDate = now; }
                 // Tokens issued while this was a trial must not become registered-account credentials.
                 await db.UserSessions.Where(s => s.UserAccountId == id && s.RevokedDate == null)
@@ -87,7 +87,7 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
                 return Fail(401, "The trial expired before registration finished.");
             if (!(session.ExpiresDate > now)) return Fail(401, "The new session expired before registration finished.");
             await transaction.CommitAsync(token);
-            return new(Response(user, list.Id, session), raw, 201);
+            return new(Response(user, list?.Id, session), raw, 201);
         }
         catch (DbUpdateException exception) when (exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
         { return Fail(409, "Registration could not be completed with this email."); }
@@ -124,12 +124,24 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
     private (UserSession Session, string Raw) NewSession(UserAccount user, DateTime now, SessionDevice? device)
     {
         var raw = SessionToken.Create();
-        return (new() { UserAccount = user, TokenHash = SessionToken.Hash(raw), CreatedDate = now,
-            ExpiresDate = now.AddDays(options.Value.RegisteredSessionDays), LastSeenDate = now,
-            Platform = device?.Platform, DeviceType = device?.DeviceType, DeviceModel = device?.DeviceModel,
-            OsVersion = device?.OsVersion, AppVersion = device?.AppVersion, UserAgent = device?.UserAgent,
-            Latitude = device?.Latitude, Longitude = device?.Longitude, LocationAccuracy = device?.LocationAccuracy,
-            LocationCapturedDate = device?.LocationCapturedDate }, raw);
+        return (new()
+        {
+            UserAccount = user,
+            TokenHash = SessionToken.Hash(raw),
+            CreatedDate = now,
+            ExpiresDate = now.AddDays(options.Value.RegisteredSessionDays),
+            LastSeenDate = now,
+            Platform = device?.Platform,
+            DeviceType = device?.DeviceType,
+            DeviceModel = device?.DeviceModel,
+            OsVersion = device?.OsVersion,
+            AppVersion = device?.AppVersion,
+            UserAgent = device?.UserAgent,
+            Latitude = device?.Latitude,
+            Longitude = device?.Longitude,
+            LocationAccuracy = device?.LocationAccuracy,
+            LocationCapturedDate = device?.LocationCapturedDate
+        }, raw);
     }
     private void CleanContext()
     { if (db.ChangeTracker.Entries().Any()) throw new InvalidOperationException("Account authentication requires a clean context."); }
@@ -142,7 +154,7 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
         return email;
     }
     private static CurrentSessionResponse Response(UserAccount user, long? listId, UserSession session) =>
-        new(new(user.Id, user.DisplayName, user.IsTrial, user.ExpiresDate), listId, session.ExpiresDate);
+        new(new(user.Id, user.DisplayName, user.IsTrial, user.ExpiresDate, user.IsPaid), listId, session.ExpiresDate);
     private static AccountAuthResult Fail(int code, string message) => new(null, StatusCode: code, Message: message);
     private static AccountAuthResult InvalidCredentials() => Fail(401, "The email or password is incorrect.");
 }

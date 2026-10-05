@@ -8,6 +8,19 @@ namespace myshoppinglist_api.Tests;
 [Collection("Import worker database")]
 public class InStoreShoppingTests
 {
+    [PostgreSqlFact]
+    public async Task Completing_trial_list_removes_it_from_in_store_without_deleting_saved_items()
+    {
+        await using var f = await ListFixture.CreateAsync();
+        var service = new InStoreShoppingService(f.Scope.Db, f.Scope.Clock, new CatalogueFreshnessService());
+        Assert.Single(await service.ListsAsync(f.Scope.UserId, default));
+        var item = await f.ItemAsync();
+        var saved = await f.UpdateAsync(new(item.Quantity, item.Notes, true, false, item.UpdatedDate));
+        Assert.True(saved.Item!.ListArchived);
+        Assert.Empty(await service.ListsAsync(f.Scope.UserId, default));
+        Assert.Null(await service.DetailAsync(f.Scope.UserId, f.Scope.ListId, default));
+        Assert.True(await f.Scope.Db.ShoppingListProducts.AnyAsync(i => i.Id == item.Id));
+    }
     private static readonly InStoreRetailer[] Shops = [new(1, "Coles"), new(2, "Woolworths")];
     private static InStoreItem Row(long id, int quantity, decimal? coles, decimal? woolworths, bool purchased = false, bool hidden = false) => new(
         new(id, 1, new(id, "Product", null, null, null, null, null, null), quantity, null, purchased, null, hidden, null, default, default),

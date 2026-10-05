@@ -6,7 +6,13 @@ public sealed record ShoppingListItemProductResponse(long Id, string Name, strin
     int? PackQuantity, decimal? PackSize, string? PackUnit, string? ImageUrl);
 public sealed record ShoppingListItemResponse(long Id, long ShoppingListId, ShoppingListItemProductResponse Product,
     int Quantity, string? Notes, bool IsPurchased, DateTime? PurchasedDate, bool IsHidden,
-    long? PreferredShopId, DateTime AddedDate, DateTime UpdatedDate);
+    long? PreferredShopId, DateTime AddedDate, DateTime UpdatedDate, bool ListArchived = false);
+
+public sealed record ShoppingListCreateRequest(string? Name);
+public sealed record ShoppingListActionRequest([property: JsonRequired] DateTime ExpectedUpdatedDate);
+public sealed record ShoppingListSummary(long Id, string Name, DateTime CreatedDate, DateTime UpdatedDate);
+public sealed record ShoppingListManagement(int Limit, bool IsPaid, ShoppingListSummary[] Lists);
+public sealed record ShoppingListHistory(ShoppingListSummary List, ShoppingListItemResponse[] Items);
 public sealed record ShoppingListItemPage(IReadOnlyList<ShoppingListItemResponse> Items, long? NextBeforeId);
 
 public sealed record ShoppingListItemDeleteRequest([property: JsonRequired] DateTime ExpectedUpdatedDate);

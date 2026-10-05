@@ -51,6 +51,26 @@ public class ProductPersistenceTests
     }
 
     [PostgreSqlFact]
+    public async Task Latest_add_quantity_wins_in_either_completion_order_and_older_retries_cannot_restore_it()
+    {
+        foreach (var newestFirst in new[] { true, false })
+        {
+            await using var scope = await PersistenceScope.CreateAsync();
+            await scope.SaveAsync();
+            var older = await scope.AddJobAsync(scope.Source);
+            var newer = await scope.AddJobAsync(scope.Source);
+            await scope.Db.ProductImportJobs.Where(j => j.Id == older.Id).ExecuteUpdateAsync(s => s.SetProperty(j => j.RequestedQuantity, 4));
+            await scope.Db.ProductImportJobs.Where(j => j.Id == newer.Id).ExecuteUpdateAsync(s => s.SetProperty(j => j.RequestedQuantity, 8));
+            Assert.Equal(ProductPersistenceStatus.Success, (await scope.SaveAsync(newestFirst ? newer : older)).Status);
+            Assert.Equal(ProductPersistenceStatus.Success, (await scope.SaveAsync(newestFirst ? older : newer)).Status);
+            await scope.SaveAsync(older);
+            var item = await scope.Db.ShoppingListProducts.AsNoTracking().SingleAsync(i => i.ShoppingListId == scope.ListId);
+            Assert.Equal(8, item.Quantity);
+            Assert.Single(await scope.Db.ShoppingListProducts.Where(i => i.ShoppingListId == scope.ListId).ToListAsync());
+        }
+    }
+
+    [PostgreSqlFact]
     public async Task Invalid_offer_rolls_back_already_saved_product_and_mapping()
     {
         await using var scope = await PersistenceScope.CreateAsync();
@@ -196,12 +216,21 @@ internal sealed class PersistenceScope : IAsyncDisposable
         var url = new Uri("https://www.coles.com.au/product/" + scope.Code);
         scope.Source = new()
         {
-            ShopCode = "coles", ShopProductCode = scope.Code, ProductUrl = url, CheckedDate = now.AddMinutes(-1), SourceType = SourceType.StructuredData,
+            ShopCode = "coles",
+            ShopProductCode = scope.Code,
+            ProductUrl = url,
+            CheckedDate = now.AddMinutes(-1),
+            SourceType = SourceType.StructuredData,
             Identity = new() { Name = scope.Code + " Classic Cans", Brand = scope.Code, Variant = "Classic", GTIN = gtin, PackQuantity = 24, PackSize = 375, PackUnit = "mL" },
             Offer = new ProviderResult<ShopProductOffer>.Success(new()
             {
-                ShopCode = "coles", Price = 23, Currency = "AUD", PriceScope = PriceScope.Unknown, SourceType = SourceType.StructuredData,
-                SourceUrl = url, CheckedDate = now.AddMinutes(-1)
+                ShopCode = "coles",
+                Price = 23,
+                Currency = "AUD",
+                PriceScope = PriceScope.Unknown,
+                SourceType = SourceType.StructuredData,
+                SourceUrl = url,
+                CheckedDate = now.AddMinutes(-1)
             })
         };
         scope.Job = await scope.AddJobAsync(scope.Source);
@@ -212,9 +241,15 @@ internal sealed class PersistenceScope : IAsyncDisposable
     {
         var job = new ProductImportJob
         {
-            UserAccountId = UserId, ShoppingListId = ListId, SourceUrl = source.ProductUrl.AbsoluteUri,
-            NormalisedSourceUrl = source.ProductUrl.AbsoluteUri, RequestedQuantity = 2, Status = ProductImportJobStatus.Processing,
-            ClaimToken = Guid.NewGuid(), LeaseExpiresDate = Clock.GetUtcNow().UtcDateTime.AddMinutes(30), CreatedDate = Clock.GetUtcNow().UtcDateTime
+            UserAccountId = UserId,
+            ShoppingListId = ListId,
+            SourceUrl = source.ProductUrl.AbsoluteUri,
+            NormalisedSourceUrl = source.ProductUrl.AbsoluteUri,
+            RequestedQuantity = 2,
+            Status = ProductImportJobStatus.Processing,
+            ClaimToken = Guid.NewGuid(),
+            LeaseExpiresDate = Clock.GetUtcNow().UtcDateTime.AddMinutes(30),
+            CreatedDate = Clock.GetUtcNow().UtcDateTime
         };
         Db.Add(job); await Db.SaveChangesAsync(); Db.ChangeTracker.Clear(); return job;
     }
