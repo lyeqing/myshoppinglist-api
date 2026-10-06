@@ -16,7 +16,7 @@ public sealed class ColesProductParser
     {
         if (!url.IsAbsoluteUri || url.Scheme != "https" || url.Port != 443 || url.UserInfo.Length != 0
             || url.IdnHost is not ("coles.com.au" or "www.coles.com.au")) return null;
-        var match = Regex.Match(url.AbsolutePath, @"^/product/(?:(?:[a-z0-9.'-]|%27)+-)?(?<id>\d{1,15})/?$",
+        var match = Regex.Match(url.AbsolutePath, @"^/product/(?:(?:[a-z0-9.'+-]|%27|%2b)+-)?(?<id>\d{1,15})/?$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeout);
         return match.Success ? match.Groups["id"].Value : null;
     }
@@ -98,16 +98,25 @@ public sealed class ColesProductParser
         cancellationToken.ThrowIfCancellationRequested();
         return new ProviderResult<ExtractedShopProduct>.Success(new()
         {
-            ShopCode = "coles", ShopProductCode = code, Sku = Text(ld, "sku") ?? code,
-            ProductUrl = page.Url, ImageUrl = imageUri, Description = Trim(description, 10000),
+            ShopCode = "coles",
+            ShopProductCode = code,
+            Sku = Text(ld, "sku") ?? code,
+            ProductUrl = page.Url,
+            ImageUrl = imageUri,
+            Description = Trim(description, 10000),
             Identity = new()
             {
-                Name = name, Brand = Trim(brand, 200), GTIN = gtin,
+                Name = name,
+                Brand = Trim(brand, 200),
+                GTIN = gtin,
                 ManufacturerPartNumber = Trim(Text(ld, "mpn"), 200),
-                PackQuantity = quantity, PackSize = size, PackUnit = unit
+                PackQuantity = quantity,
+                PackSize = size,
+                PackUnit = unit
             },
             SourceType = ld.ValueKind == JsonValueKind.Undefined ? SourceType.RetailerPage : SourceType.StructuredData,
-            CheckedDate = page.CheckedDate, Offer = Offer(ld, next, code, page)
+            CheckedDate = page.CheckedDate,
+            Offer = Offer(ld, next, code, page)
         });
     }
 
@@ -144,15 +153,21 @@ public sealed class ColesProductParser
         var unit = Get(pricing, "unit");
         return new ProviderResult<ShopProductOffer>.Success(new()
         {
-            ShopCode = "coles", Price = price.Value, NormalPrice = normal, Currency = "AUD",
-            UnitPrice = Money(Get(unit, "price")), UnitPriceUnit = Text(unit, "ofMeasureUnits") is { } units
+            ShopCode = "coles",
+            Price = price.Value,
+            NormalPrice = normal,
+            Currency = "AUD",
+            UnitPrice = Money(Get(unit, "price")),
+            UnitPriceUnit = Text(unit, "ofMeasureUnits") is { } units
                 ? Join(Text(unit, "ofMeasureQuantity"), units) : null,
             SpecialType = Text(pricing, "specialType") ?? Text(pricing, "promotionType"),
             SpecialDescription = Text(pricing, "offerDescription") ?? Text(pricing, "priceDescription"),
             InStock = inStock,
             // The anonymous page's implicit location is not the user's chosen store, nor a national price.
-            PriceScope = PriceScope.Unknown, SourceType = nextPrice.HasValue ? SourceType.RetailerPage : SourceType.StructuredData,
-            SourceUrl = page.Url, CheckedDate = page.CheckedDate
+            PriceScope = PriceScope.Unknown,
+            SourceType = nextPrice.HasValue ? SourceType.RetailerPage : SourceType.StructuredData,
+            SourceUrl = page.Url,
+            CheckedDate = page.CheckedDate
         });
     }
 
@@ -187,7 +202,8 @@ public sealed class ColesProductParser
     private static string? String(JsonElement node) => node.ValueKind switch
     {
         JsonValueKind.String => string.IsNullOrWhiteSpace(node.GetString()) ? null : node.GetString()!.Trim(),
-        JsonValueKind.Number => node.GetRawText(), _ => null
+        JsonValueKind.Number => node.GetRawText(),
+        _ => null
     };
     private static string? Trim(string? value, int maximum) => value is null ? null : value[..Math.Min(value.Length, maximum)];
     private static string Join(params string?[] parts) => string.Join(" ", parts.Where(part => !string.IsNullOrWhiteSpace(part)));

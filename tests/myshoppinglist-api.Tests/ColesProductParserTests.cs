@@ -9,6 +9,15 @@ namespace myshoppinglist_api.Tests;
 public class ColesProductParserTests
 {
     [Theory]
+    [InlineData("50+")]
+    [InlineData("50%2B")]
+    [InlineData("50%2b")]
+    public void Plus_in_product_slug_is_supported(string strength)
+    {
+        Assert.Equal("9873098", ColesProductParser.ProductCode(new($"https://www.coles.com.au/product/banana-boat-sport-{strength}-clear-spray-175g-9873098")));
+        Assert.Null(ColesProductParser.ProductCode(new("https://www.coles.com.au/product/banana%2fboat-9873098")));
+    }
+    [Theory]
     [InlineData("four'n-twenty")]
     [InlineData("four%27n-twenty")]
     public void Apostrophes_in_product_slugs_are_supported(string brand)
