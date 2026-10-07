@@ -16,6 +16,68 @@ namespace myshoppinglist_api.Tests;
 public class ColesExtensionTaskTests
 {
     [PostgreSqlFact]
+    public async Task Restricted_task_obeys_cooldowns_duplicates_and_three_attempt_limit()
+    {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
+        await using var f = new Fixture();
+        await Assert.ThrowsAsync<ColesWorkPendingException>(() => f.Service.ProductAsync(f.Url, default));
+        var id = await f.Db.ColesExtensionTasks.Select(t => t.Id).SingleAsync();
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            var claim = Assert.IsType<ColesTaskClaim>(await f.Service.ClaimAsync(id, "worker-test", default));
+            var failure = new ColesTaskSubmission("worker-test", claim.ClaimToken, f.Url.AbsoluteUri, false,
+                ErrorCode: "retailer_access_restricted");
+            var submittedAt = f.Clock.Now;
+            Assert.Null(await f.Service.SubmitAsync(id, failure, default));
+            f.Clock.Now += TimeSpan.FromSeconds(1);
+            Assert.Null(await f.Service.SubmitAsync(id, failure, default));
+            var saved = await f.Db.ColesExtensionTasks.AsNoTracking().SingleAsync(t => t.Id == id);
+            Assert.Equal(attempt, saved.Attempts);
+            Assert.Equal("retailer_access_restricted", saved.ErrorCode);
+            Assert.Null(saved.LeaseExpiresAt);
+            if (attempt == 3)
+            {
+                Assert.Equal("Failed", saved.Status);
+                Assert.NotNull(saved.CompletedAt);
+                Assert.Null(saved.NextAttemptAt);
+                Assert.Null(await f.Service.ClaimAsync(id, "another-worker", default));
+                await Assert.ThrowsAsync<ColesWorkFailedException>(() => f.Service.ProductAsync(f.Url, default));
+                break;
+            }
+            var due = submittedAt.AddMinutes(attempt == 1 ? 5 : 15);
+            Assert.Equal("Waiting", saved.Status);
+            Assert.Equal(due.UtcDateTime, saved.NextAttemptAt);
+            Assert.Null(saved.CompletedAt);
+            f.Clock.Now = due.AddTicks(-1);
+            Assert.DoesNotContain(await f.Service.ListAsync(default), t => t.Id == id);
+            Assert.Null(await f.Service.ClaimAsync(id, "another-worker", default));
+            f.Clock.Now = due;
+            Assert.Contains(await f.Service.ListAsync(default), t => t.Id == id);
+        }
+    }
+
+    [PostgreSqlFact]
+    public async Task Restricted_task_can_succeed_after_cooldown_and_reuse_fresh_price()
+    {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
+        await using var f = new Fixture();
+        await Assert.ThrowsAsync<ColesWorkPendingException>(() => f.Service.ProductAsync(f.Url, default));
+        var id = await f.Db.ColesExtensionTasks.Select(t => t.Id).SingleAsync();
+        var claim = Assert.IsType<ColesTaskClaim>(await f.Service.ClaimAsync(id, "worker-test", default));
+        Assert.Null(await f.Service.SubmitAsync(id, new("worker-test", claim.ClaimToken, f.Url.AbsoluteUri,
+            false, ErrorCode: "retailer_access_restricted"), default));
+        f.Clock.Now += TimeSpan.FromMinutes(5);
+        var retry = Assert.IsType<ColesTaskClaim>(await f.Service.ClaimAsync(id, "another-worker", default));
+        Assert.Null(await f.Service.SubmitAsync(id, new("another-worker", retry.ClaimToken, f.Url.AbsoluteUri,
+            true, Evidence(f.Code)), default));
+        var saved = await f.Db.ColesExtensionTasks.AsNoTracking().SingleAsync(t => t.Id == id);
+        Assert.Equal("Completed", saved.Status);
+        Assert.Null(saved.ErrorCode);
+        Assert.IsType<ProviderResult<ExtractedShopProduct>.Success>(await f.Service.ProductAsync(f.Url, default));
+        Assert.Equal(7m, (await f.Db.ShopProductPrices.SingleAsync()).Price);
+    }
+
+    [PostgreSqlFact]
     public async Task Priority_orders_existing_worker_tasks_and_submission_still_persists_prices()
     {
         await using var f = new Fixture();

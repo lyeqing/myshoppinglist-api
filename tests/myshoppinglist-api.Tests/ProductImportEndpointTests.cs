@@ -101,15 +101,19 @@ public class ProductImportEndpointTests
     }
 
     [PostgreSqlFact]
-    public async Task Duplicate_click_reuses_job_and_validation_or_missing_browser_header_creates_no_extra_job()
+    public async Task Duplicate_quantity_reuses_job_new_quantity_creates_new_request_and_invalid_requests_create_no_jobs()
     {
         await using var app = new ImportApiFactory();
         using var client = app.Client();
         var trial = await Read<TrialStartResponse>(await client.PostAsync("/api/auth/trial", null));
         var url = SubmitUrl(trial.ShoppingListId);
         var first = await Read<ProductImportAcceptedResponse>(await client.PostAsJsonAsync(url, new ProductImportRequest(app.Provider.Url, 2)));
-        var second = await Read<ProductImportAcceptedResponse>(await client.PostAsJsonAsync(url, new ProductImportRequest(app.Provider.Url + "#details", 9)));
+        var second = await Read<ProductImportAcceptedResponse>(await client.PostAsJsonAsync(url, new ProductImportRequest(app.Provider.Url + "#details", 2)));
         Assert.Equal(first.JobId, second.JobId); Assert.True(second.Reused); Assert.Equal(2, second.Quantity);
+        var changed = await Read<ProductImportAcceptedResponse>(await client.PostAsJsonAsync(url, new ProductImportRequest(app.Provider.Url, 9)));
+        Assert.NotEqual(first.JobId, changed.JobId); Assert.False(changed.Reused); Assert.Equal(9, changed.Quantity);
+        var repeated = await Read<ProductImportAcceptedResponse>(await client.PostAsJsonAsync(url, new ProductImportRequest(app.Provider.Url + "#details", 9)));
+        Assert.Equal(changed.JobId, repeated.JobId); Assert.True(repeated.Reused); Assert.Equal(9, repeated.Quantity);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync(url, new ProductImportRequest(app.Provider.Url, 0))).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync(url, new { url = app.Provider.Url, quantity = 1.5 })).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsync(url, new StringContent("{", System.Text.Encoding.UTF8, "application/json"))).StatusCode);
@@ -118,7 +122,7 @@ public class ProductImportEndpointTests
         client.DefaultRequestHeaders.Remove(CookieRequestProtection.HeaderName);
         Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync(url, new ProductImportRequest(app.Provider.Url))).StatusCode);
         await using var db = PersistenceScope.Context();
-        Assert.Equal(1, await db.ProductImportJobs.CountAsync(j => j.ShoppingListId == trial.ShoppingListId));
+        Assert.Equal(2, await db.ProductImportJobs.CountAsync(j => j.ShoppingListId == trial.ShoppingListId));
     }
 
     [PostgreSqlFact]
@@ -214,11 +218,22 @@ public class ProductImportEndpointTests
             var checkedDate = DateTimeOffset.UtcNow.AddMinutes(-1);
             return new ProviderResult<ExtractedShopProduct>.Success(new()
             {
-                ShopCode = ShopCode, ShopProductCode = Code, ProductUrl = url, Identity = new() { Name = Code, Brand = Code },
-                SourceType = SourceType.StructuredData, CheckedDate = checkedDate,
+                ShopCode = ShopCode,
+                ShopProductCode = Code,
+                ProductUrl = url,
+                Identity = new() { Name = Code, Brand = Code },
+                SourceType = SourceType.StructuredData,
+                CheckedDate = checkedDate,
                 Offer = new ProviderResult<ShopProductOffer>.Success(new()
-                { ShopCode = ShopCode, Price = 23, Currency = "AUD", PriceScope = PriceScope.Unknown,
-                    SourceType = SourceType.StructuredData, SourceUrl = url, CheckedDate = checkedDate })
+                {
+                    ShopCode = ShopCode,
+                    Price = 23,
+                    Currency = "AUD",
+                    PriceScope = PriceScope.Unknown,
+                    SourceType = SourceType.StructuredData,
+                    SourceUrl = url,
+                    CheckedDate = checkedDate
+                })
             });
         }
         public Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchAsync(ProductIdentity product, ShopLocationContext? location, CancellationToken token) => throw new NotSupportedException();

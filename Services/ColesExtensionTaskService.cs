@@ -165,14 +165,19 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
         var leaseExpiresAt = task.LeaseExpiresAt;
         if (!submission.Ok)
         {
-            var retryable = submission.ErrorCode is "read_timeout" or "browser_error" or "tab_closed" or "network_error";
+            var restricted = submission.ErrorCode == "retailer_access_restricted";
+            var retryable = restricted || submission.ErrorCode is "read_timeout" or "browser_error" or "tab_closed" or "network_error";
             task.ErrorCode = submission.ErrorCode is "retailer_access_restricted" or "invalid_product_evidence"
                 or "same_barcode_conflict" or "existing_mapping_conflict" or "ambiguous_canonical_product"
                 or "product_identity_conflict" or "invalid_product_link" or "invalid_search_result"
                 or "ambiguous_retailer_mapping" or "unverified_mapping" or "invalid_offer"
                 ? submission.ErrorCode : retryable ? submission.ErrorCode : "extraction_failed";
             task.Status = retryable && task.Attempts < 3 ? "Waiting" : "Failed";
-            task.NextAttemptAt = Now.AddSeconds(30 * task.Attempts); task.LeaseExpiresAt = null;
+            // Keep the cooldown on the shared task so changing workers cannot bypass it.
+            task.NextAttemptAt = task.Status == "Waiting"
+                ? restricted ? Now.AddMinutes(task.Attempts == 1 ? 5 : 15) : Now.AddSeconds(30 * task.Attempts)
+                : null;
+            task.LeaseExpiresAt = null;
             if (task.Status == "Failed") task.CompletedAt = Now;
         }
         else if (task.Kind == "search")

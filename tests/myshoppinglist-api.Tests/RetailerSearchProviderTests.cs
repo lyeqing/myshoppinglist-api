@@ -12,6 +12,31 @@ namespace myshoppinglist_api.Tests;
 public class RetailerSearchProviderTests
 {
     [Fact]
+    public async Task Exact_candidate_stops_search_before_fallback()
+    {
+        var identity = Assert.IsType<ProviderResult<ExtractedShopProduct>.Success>(await new WoolworthsProductParser()
+            .ParseAsync(new(WoolworthsProductParserTests.Url, WoolworthsFixture.Html, DateTimeOffset.UtcNow), default)).Value.Identity;
+        var browser = new FakeSearchBrowser("woolworths", WoolworthsProductParserTests.Url);
+        var handler = new RecordingHandler((_, _) => Task.FromResult(RetailerHttpClientTests.Html(WoolworthsFixture.Html)));
+        var result = await Provider("woolworths", handler, browser).SearchAsync(identity, null, default);
+        Assert.IsType<ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Success>(result);
+        Assert.Equal(1, browser.Calls);
+    }
+
+    [Theory]
+    [InlineData(ProviderFailureKind.Timeout)]
+    [InlineData(ProviderFailureKind.AccessRestricted)]
+    [InlineData(ProviderFailureKind.RateLimited)]
+    public async Task Failed_search_does_not_fall_through_to_another_query(ProviderFailureKind kind)
+    {
+        var browser = new FakeSearchBrowser("woolworths", WoolworthsProductParserTests.Url) { Error = new(kind, "test_failure", "Unavailable") };
+        var handler = new RecordingHandler((_, _) => throw new InvalidOperationException("No product page should be read."));
+        var result = await Provider("woolworths", handler, browser).SearchAsync(new() { Name = "YoPro High Protein Yoghurt Pouch No Added Sugar Mango 150g", Brand = "YoPro" }, null, default);
+        Assert.Equal(kind, Assert.IsType<ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Failure>(result).Error.Kind);
+        Assert.Equal(1, browser.Calls);
+    }
+
+    [Fact]
     public async Task Woolworths_tries_shorter_queries_when_read_candidates_do_not_match()
     {
         var browser = new FakeSearchBrowser("woolworths", WoolworthsProductParserTests.Url);

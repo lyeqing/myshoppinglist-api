@@ -23,6 +23,7 @@ public class PriceRefreshServiceTests
     [PostgreSqlFact]
     public async Task Refresh_deduplicates_prioritizes_preserves_old_price_and_respects_failure_cooldown()
     {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
         await using var f = await ListFixture.CreateAsync();
         var key = await StaleAsync(f);
         try
@@ -64,6 +65,7 @@ public class PriceRefreshServiceTests
     [PostgreSqlFact]
     public async Task Only_outstanding_items_in_active_unexpired_lists_and_accounts_are_eligible()
     {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
         await using var f = await ListFixture.CreateAsync();
         var key = await StaleAsync(f);
         try
@@ -91,6 +93,7 @@ public class PriceRefreshServiceTests
     [PostgreSqlFact]
     public async Task Shared_product_across_customers_queues_once_and_supports_woolworths()
     {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
         await using var f = await ListFixture.CreateAsync();
         await using var other = await ListFixture.CreateAsync();
         var key = await StaleAsync(f);
@@ -134,6 +137,7 @@ public class PriceRefreshServiceTests
     [PostgreSqlFact]
     public async Task Fresh_prices_are_skipped_but_expired_promotions_refresh_and_untrusted_urls_are_rejected()
     {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
         await using var f = await ListFixture.CreateAsync();
         var key = await StaleAsync(f);
         try

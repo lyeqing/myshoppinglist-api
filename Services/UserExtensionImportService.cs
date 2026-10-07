@@ -130,6 +130,9 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
         var other = await OtherShop(job, ct);
         if (await db.ProductImportRetailerResults.AnyAsync(r => r.ProductImportJobId == job.Id && r.ShopId == other.Id
             && r.Status == RetailerLookupStatus.Exact, ct)) return await Complete(task, job, claim, ct);
+        if (!result.Ok && result.ErrorCode is "retailer_access_restricted" or "read_timeout"
+            or "tab_closed" or "network_error" or "browser_error")
+            return await Fail(task, job, claim, result.ErrorCode, ct);
         if (task.Stage == "search")
         {
             if (!result.Ok) return await Fail(task, job, claim, "search_read_failed", ct);

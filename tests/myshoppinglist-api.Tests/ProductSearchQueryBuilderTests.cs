@@ -5,6 +5,32 @@ namespace myshoppinglist_api.Tests;
 
 public class ProductSearchQueryBuilderTests
 {
+    [Theory]
+    [InlineData("Mango", "150g")]
+    [InlineData("Vanilla", "500g")]
+    [InlineData("Strawberry", "1kg")]
+    [InlineData("Blueberry", "200g")]
+    public void Search_sequence_is_bounded_distinct_and_preserves_original_identity(string flavour, string size)
+    {
+        var product = new myshoppinglist_api.Providers.Models.ProductIdentity { Name = $"YoPro High Protein Yoghurt Pouch No Added Sugar {flavour} {size}", Brand = "YoPro" };
+        var original = product with { };
+        var searches = ProductSearchQueryBuilder.BuildSearches(product);
+        Assert.Equal(3, searches.Count);
+        Assert.Equal(searches.Count, searches.Distinct().Count());
+        Assert.All(searches, q => Assert.InRange(q.Length, 1, 160));
+        Assert.Contains(size, searches[1]);
+        Assert.Equal($"yopro {flavour.ToLowerInvariant()}", searches[^1]);
+        Assert.Equal(original, product);
+        foreach (var retailer in new[] { "coles", "woolworths" })
+            Assert.All(searches, q => Assert.Contains(Uri.EscapeDataString(q), ProductSearchQueryBuilder.SearchUrl(retailer, q).AbsoluteUri));
+    }
+
+    [Theory]
+    [InlineData("YoPro Yoghurt Mango Peach 150g")]
+    [InlineData("YoPro Yoghurt 150g")]
+    public void Unknown_or_multiple_flavours_do_not_reduce_to_a_single_flavour(string name) =>
+        Assert.Single(ProductSearchQueryBuilder.BuildSearches(new() { Name = name, Brand = "YoPro" }));
+
     [Fact]
     public void Yoghurt_search_progresses_from_full_identity_to_brand_and_flavour()
     {

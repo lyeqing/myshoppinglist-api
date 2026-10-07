@@ -16,11 +16,21 @@ public class ColesProductProviderTests
         Assert.Equal(new[] { "palmolive body wash shower gel naturals milk honey 1l", "palmolive naturals milk honey 1l" }, queue.Queries);
     }
     [Fact]
-    public async Task Successful_full_search_does_not_enqueue_a_fallback()
+    public async Task Exact_full_search_does_not_enqueue_a_fallback()
+    {
+        var queue = new Queue();
+        var parsed = Assert.IsType<ProviderResult<ExtractedShopProduct>.Success>(await new ColesProductParser()
+            .ParseAsync(new(ColesProductParserTests.Url, ColesProductParserTests.Fixture, ColesProductParserTests.Checked), default));
+        Assert.True(myshoppinglist_api.Providers.ProductSearchQueryBuilder.BuildSearches(parsed.Value.Identity).Count > 1);
+        await new ColesProductProvider(queue).SearchAsync(parsed.Value.Identity, null, default);
+        Assert.Single(queue.Queries);
+    }
+    [Fact]
+    public async Task Unrelated_full_search_result_does_not_prevent_fallback()
     {
         var queue = new Queue();
         await new ColesProductProvider(queue).SearchAsync(Palmolive, null, default);
-        Assert.Single(queue.Queries);
+        Assert.Equal(new[] { "palmolive body wash shower gel naturals milk honey 1l", "palmolive naturals milk honey 1l" }, queue.Queries);
     }
     [Fact]
     public async Task Pending_or_failed_search_never_becomes_an_empty_search()
@@ -71,8 +81,14 @@ public class ColesProductProviderTests
     [Fact]
     public async Task Offer_refresh_rejects_changed_gtin()
     {
-        var candidate = new ShopProductSearchResult(new() { ShopCode = "coles", ProductUrl = ColesProductParserTests.Url,
-            Identity = new() { Name = "Product", GTIN = "different" }, SourceType = myshoppinglist_api.Models.SourceType.StructuredData, CheckedDate = ColesProductParserTests.Checked });
+        var candidate = new ShopProductSearchResult(new()
+        {
+            ShopCode = "coles",
+            ProductUrl = ColesProductParserTests.Url,
+            Identity = new() { Name = "Product", GTIN = "different" },
+            SourceType = myshoppinglist_api.Models.SourceType.StructuredData,
+            CheckedDate = ColesProductParserTests.Checked
+        });
         var failure = Assert.IsType<ProviderResult<ShopProductOffer>.Failure>(await new ColesProductProvider(new Queue()).GetOfferAsync(candidate, null, default));
         Assert.Equal("offer_identity_changed", failure.Error.Code);
     }

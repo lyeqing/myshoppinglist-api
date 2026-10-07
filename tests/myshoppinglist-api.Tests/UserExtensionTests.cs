@@ -23,6 +23,50 @@ public class UserExtensionTests
 {
     private const string ExtensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     [PostgreSqlFact]
+    public async Task Comparison_failure_reasons_are_preserved_and_legacy_results_remain_supported()
+    {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
+        foreach (var stage in new[] { "search", "product" })
+            foreach (var code in new string?[] { "retailer_access_restricted", "read_timeout", "tab_closed", "network_error", "browser_error", null, "untrusted_message" })
+            {
+                await using var f = await ListFixture.CreateAsync();
+                await f.ItemAsync();
+                f.Scope.Db.UserExtensionImportTasks.Add(new()
+                {
+                    ProductImportJobId = f.Scope.Job.Id,
+                    RequestId = Guid.NewGuid(),
+                    Stage = stage,
+                    Query = "test",
+                    Url = stage == "search"
+                        ? "https://www.woolworths.com.au/shop/search/products?searchTerm=test"
+                        : "https://www.woolworths.com.au/shop/productdetails/794937",
+                    UpdatedDate = f.Scope.Clock.Now.UtcDateTime
+                });
+                await f.Scope.Db.SaveChangesAsync();
+                f.Scope.Db.ChangeTracker.Clear();
+                await using var app = new ExtensionFactory(f);
+                using var scope = app.Services.CreateScope();
+                var service = scope.ServiceProvider.GetRequiredService<UserExtensionImportService>();
+                var work = await service.ReadAsync(f.Scope.UserId, f.Scope.Job.Id, default);
+                // Deserialise the old wire shape too: existing installations omit errorCode.
+                var result = code is null
+                    ? JsonSerializer.Deserialize<UserExtensionResult>(JsonSerializer.Serialize(new { work.StepToken, work.Url, Ok = false }))!
+                    : new UserExtensionResult(work.StepToken, work.Url!, false, ErrorCode: code);
+                var failed = await service.ResultAsync(f.Scope.UserId, work.JobId, result, default);
+                var expected = code is null or "untrusted_message"
+                    ? stage == "search" ? "search_read_failed" : "candidate_read_failed" : code;
+                Assert.Equal("Failed", failed.Status);
+                Assert.True(failed.SourceSaved);
+                Assert.Equal(expected, failed.ErrorCode);
+                Assert.True(await f.Scope.Db.ProductImportRetailerResults.AnyAsync(r => r.ProductImportJobId == work.JobId
+                    && r.Status == RetailerLookupStatus.CheckFailed && r.ErrorCode == expected));
+                Assert.False(await f.Scope.Db.ProductImportRetailerResults.AnyAsync(r => r.ProductImportJobId == work.JobId
+                    && r.Status == RetailerLookupStatus.NotFound));
+                Assert.True(await f.Scope.Db.ShoppingListProducts.AnyAsync(i => i.ShoppingListId == f.Scope.ListId));
+            }
+    }
+
+    [PostgreSqlFact]
     public async Task Yoghurt_comparison_advances_through_three_queries_without_repeating_completed_steps()
     {
         foreach (var ambiguous in new[] { false, true })
@@ -105,6 +149,9 @@ public class UserExtensionTests
             Assert.Equal(404, (await Assert.ThrowsAsync<UserImportException>(() => service.ReadAsync(-1, work.JobId, default))).Status);
             var invalid = new UserExtensionResult(work.StepToken, work.Url!, true, Links: [sourceUrl]);
             Assert.Equal(400, (await Assert.ThrowsAsync<UserImportException>(() => service.ResultAsync(f.Scope.UserId, work.JobId, invalid, default))).Status);
+            // A response from another account must not consume or change the active step.
+            Assert.Equal(404, (await Assert.ThrowsAsync<UserImportException>(() => service.ResultAsync(-1, work.JobId, new(work.StepToken, work.Url!, true, Links: [otherUrl]), default))).Status);
+            Assert.Equal(work.StepToken, (await service.ReadAsync(f.Scope.UserId, work.JobId, default)).StepToken);
             var search = new UserExtensionResult(work.StepToken, work.Url!, true, Links: [otherUrl]);
             var product = await service.ResultAsync(f.Scope.UserId, work.JobId, search, default);
             Assert.Equal("product", product.Stage);
@@ -128,6 +175,11 @@ public class UserExtensionTests
             var failed = await service.ResultAsync(f.Scope.UserId, stale.JobId, new(stale.StepToken, stale.Url!, false), default);
             Assert.True(failed.SourceSaved); Assert.Equal("Failed", failed.Status);
             Assert.Equal("search", (await service.RetryAsync(f.Scope.UserId, stale.JobId, default)).Stage);
+            // A delayed result from the failed attempt cannot fail the new retry.
+            var retry = await service.ReadAsync(f.Scope.UserId, stale.JobId, default);
+            var delayed = await service.ResultAsync(f.Scope.UserId, stale.JobId, new(stale.StepToken, stale.Url!, false), default);
+            Assert.Equal(retry.StepToken, delayed.StepToken);
+            Assert.Equal(retry.Status, delayed.Status);
             Assert.True(await f.Scope.Db.ContributionObservations.AnyAsync(o => o.UserAccountId == f.Scope.UserId && o.Source == "PersonalAdd" && o.Outcome == "Accepted"));
             await f.Scope.Db.UserAccounts.Where(a => a.Id == f.Scope.UserId).ExecuteUpdateAsync(s => s.SetProperty(a => a.ContributionBlocked, true).SetProperty(a => a.IsPaid, true));
             var trusted = await service.RetryAsync(f.Scope.UserId, stale.JobId, default);
