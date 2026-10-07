@@ -2,7 +2,8 @@ namespace myshoppinglist_api.Contracts;
 
 public sealed record InStoreRetailer(long Id, string Name);
 public sealed record InStoreList(long Id, string Name, int RemainingCount, InStoreRetailer[] Retailers);
-public sealed record InStorePrice(long ShopId, string ShopName, decimal? Price, string Status, DateTime? CheckedDate);
+public sealed record InStorePrice(long ShopId, string ShopName, decimal? Price, string Status, DateTime? CheckedDate,
+    ShoppingListMultibuy? Multibuy = null, ShoppingListQuantityPrice? QuantityPrice = null);
 public sealed record InStoreItem(ShoppingListItemResponse Item, InStorePrice[] Prices);
 public sealed record InStoreBasket(long ShopId, string ShopName, decimal Subtotal, int PricedCount,
     decimal ComparableSubtotal, decimal SavingsBySplitting);

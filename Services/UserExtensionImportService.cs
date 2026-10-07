@@ -152,6 +152,9 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
                 try { candidate = await ParseAsync(task.Url, result.Evidence, ct); }
                 catch (UserImportException) { task.HadFailures = true; }
                 var product = await db.Products.AsNoTracking().SingleAsync(p => p.Id == job.ProductId, ct);
+                if (task.Query is null && candidate is not null
+                    && matching.Match(ProductMatchingService.Identity(product), candidate.Identity).Type != MatchType.Exact)
+                    return await Fail(task, job, claim, "retailer_identity_changed", ct);
                 if (candidate is not null && matching.Match(ProductMatchingService.Identity(product), candidate.Identity).Type == MatchType.Exact)
                 {
                     var matches = JsonSerializer.Deserialize<List<UserImportCandidate>>(task.MatchesJson)!;
@@ -202,6 +205,23 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
         if (existing?.Status == RetailerLookupStatus.Exact || await comparisons.TryCacheAsync(claim, other.Id, ct))
             return await Complete(task, job, claim, ct);
         var product = await db.Products.AsNoTracking().SingleAsync(p => p.Id == job.ProductId, ct);
+        var known = await db.ShopProducts.AsNoTracking().Where(p => p.ProductId == product.Id && p.ShopId == other.Id
+            && p.IsActive && p.MatchType == MatchType.Exact).ToArrayAsync(ct);
+        if (known.Length > 1) return await Fail(task, job, claim, "ambiguous_retailer_mapping", ct);
+        if (known.Length == 1)
+        {
+            var link = urls.Validate(known[0].ProductUrl);
+            if (!link.IsValid || link.Retailer!.Code != other.Code)
+                return await Fail(task, job, claim, "invalid_product_link", ct);
+            var code = other.Code == "coles" ? ColesProductParser.ProductCode(link.ProductUrl!) : WoolworthsProductParser.ProductCode(link.ProductUrl!);
+            if (known[0].ShopProductCode is { } expected && expected != code)
+                return await Fail(task, job, claim, "retailer_identity_changed", ct);
+            // A null query identifies a direct refresh rather than a search candidate.
+            task.Stage = "product"; task.Status = "Waiting"; task.ErrorCode = null;
+            task.Query = null; task.Url = link.ProductUrl!.AbsoluteUri;
+            task.LinksJson = "[]"; task.MatchesJson = "[]"; task.HadFailures = false;
+            return await SaveView(task, job, ct);
+        }
         var query = ProductSearchQueryBuilder.Build(ProductMatchingService.Identity(product));
         if (query is null) return await Fail(task, job, claim, "search_query_unavailable", ct);
         task.Stage = "search"; task.Status = "Waiting"; task.ErrorCode = null;

@@ -15,6 +15,7 @@ using myshoppinglist_api.Data;
 using myshoppinglist_api.Security;
 using myshoppinglist_api.Services;
 using myshoppinglist_api.Models;
+using MatchType = myshoppinglist_api.Models.MatchType;
 
 namespace myshoppinglist_api.Tests;
 
@@ -22,6 +23,102 @@ namespace myshoppinglist_api.Tests;
 public class UserExtensionTests
 {
     private const string ExtensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    [PostgreSqlFact]
+    public async Task Known_links_refresh_both_retailers_and_reject_changed_or_ambiguous_identity()
+    {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
+        foreach (var reverse in new[] { false, true })
+            foreach (var scenario in new[] { "refresh", "changed", "ambiguous" })
+            {
+                await using var f = await ListFixture.CreateAsync();
+                var code = Random.Shared.NextInt64(10000000000, 99999999999).ToString();
+                var sourceRetailer = reverse ? "woolworths" : "coles";
+                var otherRetailer = reverse ? "coles" : "woolworths";
+                string Link(string retailer) => retailer == "coles" ? "https://www.coles.com.au/product/" + code
+                    : "https://www.woolworths.com.au/shop/productdetails/" + code;
+                var sourceShop = await f.Scope.Db.Shops.SingleAsync(s => s.Code == sourceRetailer);
+                var otherShop = await f.Scope.Db.Shops.SingleAsync(s => s.Code == otherRetailer);
+                var item = await f.ItemAsync();
+                // The fixture's initial import points at the Coles mapping; remove that result before moving the source to Woolworths.
+                if (reverse) await f.Scope.Db.ProductImportRetailerResults.Where(r => r.ProductImportJobId == f.Scope.Job.Id).ExecuteDeleteAsync();
+                await f.Scope.Db.ShopProducts.Where(m => m.ShopProductCode == f.Scope.Code).ExecuteUpdateAsync(s => s
+                    .SetProperty(m => m.ShopId, sourceShop.Id).SetProperty(m => m.ShopProductCode, code).SetProperty(m => m.ProductUrl, Link(sourceRetailer)));
+                var known = new ShopProduct
+                {
+                    ProductId = item.Product.Id,
+                    ShopId = otherShop.Id,
+                    ShopProductCode = code,
+                    ProductUrl = Link(otherRetailer),
+                    NameAtShop = item.Product.Name,
+                    GTIN = f.Scope.Source.Identity.GTIN,
+                    MatchType = MatchType.Exact,
+                    IsActive = true,
+                    FirstFoundDate = f.Scope.Clock.Now.UtcDateTime,
+                    LastFoundDate = f.Scope.Clock.Now.UtcDateTime
+                };
+                f.Scope.Db.Add(known);
+                ShopProduct? duplicate = null;
+                if (scenario == "ambiguous")
+                {
+                    duplicate = new ShopProduct
+                    {
+                        ProductId = item.Product.Id,
+                        ShopId = otherShop.Id,
+                        ShopProductCode = code + "1",
+                        ProductUrl = Link(otherRetailer) + "1",
+                        NameAtShop = item.Product.Name,
+                        MatchType = MatchType.Exact,
+                        FirstFoundDate = f.Scope.Clock.Now.UtcDateTime,
+                        LastFoundDate = f.Scope.Clock.Now.UtcDateTime
+                    };
+                    f.Scope.Db.Add(duplicate);
+                }
+                await f.Scope.Db.SaveChangesAsync(); f.Scope.Db.ChangeTracker.Clear();
+                ColesEvidence Evidence(string retailer, bool changed = false) => new(null, [JsonSerializer.Serialize(new {
+                type = "Product", sku = code, name = changed ? "Different product 1g" : f.Scope.Source.Identity.Name,
+                gtin = changed ? "9999999999999" : f.Scope.Source.Identity.GTIN,
+                brand = new { name = changed ? "Different" : f.Scope.Source.Identity.Brand },
+                offers = new { price = 7, priceCurrency = "AUD", url = Link(retailer) }
+            }).Replace("\"type\"", "\"@type\"")]);
+                try
+                {
+                    await using var app = new ExtensionFactory(f);
+                    using var scope = app.Services.CreateScope();
+                    var service = scope.ServiceProvider.GetRequiredService<UserExtensionImportService>();
+                    var start = new UserExtensionStart(f.Scope.ListId, Link(sourceRetailer), 2, Evidence(sourceRetailer), Guid.NewGuid());
+                    var work = await service.StartAsync(f.Scope.UserId, start, default);
+                    if (scenario == "ambiguous")
+                    {
+                        Assert.Equal("Failed", work.Status);
+                        Assert.Equal("ambiguous_retailer_mapping", work.ErrorCode);
+                        continue;
+                    }
+                    Assert.Equal("product", work.Stage);
+                    Assert.Null(work.Query);
+                    Assert.Equal(Link(otherRetailer), work.Url);
+                    var done = await service.ResultAsync(f.Scope.UserId, work.JobId,
+                        new(work.StepToken, work.Url!, true, Evidence(otherRetailer, scenario == "changed")), default);
+                    Assert.Equal(scenario == "changed" ? "Failed" : "Completed", done.Status);
+                    if (scenario == "changed")
+                    {
+                        Assert.Equal("retailer_identity_changed", done.ErrorCode);
+                        Assert.False(await f.Scope.Db.ShopProductPrices.AnyAsync(p => p.ShopProductId == known.Id));
+                    }
+                    else
+                    {
+                        Assert.Equal(7m, await f.Scope.Db.ShopProductPrices.Where(p => p.ShopProductId == known.Id).Select(p => p.Price).SingleAsync());
+                        var cached = await service.StartAsync(f.Scope.UserId, start with { RequestId = Guid.NewGuid() }, default);
+                        Assert.Equal("Completed", cached.Status);
+                    }
+                }
+                finally
+                {
+                    if (duplicate is not null) await f.Scope.Db.ShopProducts.Where(m => m.Id == duplicate.Id).ExecuteDeleteAsync();
+                    await f.Scope.Db.ShopProducts.Where(m => m.ShopProductCode == code).ExecuteUpdateAsync(s => s.SetProperty(m => m.ShopProductCode, f.Scope.Code));
+                }
+            }
+    }
+
     [PostgreSqlFact]
     public async Task Comparison_failure_reasons_are_preserved_and_legacy_results_remain_supported()
     {
@@ -171,10 +268,11 @@ public class UserExtensionTests
             await f.Scope.Db.ShopProductPrices.Where(p => p.ShopProduct.ShopProductCode == code && p.ShopProduct.Shop.Code == "woolworths")
                 .ExecuteUpdateAsync(s => s.SetProperty(p => p.CheckedDate, f.Scope.Clock.Now.UtcDateTime.AddDays(-8)));
             var stale = await service.StartAsync(f.Scope.UserId, start with { RequestId = Guid.NewGuid() }, default);
-            Assert.Equal("search", stale.Stage);
+            Assert.Equal("product", stale.Stage);
+            Assert.Equal(otherUrl, stale.Url);
             var failed = await service.ResultAsync(f.Scope.UserId, stale.JobId, new(stale.StepToken, stale.Url!, false), default);
             Assert.True(failed.SourceSaved); Assert.Equal("Failed", failed.Status);
-            Assert.Equal("search", (await service.RetryAsync(f.Scope.UserId, stale.JobId, default)).Stage);
+            Assert.Equal("product", (await service.RetryAsync(f.Scope.UserId, stale.JobId, default)).Stage);
             // A delayed result from the failed attempt cannot fail the new retry.
             var retry = await service.ReadAsync(f.Scope.UserId, stale.JobId, default);
             var delayed = await service.ResultAsync(f.Scope.UserId, stale.JobId, new(stale.StepToken, stale.Url!, false), default);

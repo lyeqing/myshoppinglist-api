@@ -5,6 +5,7 @@ namespace myshoppinglist_api.Data;
 
 public class MyShoppingListDbContext(DbContextOptions<MyShoppingListDbContext> options) : DbContext(options)
 {
+    public DbSet<RetailerWorkloadState> RetailerWorkloadStates => Set<RetailerWorkloadState>();
     public DbSet<ContributionObservation> ContributionObservations => Set<ContributionObservation>();
     public DbSet<AccountAdminAudit> AccountAdminAudits => Set<AccountAdminAudit>();
     public DbSet<UserExtensionImportTask> UserExtensionImportTasks => Set<UserExtensionImportTask>();

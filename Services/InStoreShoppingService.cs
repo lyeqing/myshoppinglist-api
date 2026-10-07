@@ -57,7 +57,9 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
                 var keys = group.Select(m => m.Id).ToArray();
                 var price = prices.Where(p => keys.Contains(p.ShopProductId)).OrderByDescending(p => p.CheckedDate).ThenByDescending(p => p.Id).FirstOrDefault();
                 var status = PriceStatus(price, clock.GetUtcNow(), freshness);
-                return new InStorePrice(mapping.ShopId, mapping.Shop.Name, status == "Fresh" ? price!.Price : null, status, price?.CheckedDate);
+                var offer = status == "Fresh" ? SinglePriceMultibuy(price) : null;
+                return new InStorePrice(mapping.ShopId, mapping.Shop.Name, status == "Fresh" ? price!.Price : null, status, price?.CheckedDate,
+                    offer, status == "Fresh" ? PromotionCalculationService.Calculate(price!.Price, i.Quantity, offer) : null);
             }).OrderBy(p => p.ShopName).ToArray())).ToArray();
         if (!await Accessible(accountId).AnyAsync(l => l.Id == listId, token)) return null;
         await transaction.CommitAsync(token);
@@ -100,12 +102,13 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
         var remaining = items.Where(i => !i.Item.IsPurchased && !i.Item.IsHidden).ToArray();
         var priced = remaining.Where(i => i.Prices.Any(p => p.Price.HasValue)).ToArray();
         var comparable = remaining.Where(i => retailers.Length >= 2 && retailers.All(s => i.Prices.Any(p => p.ShopId == s.Id && p.Price.HasValue))).ToArray();
-        decimal Cheapest(InStoreItem i) => i.Prices.Where(p => p.Price.HasValue).Min(p => p.Price!.Value) * i.Item.Quantity;
+        decimal LineTotal(InStoreItem i, InStorePrice p) => PromotionCalculationService.Calculate(p.Price!.Value, i.Item.Quantity, p.Multibuy).Total;
+        decimal Cheapest(InStoreItem i) => i.Prices.Where(p => p.Price.HasValue).Min(p => LineTotal(i, p));
         var split = comparable.Sum(Cheapest);
         var baskets = retailers.Select(s =>
         {
             var available = remaining.Where(i => i.Prices.Any(p => p.ShopId == s.Id && p.Price.HasValue)).ToArray();
-            decimal Cost(InStoreItem i) => i.Prices.Single(p => p.ShopId == s.Id).Price!.Value * i.Item.Quantity;
+            decimal Cost(InStoreItem i) => LineTotal(i, i.Prices.Single(p => p.ShopId == s.Id));
             var total = comparable.Sum(Cost);
             return new InStoreBasket(s.Id, s.Name, available.Sum(Cost), available.Length, total, total - split);
         }).ToArray();

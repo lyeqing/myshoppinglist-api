@@ -9,6 +9,33 @@ namespace myshoppinglist_api.Tests;
 [Collection("Import worker database")]
 public class ShoppingListServiceTests
 {
+    [PostgreSqlFact]
+    public async Task Plan_returns_latest_comparison_without_import_history_pagination()
+    {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
+        await using var f = await ListFixture.CreateAsync();
+        await ShoppingListComparisonRetryTests.FailAsync(f, "retailer_access_restricted");
+        var plan = (await f.Service.PlanAsync(f.Scope.UserId, f.Scope.ListId, default))!;
+        var comparison = Assert.Single(plan.Items).Comparison!;
+        Assert.Equal("Failed", comparison.Status);
+        Assert.False(comparison.CanRetry);
+        Assert.Equal("Woolworths", Assert.Single(comparison.Retailers).Name);
+        Assert.InRange((f.Scope.Clock.Now.UtcDateTime.AddMinutes(15) - comparison.RetryAfter!.Value).Ticks, 0, 9);
+        for (var i = 0; i < 21; i++) await f.Scope.AddJobAsync(f.Scope.Source);
+        var latest = await f.Scope.Db.ProductImportJobs.OrderByDescending(j => j.Id).FirstAsync();
+        latest.ShoppingListProductId = f.ItemId;
+        latest.ProductId = plan.Items[0].Item.Product.Id;
+        latest.Status = ProductImportJobStatus.Queued;
+        latest.ClaimToken = null;
+        latest.LeaseExpiresDate = null;
+        await f.Scope.Db.SaveChangesAsync(); f.Scope.Db.ChangeTracker.Clear();
+        plan = (await f.Service.PlanAsync(f.Scope.UserId, f.Scope.ListId, default))!;
+        comparison = Assert.Single(plan.Items).Comparison!;
+        Assert.Equal(latest.Id, comparison.JobId);
+        Assert.Equal("Checking", comparison.Status);
+        Assert.Null(await f.Service.PlanAsync(-1, f.Scope.ListId, default));
+    }
+
     internal static async Task RegisterFixtureAsync(ListFixture f, bool paid)
     {
         var password = myshoppinglist_api.Security.PasswordHasher.Hash("Testing123!");
@@ -75,7 +102,7 @@ public class ShoppingListServiceTests
         }
     }
     [PostgreSqlFact]
-    public async Task Multibuy_is_separate_from_single_price_totals_and_stale_offers_are_not_promoted()
+    public async Task Multibuy_updates_both_page_totals_with_quantity_and_excludes_stale_offers()
     {
         await using var f = await ListFixture.CreateAsync();
         await f.Scope.Db.ShopProductPrices.Where(p => p.ShopProduct.ShopProductCode == f.Scope.Code)
@@ -89,13 +116,24 @@ public class ShoppingListServiceTests
         Assert.Equal("Fresh", price.Status); Assert.True(price.IncludedInTotal);
         Assert.Equal(new ShoppingListMultibuy(2, 30, 15, 30), price.Multibuy);
         Assert.Equal(30m, plan.Lowest.Subtotal); Assert.Empty(plan.Lowest.MissingItems);
-        var item = await f.ItemAsync();
-        await f.UpdateAsync(new(2, null, false, false, item.UpdatedDate));
-        Assert.Equal(60m, (await f.Service.PlanAsync(f.Scope.UserId, f.Scope.ListId, default))!.Lowest.Subtotal);
+        foreach (var (quantity, expected) in new[] { (2, 30m), (3, 60m), (4, 60m) })
+        {
+            var item = await f.ItemAsync();
+            await f.UpdateAsync(new(quantity, null, false, false, item.UpdatedDate));
+            plan = (await f.Service.PlanAsync(f.Scope.UserId, f.Scope.ListId, default))!;
+            Assert.Equal(expected, plan.Lowest.Subtotal);
+            var calculation = Assert.Single(plan.Items[0].Prices).QuantityPrice!;
+            Assert.Equal(expected, calculation.Total);
+            Assert.Equal(30m * quantity - expected, calculation.Savings);
+            var inStore = (await new InStoreShoppingService(f.Scope.Db, f.Scope.Clock, new()).DetailAsync(f.Scope.UserId, f.Scope.ListId, default))!;
+            Assert.Equal(expected, inStore.SplitSubtotal);
+            Assert.Equal(calculation, Assert.Single(inStore.Items[0].Prices).QuantityPrice);
+        }
         await f.Scope.Db.ShopProductPrices.Where(p => p.ShopProduct.ShopProductCode == f.Scope.Code)
             .ExecuteUpdateAsync(s => s.SetProperty(p => p.CheckedDate, f.Scope.Clock.Now.UtcDateTime.AddDays(-8)));
         plan = (await f.Service.PlanAsync(f.Scope.UserId, f.Scope.ListId, default))!;
         Assert.Null(plan.Items[0].Prices[0].Multibuy);
+        Assert.Null(plan.Items[0].Prices[0].QuantityPrice);
         Assert.Equal(0m, plan.Lowest.Subtotal);
         Assert.Equal("Pick any 2 for $30", plan.Items[0].Prices[0].SpecialDescription);
     }

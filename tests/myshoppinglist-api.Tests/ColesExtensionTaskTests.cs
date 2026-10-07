@@ -16,6 +16,124 @@ namespace myshoppinglist_api.Tests;
 public class ColesExtensionTaskTests
 {
     [PostgreSqlFact]
+    public async Task In_flight_success_does_not_cancel_pause_and_probe_timeout_does_not_resume_work()
+    {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
+        await using var f = new Fixture();
+        var first = await QueueAsync(f);
+        var second = await QueueAsync(f);
+        var firstClaim = (await f.Service.ClaimAsync(first, "first", default))!;
+        var secondClaim = (await f.Service.ClaimAsync(second, "second", default))!;
+        await f.Db.RetailerWorkloadStates.ExecuteUpdateAsync(s => s.SetProperty(x => x.BlockedAt,
+            new[] { f.Clock.Now.UtcDateTime, f.Clock.Now.UtcDateTime }));
+        Assert.Null(await f.Service.SubmitAsync(first, new("first", firstClaim.ClaimToken, firstClaim.Url, false, ErrorCode: "retailer_access_restricted"), default));
+        Assert.Null(await f.Service.SubmitAsync(second, new("second", secondClaim.ClaimToken, secondClaim.Url, true, Links: [], EmptyConfirmed: true), default));
+        var waiting = await QueueAsync(f);
+        Assert.Null(await f.Service.ClaimAsync(waiting, "next", default));
+        f.Clock.Now += TimeSpan.FromMinutes(15) - TimeSpan.FromTicks(1);
+        Assert.Null(await f.Service.ClaimAsync(waiting, "next", default));
+        f.Clock.Now += TimeSpan.FromTicks(1);
+        var probe = (await f.Service.ClaimAsync(waiting, "next", default))!;
+        Assert.Null(await f.Service.SubmitAsync(waiting, new("next", probe.ClaimToken, probe.Url, false, ErrorCode: "read_timeout"), default));
+        Assert.NotNull((await f.Db.RetailerWorkloadStates.AsNoTracking().SingleAsync()).PausedUntil);
+        var replacement = await QueueAsync(f);
+        Assert.NotNull(await f.Service.ClaimAsync(replacement, "replacement", default));
+        Assert.Null(await f.Service.ClaimAsync(await QueueAsync(f), "extra", default));
+    }
+
+    private static async Task<long> QueueAsync(Fixture f, string retailer = "coles")
+    {
+        var task = new myshoppinglist_api.Models.ColesExtensionTask
+        {
+            Key = retailer + ":test:" + Guid.NewGuid(),
+            Kind = "search",
+            Url = retailer == "coles" ? "https://www.coles.com.au/search/products?q=test" : "https://www.woolworths.com.au/shop/search/products?searchTerm=test",
+            CreatedAt = f.Clock.Now.UtcDateTime
+        };
+        f.Db.Add(task); await f.Db.SaveChangesAsync(); f.Db.ChangeTracker.Clear(); return task.Id;
+    }
+
+    [PostgreSqlFact]
+    public async Task Concurrent_workers_share_retailer_capacity_and_expired_leases_release_slots()
+    {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
+        await using var f = new Fixture();
+        var ids = new List<long>();
+        for (var i = 0; i < 6; i++) ids.Add(await QueueAsync(f));
+        var claims = await Task.WhenAll(ids.Select(async id =>
+        {
+            await using var db = PersistenceScope.Context();
+            return await Fixture.CreateService(db, f.Clock).ClaimAsync(id, "worker-" + id, default);
+        }));
+        Assert.Equal(2, claims.Count(c => c is not null));
+        var wool = await QueueAsync(f, "woolworths");
+        Assert.NotNull(await f.Service.ClaimAsync(wool, "wool-worker", default));
+        var active = claims.First(c => c is not null)!;
+        Assert.Equal(active.ClaimToken, (await f.Service.ClaimAsync(active.Id, "worker-" + active.Id, default))!.ClaimToken);
+        Assert.DoesNotContain(await f.Service.ListAsync(default), t => ids.Contains(t.Id));
+        f.Clock.Now += TimeSpan.FromMinutes(4);
+        var waiting = ids.First(id => !claims.Any(c => c?.Id == id));
+        Assert.NotNull(await f.Service.ClaimAsync(waiting, "next-worker", default));
+    }
+
+    [PostgreSqlFact]
+    public async Task Repeated_blocks_persist_pause_ignore_duplicates_and_resume_only_after_successful_probe()
+    {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
+        await using var f = new Fixture();
+        for (var i = 0; i < 3; i++)
+        {
+            var id = await QueueAsync(f);
+            var claim = (await f.Service.ClaimAsync(id, "worker", default))!;
+            var failure = new ColesTaskSubmission("worker", claim.ClaimToken, claim.Url, false, ErrorCode: "retailer_access_restricted");
+            Assert.Null(await f.Service.SubmitAsync(id, failure, default));
+            Assert.Null(await f.Service.SubmitAsync(id, failure, default));
+            Assert.Equal(i + 1, (await f.Db.RetailerWorkloadStates.AsNoTracking().SingleAsync()).BlockedAt.Length);
+        }
+        var waiting = await QueueAsync(f);
+        var another = await QueueAsync(f);
+        Assert.Null(await f.Service.ClaimAsync(waiting, "worker", default));
+        Assert.DoesNotContain(await f.Service.ListAsync(default), t => t.Id == waiting);
+        Assert.Equal(0, (await f.Db.ColesExtensionTasks.AsNoTracking().SingleAsync(t => t.Id == waiting)).Attempts);
+        Assert.NotNull(await f.Service.ClaimAsync(await QueueAsync(f, "woolworths"), "other-retailer", default));
+        await using var restartedDb = PersistenceScope.Context();
+        var restarted = Fixture.CreateService(restartedDb, f.Clock);
+        Assert.Null(await restarted.ClaimAsync(waiting, "after-restart", default));
+        f.Clock.Now += TimeSpan.FromMinutes(15);
+        var probe = (await restarted.ClaimAsync(waiting, "probe", default))!;
+        Assert.Null(await f.Service.ClaimAsync(another, "second-probe", default));
+        Assert.Null(await restarted.SubmitAsync(waiting, new("probe", probe.ClaimToken, probe.Url, false, ErrorCode: "retailer_access_restricted"), default));
+        Assert.Null(await f.Service.ClaimAsync(another, "second-probe", default));
+        f.Clock.Now += TimeSpan.FromMinutes(15);
+        probe = (await f.Service.ClaimAsync(another, "probe", default))!;
+        Assert.Null(await f.Service.SubmitAsync(another, new("probe", probe.ClaimToken, probe.Url, true, Links: [], EmptyConfirmed: true), default));
+        var state = await f.Db.RetailerWorkloadStates.AsNoTracking().SingleAsync(s => s.Retailer == "coles");
+        Assert.Null(state.PausedUntil); Assert.Empty(state.BlockedAt); Assert.Null(state.ProbeToken);
+        Assert.NotNull(await f.Service.ClaimAsync(waiting, "resumed", default));
+    }
+
+    [PostgreSqlFact]
+    public async Task Old_blocks_expire_and_abandoned_probe_can_be_replaced()
+    {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
+        await using var f = new Fixture();
+        f.Db.RetailerWorkloadStates.Add(new() { Retailer = "coles", BlockedAt = [f.Clock.Now.AddMinutes(-11).UtcDateTime, f.Clock.Now.AddMinutes(-11).UtcDateTime] });
+        await f.Db.SaveChangesAsync(); f.Db.ChangeTracker.Clear();
+        var id = await QueueAsync(f);
+        var claim = (await f.Service.ClaimAsync(id, "worker", default))!;
+        Assert.Null(await f.Service.SubmitAsync(id, new("worker", claim.ClaimToken, claim.Url, false, ErrorCode: "retailer_access_restricted"), default));
+        var state = await f.Db.RetailerWorkloadStates.SingleAsync();
+        Assert.Single(state.BlockedAt); Assert.Null(state.PausedUntil);
+        state.PausedUntil = f.Clock.Now.UtcDateTime;
+        await f.Db.SaveChangesAsync(); f.Db.ChangeTracker.Clear();
+        var probeId = await QueueAsync(f);
+        var probe = (await f.Service.ClaimAsync(probeId, "abandoned", default))!;
+        f.Clock.Now += TimeSpan.FromMinutes(4);
+        var next = await QueueAsync(f);
+        Assert.NotNull(await f.Service.ClaimAsync(next, "replacement", default));
+        Assert.Equal("claim_lost", await f.Service.SubmitAsync(probeId, new("abandoned", probe.ClaimToken, probe.Url, true, Links: [], EmptyConfirmed: true), default));
+    }
+    [PostgreSqlFact]
     public async Task Restricted_task_obeys_cooldowns_duplicates_and_three_attempt_limit()
     {
         await using var database = await IsolatedDatabaseScope.CreateAsync();
@@ -80,6 +198,7 @@ public class ColesExtensionTaskTests
     [PostgreSqlFact]
     public async Task Priority_orders_existing_worker_tasks_and_submission_still_persists_prices()
     {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
         await using var f = new Fixture();
         await Assert.ThrowsAsync<ColesWorkPendingException>(() => f.Service.ProductAsync(f.Url, default));
         await Assert.ThrowsAsync<ColesWorkPendingException>(() => f.Service.ProductAsync(f.OtherUrl, default));
@@ -96,6 +215,7 @@ public class ColesExtensionTaskTests
     [PostgreSqlFact]
     public async Task Result_wakes_waiting_import_and_result_before_deferral_is_not_lost()
     {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
         await using var imports = await ImportFixture.CreateAsync();
         await using var f = new Fixture();
         f.Clock.Now = imports.Scope.Clock.Now;
@@ -150,6 +270,7 @@ public class ColesExtensionTaskTests
     [PostgreSqlFact]
     public async Task Woolworths_queue_rejects_Coles_links_and_persists_under_Woolworths()
     {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
         await using var f = new Fixture();
         IWoolworthsExtensionQueue queue = f.Service;
         var query = "queue-test-" + f.Code;
@@ -172,6 +293,7 @@ public class ColesExtensionTaskTests
     [PostgreSqlFact]
     public async Task Product_deduplicates_claims_saves_atomically_and_reuses_fresh_cache()
     {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
         await using var f = new Fixture();
         await Assert.ThrowsAsync<ColesWorkPendingException>(() => f.Service.ProductAsync(f.Url, default));
         await Assert.ThrowsAsync<ColesWorkPendingException>(() => f.Service.ProductAsync(new(f.Url + "?pid=tracking"), default));
@@ -198,6 +320,7 @@ public class ColesExtensionTaskTests
     [PostgreSqlFact]
     public async Task Offline_waiting_costs_no_attempts_and_failures_stop_after_three_with_manual_retry()
     {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
         await using var f = new Fixture();
         await Assert.ThrowsAsync<ColesWorkPendingException>(() => f.Service.ProductAsync(f.Url, default));
         var id = await f.Db.ColesExtensionTasks.Where(t => t.Key == "product:" + f.Code).Select(t => t.Id).SingleAsync();
@@ -225,6 +348,7 @@ public class ColesExtensionTaskTests
     [PostgreSqlFact]
     public async Task Search_queues_all_candidates_and_worker_claims_only_one_at_a_time()
     {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
         await using var f = new Fixture(); var query = "queue-test-" + f.Code;
         await Assert.ThrowsAsync<ColesWorkPendingException>(() => f.Service.SearchAsync(query, default));
         var task = await f.Db.ColesExtensionTasks.AsNoTracking().SingleAsync(t => t.Query == query);
@@ -241,6 +365,7 @@ public class ColesExtensionTaskTests
     [PostgreSqlFact]
     public async Task Server_rejection_reason_is_preserved_for_worker_retry_display()
     {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
         await using var f = new Fixture();
         await Assert.ThrowsAsync<ColesWorkPendingException>(() => f.Service.ProductAsync(f.Url, default));
         var task = await f.Db.ColesExtensionTasks.AsNoTracking().SingleAsync(t => t.Key == ColesExtensionTaskService.ProductKey(f.Url));
@@ -263,9 +388,13 @@ public class ColesExtensionTaskTests
         public ColesExtensionTaskService Service { get; }
         public Fixture()
         {
+            Service = CreateService(Db, Clock);
+        }
+        public static ColesExtensionTaskService CreateService(MyShoppingListDbContext db, PersistenceClock clock)
+        {
             var normal = new ProductNormalisationService(); var freshness = new CatalogueFreshnessService();
-            Service = new(Db, new(Db, freshness, Clock), freshness, new(), new(Db, normal, new(normal)), new(Db),
-                new(Db, Options.Create(new PriceOptions()), Clock, new(new RetailerCatalog())), Clock);
+            return new(db, new(db, freshness, clock), freshness, new(), new(db, normal, new(normal)), new(db),
+                new(db, Options.Create(new PriceOptions()), clock, new(new RetailerCatalog())), clock);
         }
         public async ValueTask DisposeAsync()
         {

@@ -2,6 +2,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using myshoppinglist_api.Configuration;
 using myshoppinglist_api.Contracts;
 using myshoppinglist_api.Data;
 using myshoppinglist_api.Models;
@@ -30,8 +32,43 @@ public interface IWoolworthsExtensionQueue
 
 public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, SourceProductCacheService cache,
     CatalogueFreshnessService freshness, ColesProductParser parser, ProductService products,
-    ShopProductService mappings, PriceService prices, TimeProvider clock) : IColesExtensionQueue, IWoolworthsExtensionQueue
+    ShopProductService mappings, PriceService prices, TimeProvider clock,
+    IOptions<RetailerWorkloadOptions>? workloadOptions = null,
+    ILogger<ColesExtensionTaskService>? logger = null) : IColesExtensionQueue, IWoolworthsExtensionQueue
 {
+    private RetailerWorkloadOptions Limits => workloadOptions?.Value ?? new();
+    private bool CanDispatch(RetailerWorkloadState? state, int active, DateTime now) =>
+        active < Limits.MaxConcurrentTasks && (state?.PausedUntil is null ||
+            state.PausedUntil <= now && !(state.ProbeExpiresAt > now) && active == 0);
+
+    private async Task<string?> RecordWorkloadResultAsync(ColesExtensionTask task, bool blocked, CancellationToken token)
+    {
+        var retailer = Retailer(new Uri(task.Url));
+        var state = await db.RetailerWorkloadStates.SingleOrDefaultAsync(s => s.Retailer == retailer, token);
+        if (state is not null) await db.Entry(state).ReloadAsync(token);
+        // Tasks claimed before deployment may not yet have a workload row.
+        if (state is null) { state = new() { Retailer = retailer }; db.RetailerWorkloadStates.Add(state); }
+        var probe = state.ProbeToken == task.ClaimToken;
+        if (blocked)
+        {
+            state.BlockedAt = [.. state.BlockedAt.Where(t => t > Now.AddMinutes(-Limits.BlockedWindowMinutes)), Now];
+            if (state.PausedUntil is not null || state.BlockedAt.Length >= Limits.BlockedThreshold)
+            {
+                state.PausedUntil = Now.AddMinutes(Limits.PauseMinutes);
+                state.ProbeToken = null; state.ProbeExpiresAt = null;
+                return "paused";
+            }
+        }
+        else if (probe && task.Status == "Completed")
+        {
+            state.PausedUntil = null; state.BlockedAt = [];
+            state.ProbeToken = null; state.ProbeExpiresAt = null;
+            return "resumed";
+        }
+        // A timeout is not proof that access recovered. Permit another single probe.
+        if (probe) { state.ProbeToken = null; state.ProbeExpiresAt = null; }
+        return null;
+    }
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     private static string Retailer(Uri url) => url.Host is "www.woolworths.com.au" or "woolworths.com.au" ? "woolworths" : "coles";
@@ -121,9 +158,14 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
     {
         await RecoverAsync(token);
         var now = Now;
-        return await db.ColesExtensionTasks.AsNoTracking().Where(t => t.Status == "Waiting" && (t.NextAttemptAt == null || t.NextAttemptAt <= now)
+        var states = await db.RetailerWorkloadStates.AsNoTracking().ToDictionaryAsync(s => s.Retailer, token);
+        var activeUrls = await db.ColesExtensionTasks.AsNoTracking().Where(t => t.Status == "Processing" && t.LeaseExpiresAt > now)
+            .Select(t => t.Url).ToArrayAsync(token);
+        var tasks = await db.ColesExtensionTasks.AsNoTracking().Where(t => t.Status == "Waiting" && (t.NextAttemptAt == null || t.NextAttemptAt <= now)
             || t.Status == "Failed").OrderByDescending(t => t.Priority).ThenBy(t => t.CreatedAt).ThenBy(t => t.Id)
             .Select(t => new ColesTaskSummary(t.Id, t.Kind, t.Url, t.Query, t.Status, t.Attempts, t.ErrorCode)).ToListAsync(token);
+        return tasks.Where(t => t.Status == "Failed" || CanDispatch(states.GetValueOrDefault(Retailer(new Uri(t.Url))),
+            activeUrls.Count(url => Retailer(new Uri(url)) == Retailer(new Uri(t.Url))), now)).ToArray();
     }
     public async Task<ColesTaskClaim?> ClaimAsync(long id, string worker, CancellationToken token, long? contributor = null)
     {
@@ -138,9 +180,20 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
         if (active is not null) return active.Id == id && active.ContributorAccountId == contributor ? Claim(active) : null;
         var task = await db.ColesExtensionTasks.SingleOrDefaultAsync(t => t.Id == id, token);
         if (task is null || task.Status != "Waiting" || task.Attempts >= 3 || task.NextAttemptAt > now) return null;
+        var retailer = Retailer(new Uri(task.Url));
+        var state = await db.RetailerWorkloadStates.AsNoTracking().SingleOrDefaultAsync(s => s.Retailer == retailer, token);
+        var activeUrls = await db.ColesExtensionTasks.Where(t => t.Status == "Processing" && t.LeaseExpiresAt > now)
+            .Select(t => t.Url).ToArrayAsync(token);
+        if (!CanDispatch(state, activeUrls.Count(url => Retailer(new Uri(url)) == retailer), now)) return null;
+        if (state is null) { state = new() { Retailer = retailer }; db.RetailerWorkloadStates.Add(state); }
         task.Status = "Processing"; task.WorkerId = worker; task.ClaimToken = Guid.NewGuid();
         task.ContributorAccountId = contributor;
         task.ClaimedAt = now; task.LeaseExpiresAt = now.AddMinutes(3); task.Attempts++;
+        if (state.PausedUntil is not null)
+        {
+            state.ProbeToken = task.ClaimToken; state.ProbeExpiresAt = task.LeaseExpiresAt;
+            db.RetailerWorkloadStates.Update(state);
+        }
         task.ErrorCode = null; task.SubmissionHash = null;
         await db.SaveChangesAsync(token); await tx.CommitAsync(token); db.ChangeTracker.Clear();
         return Claim(task);
@@ -237,6 +290,7 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
             task.ResultJson = html; task.Status = "Completed"; task.CompletedAt = Now; task.LeaseExpiresAt = null;
         }
         task.SubmissionHash = digest;
+        var transition = await RecordWorkloadResultAsync(task, !submission.Ok && submission.ErrorCode == "retailer_access_restricted", token);
         await db.SaveChangesAsync(token);
         if (leaseExpiresAt <= Now) return "claim_lost";
         if (task.Status is "Completed" or "Failed")
@@ -244,6 +298,7 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
                 && j.ProgressStage == ProductImportProgressStage.WaitingForExtension)
                 .ExecuteUpdateAsync(s => s.SetProperty(j => j.NextAttemptDate, (DateTime?)Now), token);
         await tx.CommitAsync(token); db.ChangeTracker.Clear();
+        if (transition is not null) logger?.LogInformation("Shared retailer work {Transition} for {Retailer}", transition, Retailer(new Uri(task.Url)));
         return null;
     }
     public static string? EvidenceHtml(ColesEvidence? evidence, string retailer = "coles")

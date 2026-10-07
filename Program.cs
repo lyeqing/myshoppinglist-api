@@ -31,6 +31,7 @@ try
     builder.Services.AddSerilog((services, configuration) => configuration
         .ReadFrom.Configuration(builder.Configuration).ReadFrom.Services(services)
         .MinimumLevel.Override("myshoppinglist_api.Workers.PriceRefreshWorker", LogEventLevel.Information)
+        .MinimumLevel.Override("myshoppinglist_api.Services.ColesExtensionTaskService", LogEventLevel.Information)
         .Enrich.FromLogContext()
         .Filter.ByIncludingOnly(entry => entry.Level >= LogEventLevel.Error ||
             entry.Level == LogEventLevel.Information &&
@@ -38,7 +39,8 @@ try
             name is "myshoppinglist_api.Workers.ProductImportWorker" or
                 "myshoppinglist_api.Workers.PriceRefreshWorker" or
                 "myshoppinglist_api.Services.ProductImportJobService" or
-                "myshoppinglist_api.Services.ProductImportSubmissionService"));
+                "myshoppinglist_api.Services.ProductImportSubmissionService" or
+                "myshoppinglist_api.Services.ColesExtensionTaskService"));
     builder.Services.AddDbContext<MyShoppingListDbContext>(options =>
         options.UseNpgsql(builder.Configuration.GetConnectionString("MyShoppingList")));
     builder.Services.AddSingleton(new RetailerCatalog());
@@ -50,6 +52,8 @@ try
     builder.Services.AddScoped<IColesExtensionQueue>(s => s.GetRequiredService<ColesExtensionTaskService>());
     builder.Services.AddScoped<IWoolworthsExtensionQueue>(s => s.GetRequiredService<ColesExtensionTaskService>());
     builder.Services.AddOptions<ColesExtensionOptions>().BindConfiguration(ColesExtensionOptions.SectionName);
+    builder.Services.AddOptions<RetailerWorkloadOptions>().BindConfiguration(RetailerWorkloadOptions.SectionName)
+        .ValidateDataAnnotations().ValidateOnStart();
     builder.Services.AddOptions<RetailerSearchOptions>().BindConfiguration(RetailerSearchOptions.SectionName)
         .ValidateDataAnnotations().ValidateOnStart();
     builder.Services.AddSingleton<IRetailerSearchBrowser, RetailerSearchBrowser>();
@@ -59,6 +63,7 @@ try
     builder.Services.AddHttpContextAccessor();
     builder.Services.Configure<AdminOptions>(builder.Configuration.GetSection("Admin"));
     builder.Services.AddScoped<AdminAccountService>();
+    builder.Services.AddScoped<AdminHealthService>();
     builder.Services.AddScoped<ContributionService>();
     builder.Services.AddAuthorization(o => o.AddPolicy("Administrator", p => p.RequireAuthenticatedUser().RequireClaim("administrator", "true")));
     builder.Services.AddAuthentication(SessionTokenAuthenticationHandler.SchemeName)
@@ -189,6 +194,7 @@ try
     app.UseRateLimiter();
     app.MapAuthEndpoints();
     app.MapAdminAccountEndpoints();
+    app.MapAdminHealthEndpoints();
     app.MapContributionEndpoints();
     app.MapUserExtensionEndpoints();
     app.MapColesExtensionEndpoints();

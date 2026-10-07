@@ -8,6 +8,47 @@ namespace myshoppinglist_api.Tests;
 [Collection("Import worker database")]
 public class InStoreShoppingTests
 {
+    [Theory]
+    [InlineData(1, 30, 0, 1)]
+    [InlineData(2, 30, 1, 0)]
+    [InlineData(3, 60, 1, 1)]
+    [InlineData(4, 60, 2, 0)]
+    [InlineData(5, 90, 2, 1)]
+    public void Verified_deals_apply_only_to_complete_same_product_bundles(int quantity, decimal total, int bundles, int remaining)
+    {
+        var result = PromotionCalculationService.Calculate(30, quantity, new(2, 30, 15, 30));
+        Assert.Equal(total, result.Total);
+        Assert.Equal(bundles, result.AppliedBundles);
+        Assert.Equal(remaining, result.RemainingQuantity);
+        Assert.Equal(30 * quantity - total, result.Savings);
+        Assert.Equal(30 * quantity, PromotionCalculationService.Calculate(30, quantity, null).Total);
+    }
+
+    [Fact]
+    public void Both_baskets_rank_quantity_cost_instead_of_single_price_and_do_not_pool_products()
+    {
+        var deal = new ShoppingListMultibuy(2, 30, 15, 30);
+        var row = Row(1, 2, 30, 20);
+        row = row with { Prices = [row.Prices[0] with { Multibuy = deal }, row.Prices[1]] };
+        var store = InStoreShoppingService.Summarize(1, "List", Shops, [row]);
+        Assert.Equal(30m, store.SplitSubtotal);
+        Assert.Equal(10m, store.Baskets[1].SavingsBySplitting);
+        var planning = new ShoppingListPlanningItem(row.Item,
+            [new(1, "Coles", 30, true, "Fresh", null, null, null, Multibuy: deal), new(2, "Woolworths", 20, true, "Fresh", null, null, null)]);
+        Assert.Equal(30m, ShoppingListService.SummarizePlan(1, "List", [planning], [(1, "Coles"), (2, "Woolworths")]).Lowest.Subtotal);
+        var separate = new[] { row with { Item = row.Item with { Quantity = 1 } }, row with { Item = row.Item with { Id = 2, Quantity = 1 } } };
+        Assert.Equal(60m, InStoreShoppingService.Summarize(1, "List", Shops, separate).Baskets[0].Subtotal);
+    }
+
+    [Fact]
+    public void Bundle_arithmetic_preserves_decimal_totals_without_rounding_unit_prices()
+    {
+        var result = PromotionCalculationService.Calculate(4.99m, 7, new(3, 10, 10m / 3, 4.97m));
+        Assert.Equal(24.99m, result.Total);
+        Assert.Equal(9.94m, result.Savings);
+        Assert.Equal(2, result.AppliedBundles);
+    }
+
     [PostgreSqlFact]
     public async Task Completing_trial_list_removes_it_from_in_store_without_deleting_saved_items()
     {

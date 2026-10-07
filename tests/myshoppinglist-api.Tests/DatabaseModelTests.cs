@@ -9,6 +9,34 @@ namespace myshoppinglist_api.Tests;
 
 public class DatabaseModelTests
 {
+    [PostgreSqlFact]
+    public async Task Workload_migration_upgrades_existing_schema_and_preserves_queue_data()
+    {
+        var original = Environment.GetEnvironmentVariable("MYSHOPPINGLIST_TEST_CONNECTION")!;
+        var schema = "codex_migration_" + Guid.NewGuid().ToString("N");
+        await using var connection = new NpgsqlConnection(original);
+        await connection.OpenAsync();
+        await using (var create = new NpgsqlCommand($"CREATE SCHEMA \"{schema}\"", connection)) await create.ExecuteNonQueryAsync();
+        try
+        {
+            var isolated = new NpgsqlConnectionStringBuilder(original) { SearchPath = schema, Pooling = false }.ConnectionString;
+            await using var db = new MyShoppingListDbContext(new DbContextOptionsBuilder<MyShoppingListDbContext>().UseNpgsql(isolated).Options);
+            await db.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().MigrateAsync("20261004102216_AddPriceRefreshScheduling");
+            db.ColesExtensionTasks.Add(new() { Key = "migration-test", Url = "https://www.coles.com.au/product/123", CreatedAt = DateTime.UtcNow });
+            await db.SaveChangesAsync();
+            await db.Database.MigrateAsync();
+            Assert.Equal("migration-test", (await db.ColesExtensionTasks.SingleAsync()).Key);
+            db.RetailerWorkloadStates.Add(new() { Retailer = "coles", BlockedAt = [DateTime.UtcNow], PausedUntil = DateTime.UtcNow.AddMinutes(15) });
+            await db.SaveChangesAsync(); db.ChangeTracker.Clear();
+            Assert.Single((await db.RetailerWorkloadStates.SingleAsync()).BlockedAt);
+            Assert.Empty(await db.Database.GetPendingMigrationsAsync());
+        }
+        finally
+        {
+            await using var drop = new NpgsqlCommand($"DROP SCHEMA \"{schema}\" CASCADE", connection);
+            await drop.ExecuteNonQueryAsync();
+        }
+    }
     [Fact]
     public void Extension_tasks_persist_refresh_schedule_and_preserve_background_priority_zero()
     {
@@ -21,12 +49,22 @@ public class DatabaseModelTests
         .UseNpgsql("Host=localhost;Database=model_only").Options);
 
     [Fact]
-    public void Model_contains_only_the_sixteen_application_entities()
+    public void Model_contains_only_the_seventeen_application_entities()
     {
         using var db = ModelContext();
-        Assert.Equal(16, db.Model.GetEntityTypes().Count());
+        Assert.Equal(17, db.Model.GetEntityTypes().Count());
         Assert.DoesNotContain(db.Model.GetEntityTypes(), e => e.Name.Contains("Company"));
         Assert.All(db.Model.GetEntityTypes().SelectMany(e => e.GetProperties()), p => Assert.False(p.IsShadowProperty()));
+    }
+
+    [Fact]
+    public void Workload_state_persists_one_row_per_retailer_and_probe_lease()
+    {
+        using var db = ModelContext();
+        var entity = db.Model.FindEntityType(typeof(RetailerWorkloadState))!;
+        Assert.Equal(nameof(RetailerWorkloadState.Retailer), Assert.Single(entity.FindPrimaryKey()!.Properties).Name);
+        Assert.Equal(typeof(DateTime[]), entity.FindProperty(nameof(RetailerWorkloadState.BlockedAt))!.ClrType);
+        Assert.Equal(typeof(Guid?), entity.FindProperty(nameof(RetailerWorkloadState.ProbeToken))!.ClrType);
     }
 
     [Fact]

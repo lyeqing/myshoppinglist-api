@@ -17,10 +17,16 @@ public sealed record ShoppingListItemPage(IReadOnlyList<ShoppingListItemResponse
 
 public sealed record ShoppingListItemDeleteRequest([property: JsonRequired] DateTime ExpectedUpdatedDate);
 public sealed record ShoppingListMultibuy(int Quantity, decimal Total, decimal UnitPrice, decimal Savings);
+public sealed record ShoppingListQuantityPrice(int Quantity, decimal Total, decimal OrdinaryTotal,
+    decimal Savings, int AppliedBundles, int RemainingQuantity);
 public sealed record ShoppingListPrice(long ShopId, string ShopName, decimal? Price, bool IncludedInTotal,
     string Status, string? ProductUrl, DateTime? CheckedDate, string? SpecialDescription,
-    string? RefreshStatus = null, ShoppingListMultibuy? Multibuy = null);
-public sealed record ShoppingListPlanningItem(ShoppingListItemResponse Item, ShoppingListPrice[] Prices);
+    string? RefreshStatus = null, ShoppingListMultibuy? Multibuy = null, ShoppingListQuantityPrice? QuantityPrice = null);
+public sealed record ShoppingListComparison(long JobId, string Status, string? ErrorCode, DateTime? RetryAfter,
+    bool CanRetry, ShoppingListRetailerCheck[] Retailers);
+public sealed record ShoppingListRetailerCheck(string Name, string Status, string? ErrorCode);
+public sealed record ShoppingListPlanningItem(ShoppingListItemResponse Item, ShoppingListPrice[] Prices,
+    ShoppingListComparison? Comparison = null);
 public sealed record ShoppingListMissingItem(long ItemId, string Name, string Reason);
 public sealed record ShoppingListBasket(long? ShopId, string Name, decimal Subtotal, int PricedCount,
     ShoppingListMissingItem[] MissingItems);

@@ -145,6 +145,7 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
         var refreshTasks = await db.ColesExtensionTasks.AsNoTracking().Where(t => refreshKeys.Contains(t.Key))
             .Select(t => new { t.Key, t.Status })
             .ToDictionaryAsync(t => t.Key, token);
+        var comparisons = await new ShoppingListComparisonRetryService(db, clock).ReadAsync(accountId, listId, token);
         var rows = items.Select(item => new ShoppingListPlanningItem(Response(item),
             mappings.Where(m => m.ProductId == item.ProductId).GroupBy(m => m.ShopId).Select(group =>
             {
@@ -159,11 +160,12 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
                 if (!item.IsPurchased && !item.IsHidden && status != "Fresh" && PriceRefreshService.ProductUrl(mapping) is { } url
                     && refreshTasks.TryGetValue(ColesExtensionTaskService.ProductKey(url), out var task))
                     refreshStatus = task.Status switch { "Waiting" => "Waiting", "Processing" => "Updating", "Failed" => "RetryLater", _ => null };
+                var offer = status == "Fresh" ? InStoreShoppingService.SinglePriceMultibuy(price) : null;
                 return new ShoppingListPrice(mapping.ShopId, mapping.Shop.Name,
                     price is { Currency: "AUD", Price: >= 0 } ? price.Price : null, status == "Fresh", status,
                     mapping.ProductUrl, price?.CheckedDate, price?.SpecialDescription, refreshStatus,
-                    status == "Fresh" ? InStoreShoppingService.SinglePriceMultibuy(price) : null);
-            }).OrderBy(p => p.ShopName).ToArray())).ToArray();
+                    offer, status == "Fresh" ? PromotionCalculationService.Calculate(price!.Price, item.Quantity, offer) : null);
+            }).OrderBy(p => p.ShopName).ToArray(), comparisons.GetValueOrDefault(item.Id))).ToArray();
         if (!Accessible(list?.UserAccount, list, accountId)) return null;
         var plan = SummarizePlan(list!.Id, list.Name, rows, shops.Select(s => (s.Id, s.Name)).ToArray());
         await transaction.CommitAsync(token);
@@ -181,10 +183,11 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
             foreach (var row in items)
             {
                 var available = row.Prices.Where(p => shopId is null || p.ShopId == shopId).ToArray();
-                var best = available.Where(p => p.IncludedInTotal && p.Price.HasValue).OrderBy(p => p.Price).FirstOrDefault();
+                decimal Total(ShoppingListPrice p) => PromotionCalculationService.Calculate(p.Price!.Value, row.Item.Quantity, p.Multibuy).Total;
+                var best = available.Where(p => p.IncludedInTotal && p.Price.HasValue).OrderBy(Total).FirstOrDefault();
                 if (best is not null)
                 {
-                    subtotal += best.Price!.Value * row.Item.Quantity;
+                    subtotal += Total(best);
                     count++;
                 }
                 else missing.Add(new(row.Item.Id, row.Item.Product.Name,

@@ -7,6 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <None Update="Fixtures/Coles/**" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures/Regression/**" CopyToOutputDirectory="PreserveNewest" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.11" />
     <PackageReference Include="xunit" Version="2.9.3" />
