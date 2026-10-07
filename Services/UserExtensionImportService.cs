@@ -25,8 +25,16 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
     private async Task<long> Observe(long account, long? job, string url, CancellationToken ct)
     {
-        var observation = new ContributionObservation { UserAccountId = account, ImportJobId = job, Url = url, Source = "PersonalAdd",
-            ReceivedAt = Now, CollectedAt = Now, ExtensionVersion = ContributionService.Version(http?.HttpContext?.Request.Headers["X-Extension-Version"].ToString()) };
+        var observation = new ContributionObservation
+        {
+            UserAccountId = account,
+            ImportJobId = job,
+            Url = url,
+            Source = "PersonalAdd",
+            ReceivedAt = Now,
+            CollectedAt = Now,
+            ExtensionVersion = ContributionService.Version(http?.HttpContext?.Request.Headers["X-Extension-Version"].ToString())
+        };
         db.ContributionObservations.Add(observation); await db.SaveChangesAsync(ct); db.ChangeTracker.Clear(); return observation.Id;
     }
     private Task Outcome(long id, string outcome, CancellationToken ct) => db.ContributionObservations.Where(o => o.Id == id)
@@ -45,7 +53,8 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
     }
     public async Task<UserExtensionWork> StartAsync(long account, UserExtensionStart request, CancellationToken ct)
     {
-        if (await db.UserAccounts.AnyAsync(a => a.Id == account && a.ContributionBlocked, ct)) {
+        if (await db.UserAccounts.AnyAsync(a => a.Id == account && a.ContributionBlocked, ct))
+        {
             var queued = await submissions.SubmitAsync(account, request.ListId, new(request.Url, request.Quantity), ct);
             if (queued.Response is null) throw new UserImportException(queued.StatusCode, queued.Message ?? "Could not queue import.");
             await QueueTrusted(account, queued.Response.JobId, ct);
@@ -53,8 +62,10 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
         }
         ExtractedShopProduct source;
         try { source = await ParseAsync(request.Url, request.Evidence, ct); }
-        catch (UserImportException) {
-            if (urls.Validate(request.Url).IsValid) {
+        catch (UserImportException)
+        {
+            if (urls.Validate(request.Url).IsValid)
+            {
                 var rejected = await Observe(account, null, request.Url, ct);
                 await Outcome(rejected, "InvalidSourceEvidence", ct);
             }
@@ -84,7 +95,8 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
 
     public Task<UserExtensionWork> RetryAsync(long account, long jobId, CancellationToken ct) => Locked(account, jobId, async (task, job) =>
     {
-        if (await db.UserAccounts.AnyAsync(a => a.Id == account && a.ContributionBlocked, ct)) {
+        if (await db.UserAccounts.AnyAsync(a => a.Id == account && a.ContributionBlocked, ct))
+        {
             await QueueTrusted(account, jobId, ct);
             return new(jobId, "Queued", job.ShoppingListProductId != null, "trusted", Guid.Empty, null, null, null);
         }
@@ -101,7 +113,8 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
 
     public Task<UserExtensionWork> ResultAsync(long account, long jobId, UserExtensionResult result, CancellationToken ct) => Locked(account, jobId, async (task, job) =>
     {
-        if (await db.UserAccounts.AnyAsync(a => a.Id == account && a.ContributionBlocked, ct)) {
+        if (await db.UserAccounts.AnyAsync(a => a.Id == account && a.ContributionBlocked, ct))
+        {
             await QueueTrusted(account, jobId, ct);
             return new(jobId, "Queued", job.ShoppingListProductId != null, "trusted", Guid.Empty, null, null, null);
         }
@@ -164,12 +177,13 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
         }
         else
         {
-            // Broaden the search once when descriptive retailer wording produced no exact matches.
+            // Try the next shorter query when retailer wording produced no exact matches.
             var product = await db.Products.AsNoTracking().SingleAsync(p => p.Id == job.ProductId, ct);
-            var searches = ProductSearchQueryBuilder.BuildColesSearches(ProductMatchingService.Identity(product));
-            if (exact.Count == 0 && searches.Count > 1 && task.Query == searches[0])
+            var searches = ProductSearchQueryBuilder.BuildSearches(ProductMatchingService.Identity(product));
+            var index = searches.ToList().IndexOf(task.Query!);
+            if (exact.Count == 0 && index >= 0 && index + 1 < searches.Count)
             {
-                task.Stage = "search"; task.Query = searches[1]; task.Url = ProductSearchQueryBuilder.SearchUrl(other.Code, task.Query).AbsoluteUri;
+                task.Stage = "search"; task.Query = searches[index + 1]; task.Url = ProductSearchQueryBuilder.SearchUrl(other.Code, task.Query).AbsoluteUri;
                 return await SaveView(task, job, ct);
             }
             await comparisons.SaveStatusAsync(claim, other.Id, exact.Count > 1 ? RetailerLookupStatus.Possible : RetailerLookupStatus.NotFound,

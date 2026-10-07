@@ -46,43 +46,56 @@ public sealed class WoolworthsProductProvider(RetailerHttpClient http, Woolworth
             return SearchFailure(new(ProviderFailureKind.NotSupported, "unsupported_search_context", "Store-specific search is not supported."));
         if (searchBrowser is null)
             return SearchFailure(new(ProviderFailureKind.NotSupported, "search_not_configured", "Retailer search is not configured."));
-        var query = ProductSearchQueryBuilder.Build(product);
-        if (query is null)
+        var queries = ProductSearchQueryBuilder.BuildSearches(product);
+        if (queries.Count == 0)
             return SearchFailure(new(ProviderFailureKind.InvalidProduct, "invalid_search_identity", "A product name is required."));
         var settings = searchOptions?.Value ?? new RetailerSearchOptions();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(settings.TimeoutSeconds));
         try
         {
-            var rendered = await searchBrowser.ReadAsync(ShopCode, query, deadline.Token);
-            if (rendered is ProviderResult<RetailerPage>.Failure failed)
-                return failed.Error.Kind == ProviderFailureKind.AccessRestricted && extension is not null
-                    ? await extension.SearchAsync(query, cancellationToken) : SearchFailure(failed.Error);
-            var links = await new WoolworthsSearchParser().ParseAsync(((ProviderResult<RetailerPage>.Success)rendered).Value,
-                query, settings.MaximumCandidates, deadline.Token);
-            if (links is ProviderResult<IReadOnlyList<Uri>>.Failure invalid)
-                return invalid.Error.Kind == ProviderFailureKind.AccessRestricted && extension is not null
-                    ? await extension.SearchAsync(query, cancellationToken) : SearchFailure(invalid.Error);
-            var candidates = new List<ShopProductSearchResult>();
-            // Keep search ranking and read sequentially because browser fallbacks share a scoped database context.
-            foreach (var batch in ((ProviderResult<IReadOnlyList<Uri>>.Success)links).Value.Chunk(2))
+            foreach (var query in queries)
             {
-                var results = new List<ProviderResult<ExtractedShopProduct>>();
-                foreach (var url in batch) results.Add(await GetProductFromUrlAsync(url, deadline.Token));
-                foreach (var result in results)
+                var rendered = await searchBrowser.ReadAsync(ShopCode, query, deadline.Token);
+                if (rendered is ProviderResult<RetailerPage>.Failure failed)
                 {
-                    if (result is ProviderResult<ExtractedShopProduct>.Success identified)
-                        candidates.Add(new(identified.Value));
-                    else if (result is ProviderResult<ExtractedShopProduct>.Failure failure)
+                    var fallback = failed.Error.Kind == ProviderFailureKind.AccessRestricted && extension is not null
+                        ? await extension.SearchAsync(query, cancellationToken) : SearchFailure(failed.Error);
+                    if (ShouldStop(fallback, product) || query == queries[^1]) return fallback;
+                    continue;
+                }
+                var links = await new WoolworthsSearchParser().ParseAsync(((ProviderResult<RetailerPage>.Success)rendered).Value,
+                    query, settings.MaximumCandidates, deadline.Token);
+                if (links is ProviderResult<IReadOnlyList<Uri>>.Failure invalid)
+                {
+                    var fallback = invalid.Error.Kind == ProviderFailureKind.AccessRestricted && extension is not null
+                        ? await extension.SearchAsync(query, cancellationToken) : SearchFailure(invalid.Error);
+                    if (ShouldStop(fallback, product) || query == queries[^1]) return fallback;
+                    continue;
+                }
+                var candidates = new List<ShopProductSearchResult>();
+                // Keep search ranking and read sequentially because browser fallbacks share a scoped database context.
+                foreach (var batch in ((ProviderResult<IReadOnlyList<Uri>>.Success)links).Value.Chunk(2))
+                {
+                    var results = new List<ProviderResult<ExtractedShopProduct>>();
+                    foreach (var url in batch) results.Add(await GetProductFromUrlAsync(url, deadline.Token));
+                    foreach (var result in results)
                     {
-                        // A vanished or unsupported marketplace candidate is not a match. Incomplete
-                        // network/parsing checks must not become a misleading successful empty search.
-                        if (failure.Error.Kind is ProviderFailureKind.NotFound or ProviderFailureKind.NotSupported) continue;
-                        return SearchFailure(failure.Error);
+                        if (result is ProviderResult<ExtractedShopProduct>.Success identified)
+                            candidates.Add(new(identified.Value));
+                        else if (result is ProviderResult<ExtractedShopProduct>.Failure failure)
+                        {
+                            // A vanished or unsupported marketplace candidate is not a match. Incomplete
+                            // network/parsing checks must not become a misleading successful empty search.
+                            if (failure.Error.Kind is ProviderFailureKind.NotFound or ProviderFailureKind.NotSupported) continue;
+                            return SearchFailure(failure.Error);
+                        }
                     }
                 }
+                var found = new ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Success(candidates);
+                if (ShouldStop(found, product) || query == queries[^1]) return found;
             }
-            return new ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Success(candidates);
+            return new ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Success([]);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         { return SearchFailure(new(ProviderFailureKind.Timeout, "search_timeout", "Retailer search timed out.")); }
@@ -90,6 +103,9 @@ public sealed class WoolworthsProductProvider(RetailerHttpClient http, Woolworth
 
     private static ProviderResult<IReadOnlyList<ShopProductSearchResult>> SearchFailure(ProviderFailure failure) =>
         new ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Failure(failure);
+    private static bool ShouldStop(ProviderResult<IReadOnlyList<ShopProductSearchResult>> result, ProductIdentity product) =>
+        result is not ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Success success
+        || success.Value.Any(candidate => new ProductMatchingService(new()).Match(product, candidate.Product.Identity).Type == myshoppinglist_api.Models.MatchType.Exact);
     public async Task<ProviderResult<ShopProductOffer>> GetOfferAsync(
         ShopProductSearchResult product, ShopLocationContext? location, CancellationToken cancellationToken)
     {

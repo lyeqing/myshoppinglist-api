@@ -7,6 +7,25 @@ namespace myshoppinglist_api.Providers;
 
 public static class ProductSearchQueryBuilder
 {
+    public static IReadOnlyList<string> BuildSearches(ProductIdentity product)
+    {
+        var full = Build(product);
+        var flavour = YoghurtFlavour(full ?? "");
+        var brand = Build(new ProductIdentity { Name = product.Brand ?? "" });
+        if (full is null || flavour is null || brand is null) return BuildColesSearches(product);
+        var size = Regex.Match(full, @"\b\d+(?:\.\d+)?(?:g|kg)\b", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100)).Value;
+        var format = full.Split(' ').Contains("pouch") ? " pouch" : "";
+        var concise = $"{brand} {flavour} yoghurt{format} {size}".Trim();
+        return new[] { full, concise, $"{brand} {flavour}" }.Distinct(StringComparer.Ordinal).ToArray();
+    }
+
+    internal static string? YoghurtFlavour(string name)
+    {
+        var words = name.Split(' ').ToHashSet(StringComparer.Ordinal);
+        if (!words.Contains("yoghurt") && !words.Contains("yogurt")) return null;
+        var flavours = new[] { "mango", "vanilla", "strawberry", "banana", "blueberry", "raspberry", "peach", "coconut" }.Where(words.Contains).ToArray();
+        return flavours.Length == 1 ? flavours[0] : null;
+    }
     public static IReadOnlyList<string> BuildColesSearches(ProductIdentity product)
     {
         var full = Build(product);

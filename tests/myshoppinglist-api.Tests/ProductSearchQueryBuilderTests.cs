@@ -6,10 +6,23 @@ namespace myshoppinglist_api.Tests;
 public class ProductSearchQueryBuilderTests
 {
     [Fact]
+    public void Yoghurt_search_progresses_from_full_identity_to_brand_and_flavour()
+    {
+        Assert.Equal(new[] { "yopro high protein yoghurt pouch no added sugar mango 150g", "yopro mango yoghurt pouch 150g", "yopro mango" },
+            ProductSearchQueryBuilder.BuildSearches(new() { Name = "YoPro High Protein Yoghurt Pouch No Added Sugar Mango 150g", Brand = "YoPro" }));
+        Assert.Single(ProductSearchQueryBuilder.BuildSearches(new() { Name = "Yoghurt 150g" }));
+    }
+    [Fact]
     public void Coles_fallback_preserves_brand_variant_and_size_without_mutating_identity()
     {
-        var product = new myshoppinglist_api.Providers.Models.ProductIdentity {
-            Name = "Palmolive Body Wash Shower Gel Naturals Milk & Honey 1L", Brand = "Palmolive", Variant = "Milk Honey", PackSize = 1000, PackUnit = "mL" };
+        var product = new myshoppinglist_api.Providers.Models.ProductIdentity
+        {
+            Name = "Palmolive Body Wash Shower Gel Naturals Milk & Honey 1L",
+            Brand = "Palmolive",
+            Variant = "Milk Honey",
+            PackSize = 1000,
+            PackUnit = "mL"
+        };
         Assert.Equal(new[] { "palmolive body wash shower gel naturals milk honey 1l", "palmolive naturals milk honey 1l" },
             ProductSearchQueryBuilder.BuildColesSearches(product));
         Assert.Contains("Shower Gel", product.Name);
@@ -21,8 +34,11 @@ public class ProductSearchQueryBuilderTests
     {
         Assert.Single(ProductSearchQueryBuilder.BuildColesSearches(new() { Name = "Brand Body Wash 1L", Brand = "Brand" }));
         Assert.Single(ProductSearchQueryBuilder.BuildColesSearches(new() { Name = "Body Wash Milk Honey 1L" }));
-        Assert.Contains("zero sugar", ProductSearchQueryBuilder.BuildColesSearches(new() {
-            Name = "Brand Soft Drink Zero Sugar Bottle 1L", Brand = "Brand" }).Last());
+        Assert.Contains("zero sugar", ProductSearchQueryBuilder.BuildColesSearches(new()
+        {
+            Name = "Brand Soft Drink Zero Sugar Bottle 1L",
+            Brand = "Brand"
+        }).Last());
         Assert.Empty(ProductSearchQueryBuilder.BuildColesSearches(new() { Name = " " }));
     }
 

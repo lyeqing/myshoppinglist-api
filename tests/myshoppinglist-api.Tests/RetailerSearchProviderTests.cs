@@ -11,6 +11,22 @@ namespace myshoppinglist_api.Tests;
 
 public class RetailerSearchProviderTests
 {
+    [Fact]
+    public async Task Woolworths_tries_shorter_queries_when_read_candidates_do_not_match()
+    {
+        var browser = new FakeSearchBrowser("woolworths", WoolworthsProductParserTests.Url);
+        var handler = new RecordingHandler((_, _) => Task.FromResult(RetailerHttpClientTests.Html(WoolworthsFixture.Html)));
+        await Provider("woolworths", handler, browser).SearchAsync(new()
+        {
+            Name = "YoPro High Protein Yoghurt Pouch No Added Sugar Mango 150g",
+            Brand = "YoPro",
+            PackQuantity = 1,
+            PackSize = 150,
+            PackUnit = "g"
+        }, null, default);
+        Assert.Equal(3, browser.Calls);
+        Assert.Equal(new[] { "yopro high protein yoghurt pouch no added sugar mango 150g", "yopro mango yoghurt pouch 150g", "yopro mango" }, browser.Queries);
+    }
     [Theory]
     [InlineData("woolworths")]
     public async Task Candidates_are_verified_using_product_pages_and_are_not_claimed_to_be_matches(string shop)
@@ -76,11 +92,13 @@ public class RetailerSearchProviderTests
     private sealed class FakeSearchBrowser(string shop, Uri productUrl) : IRetailerSearchBrowser
     {
         public int Calls { get; private set; }
+        public List<string> Queries { get; } = [];
         public bool Many { get; init; }
         public ProviderFailure? Error { get; set; }
         public Task<ProviderResult<RetailerPage>> ReadAsync(string shopCode, string query, CancellationToken token)
         {
             Calls++; token.ThrowIfCancellationRequested();
+            Queries.Add(query);
             if (Error is not null) return Task.FromResult<ProviderResult<RetailerPage>>(new ProviderResult<RetailerPage>.Failure(Error));
             var container = shop == "coles" ? "class='coles-targeting-search-content-container'" : "data-testid='search-results-product-scrollable-content'";
             var links = Many ? string.Join("", Enumerable.Range(1, 20).Select(i => $"<a href='{productUrl.AbsoluteUri.Replace("1", i.ToString())}'>Coca-Cola</a>"))

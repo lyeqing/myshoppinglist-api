@@ -22,6 +22,56 @@ namespace myshoppinglist_api.Tests;
 public class UserExtensionTests
 {
     private const string ExtensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    [PostgreSqlFact]
+    public async Task Yoghurt_comparison_advances_through_three_queries_without_repeating_completed_steps()
+    {
+        foreach (var ambiguous in new[] { false, true })
+        {
+            await using var f = await ListFixture.CreateAsync();
+            var item = await f.ItemAsync();
+            await f.Scope.Db.Products.Where(p => p.Id == item.Product.Id).ExecuteUpdateAsync(s => s
+                .SetProperty(p => p.Name, "YoPro High Protein Yoghurt Pouch No Added Sugar Mango 150g")
+                .SetProperty(p => p.Brand, "YoPro").SetProperty(p => p.Variant, (string?)null)
+                .SetProperty(p => p.PackSize, 150m).SetProperty(p => p.PackUnit, "g").SetProperty(p => p.PackQuantity, 1));
+            var full = "yopro high protein yoghurt pouch no added sugar mango 150g";
+            f.Scope.Db.UserExtensionImportTasks.Add(new()
+            {
+                ProductImportJobId = f.Scope.Job.Id,
+                RequestId = Guid.NewGuid(),
+                Stage = "search",
+                Query = full,
+                Url = myshoppinglist_api.Providers.ProductSearchQueryBuilder.SearchUrl("woolworths", full).AbsoluteUri,
+                UpdatedDate = f.Scope.Clock.Now.UtcDateTime
+            });
+            await f.Scope.Db.SaveChangesAsync(); f.Scope.Db.ChangeTracker.Clear();
+            await using var app = new ExtensionFactory(f);
+            using var scope = app.Services.CreateScope();
+            var service = scope.ServiceProvider.GetRequiredService<UserExtensionImportService>();
+            var work = await service.ReadAsync(f.Scope.UserId, f.Scope.Job.Id, default);
+            foreach (var expected in new[] { "yopro mango yoghurt pouch 150g", "yopro mango" })
+            {
+                var result = new UserExtensionResult(work.StepToken, work.Url!, true, Links: [], EmptyConfirmed: true);
+                work = await service.ResultAsync(f.Scope.UserId, work.JobId, result, default);
+                Assert.Equal("search", work.Stage);
+                Assert.Equal(myshoppinglist_api.Providers.ProductSearchQueryBuilder.SearchUrl("woolworths", expected).AbsoluteUri, work.Url);
+                Assert.Equal(work.StepToken, (await service.ResultAsync(f.Scope.UserId, work.JobId, result, default)).StepToken);
+            }
+            if (ambiguous)
+            {
+                var links = new[] { "https://www.woolworths.com.au/shop/productdetails/794937", "https://www.woolworths.com.au/shop/productdetails/794938" };
+                work = await service.ResultAsync(f.Scope.UserId, work.JobId, new(work.StepToken, work.Url!, true, Links: links), default);
+                foreach (var link in links)
+                {
+                    Assert.Equal(link, work.Url);
+                    var json = JsonSerializer.Serialize(new { type = "Product", sku = link.Split('/').Last(), name = "YoPRO Protein Yoghurt Pouch Mango 150g", brand = new { name = "YoPro" }, offers = new { price = 3, priceCurrency = "AUD", url = link } }).Replace("\"type\"", "\"@type\"");
+                    work = await service.ResultAsync(f.Scope.UserId, work.JobId, new(work.StepToken, work.Url!, true, new(null, [json])), default);
+                }
+                Assert.True(await f.Scope.Db.ProductImportRetailerResults.AnyAsync(r => r.ProductImportJobId == work.JobId && r.Status == RetailerLookupStatus.Possible));
+            }
+            else work = await service.ResultAsync(f.Scope.UserId, work.JobId, new(work.StepToken, work.Url!, true, Links: [], EmptyConfirmed: true), default);
+            Assert.Equal("Completed", work.Status);
+        }
+    }
 
     [PostgreSqlFact]
     public async Task Browser_import_validates_evidence_owns_steps_reuses_cache_and_survives_duplicate_deliveries()

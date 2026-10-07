@@ -19,14 +19,16 @@ public sealed class ColesProductProvider(IColesExtensionQueue queue) : IShopProd
         ProductIdentity product, ShopLocationContext? location, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        var queries = ProductSearchQueryBuilder.BuildColesSearches(product);
+        var queries = ProductSearchQueryBuilder.BuildSearches(product);
         if (location is not null || queries.Count == 0)
             return new ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Failure(
                 new(ProviderFailureKind.NotSupported, "unsupported_search_context", "A product name and anonymous search context are required."));
         foreach (var query in queries)
         {
             var result = await queue.SearchAsync(query, token);
-            if (result is not ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Success success || success.Value.Count > 0)
+            if (result is not ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Success success
+                || success.Value.Any(candidate => new ProductMatchingService(new()).Match(product, candidate.Product.Identity).Type == myshoppinglist_api.Models.MatchType.Exact)
+                || query == queries[^1])
                 return result;
         }
         return new ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Success([]);

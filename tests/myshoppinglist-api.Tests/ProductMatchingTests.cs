@@ -7,11 +7,27 @@ namespace myshoppinglist_api.Tests;
 
 public class ProductMatchingTests
 {
+    [Fact]
+    public void Yopro_retailer_titles_match_but_flavour_format_pack_and_barcode_conflicts_do_not()
+    {
+        var a = new ProductIdentity { Name = "YoPro High Protein Yoghurt Pouch No Added Sugar Mango 150g", Brand = "YoPro", PackQuantity = 1, PackSize = 150, PackUnit = "g" };
+        var b = a with { Name = "YoPRO Protein Yoghurt Pouch Mango 150g" };
+        Assert.Equal(MatchType.Exact, _matcher.Match(a, b).Type);
+        Assert.Equal(MatchType.Exact, _matcher.Match(a with { PackQuantity = null }, b with { PackQuantity = null }).Type);
+        foreach (var wrong in new[] { b with { Name = b.Name.Replace("Mango", "Vanilla") }, b with { Name = b.Name.Replace("Pouch", "Tub") }, b with { PackSize = 160 }, b with { PackQuantity = 4 }, b with { PackQuantity = null, Name = b.Name + " multipack" }, b with { Name = b.Name.Replace("Mango", "Mango Peach") } })
+            Assert.NotEqual(MatchType.Exact, _matcher.Match(a, wrong).Type);
+        Assert.True(_matcher.Match(a with { GTIN = "9300675014779" }, b with { GTIN = "4006381333931" }).Contradiction);
+    }
     private readonly ProductMatchingService _matcher = new(new());
     private static ProductIdentity Coke => new()
     {
-        Name = "Coca-Cola Classic Cans 24 x 375mL", Brand = "Coca-Cola", Variant = "Classic",
-        GTIN = "9300675014779", PackQuantity = 24, PackSize = 375, PackUnit = "mL"
+        Name = "Coca-Cola Classic Cans 24 x 375mL",
+        Brand = "Coca-Cola",
+        Variant = "Classic",
+        GTIN = "9300675014779",
+        PackQuantity = 24,
+        PackSize = 375,
+        PackUnit = "mL"
     };
 
     [Fact]
