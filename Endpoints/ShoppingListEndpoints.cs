@@ -26,14 +26,14 @@ public static class ShoppingListEndpoints
             ListAction(context, async () => Results.Ok(await service.HistoryAsync(AccountId(context), token)))).RequireAuthorization();
         routes.MapGet("/api/shopping-lists/{listId:long}/history", (long listId, HttpContext context, ShoppingListService service, CancellationToken token) =>
             ListAction(context, async () => Results.Ok(await service.HistoryDetailAsync(AccountId(context), listId, token)))).RequireAuthorization();
-        routes.MapPost("/api/shopping-lists/{listId:long}/refresh-prices", async (long listId,
+        routes.MapPost("/api/shopping-lists/{listId:long}/refresh-prices", (long listId,
             HttpContext context, PriceRefreshService service, CancellationToken token) =>
-        {
-            context.Response.Headers.CacheControl = "no-store";
-            var count = await service.RequestAsync(AccountId(context), listId, token);
-            return count is null ? Results.Problem(statusCode: 404, title: "The shopping list was not found.")
-                : Results.Ok(new { queued = count.Value });
-        }).RequireAuthorization().WithTags("Shopping lists");
+            RefreshAsync(listId, null, context, service, token))
+            .RequireAuthorization().RequireRateLimiting(ProductImportEndpoints.SubmissionRatePolicy).WithTags("Shopping lists");
+        routes.MapPost("/api/shopping-lists/{listId:long}/items/{itemId:long}/refresh-prices", (long listId, long itemId,
+            HttpContext context, PriceRefreshService service, CancellationToken token) =>
+            RefreshAsync(listId, itemId, context, service, token))
+            .RequireAuthorization().RequireRateLimiting(ProductImportEndpoints.SubmissionRatePolicy).WithTags("Shopping lists");
         routes.MapGet("/api/shopping-lists/{listId:long}/plan", async (long listId, HttpContext context, ShoppingListService service, CancellationToken token) =>
         {
             context.Response.Headers.CacheControl = "no-store";
@@ -70,6 +70,15 @@ public static class ShoppingListEndpoints
         routes.MapPut("/api/shopping-lists/{listId:long}/items/{itemId:long}", UpdateAsync).RequireAuthorization()
             .WithTags("Shopping lists").Produces<ShoppingListItemResponse>().ProducesProblem(400).ProducesProblem(401)
             .ProducesProblem(403).ProducesProblem(404).ProducesProblem(409);
+    }
+    private static async Task<IResult> RefreshAsync(long listId, long? itemId, HttpContext context,
+        PriceRefreshService service, CancellationToken token)
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        if (listId <= 0 || itemId <= 0) return Results.Problem(statusCode: 400, title: "Invalid list or item.");
+        var result = await service.RequestRefreshAsync(AccountId(context), listId, itemId,
+            context.Request.Headers["X-Client-Timezone"].ToString(), token);
+        return result is null ? Results.Problem(statusCode: 404, title: "The shopping list or item was not found.") : Results.Ok(result);
     }
     private static long AccountId(HttpContext context) => long.Parse(context.User.FindFirstValue(ClaimTypes.NameIdentifier)!, CultureInfo.InvariantCulture);
     private static async Task<IResult> ListAction(HttpContext context, Func<Task<IResult>> action)

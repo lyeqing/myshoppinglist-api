@@ -140,11 +140,7 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
             .OrderBy(s => s.Name).Select(s => new { s.Id, s.Name }).ToArrayAsync(token);
         var now = clock.GetUtcNow();
         var freshness = new CatalogueFreshnessService();
-        var refreshKeys = mappings.Select(PriceRefreshService.ProductUrl).Where(u => u is not null)
-            .Select(u => ColesExtensionTaskService.ProductKey(u!)).Distinct().ToArray();
-        var refreshTasks = await db.ColesExtensionTasks.AsNoTracking().Where(t => refreshKeys.Contains(t.Key))
-            .Select(t => new { t.Key, t.Status })
-            .ToDictionaryAsync(t => t.Key, token);
+        var refreshStatuses = await PriceRefreshService.ReadStatusesAsync(db, mappings, now.UtcDateTime, token);
         var comparisons = await new ShoppingListComparisonRetryService(db, clock).ReadAsync(accountId, listId, token);
         var rows = items.Select(item => new ShoppingListPlanningItem(Response(item),
             mappings.Where(m => m.ProductId == item.ProductId).GroupBy(m => m.ShopId).Select(group =>
@@ -156,10 +152,8 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
                 var price = prices.Where(p => eligibleIds.Contains(p.ShopProductId)).OrderByDescending(p => p.CheckedDate).ThenByDescending(p => p.Id).FirstOrDefault();
                 var mapping = price is null ? candidates[0] : candidates.Single(m => m.Id == price.ShopProductId);
                 var status = mapping.MatchType != MatchType.Exact ? "Match not verified" : InStoreShoppingService.PriceStatus(price, now, freshness);
-                string? refreshStatus = null;
-                if (!item.IsPurchased && !item.IsHidden && status != "Fresh" && PriceRefreshService.ProductUrl(mapping) is { } url
-                    && refreshTasks.TryGetValue(ColesExtensionTaskService.ProductKey(url), out var task))
-                    refreshStatus = task.Status switch { "Waiting" => "Waiting", "Processing" => "Updating", "Failed" => "RetryLater", _ => null };
+                var refreshStatus = !item.IsPurchased && !item.IsHidden
+                    ? refreshStatuses.GetValueOrDefault(mapping.Id) : null;
                 var offer = status == "Fresh" ? InStoreShoppingService.SinglePriceMultibuy(price) : null;
                 return new ShoppingListPrice(mapping.ShopId, mapping.Shop.Name,
                     price is { Currency: "AUD", Price: >= 0 } ? price.Price : null, status == "Fresh", status,

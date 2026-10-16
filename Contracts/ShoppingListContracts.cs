@@ -16,6 +16,8 @@ public sealed record ShoppingListHistory(ShoppingListSummary List, ShoppingListI
 public sealed record ShoppingListItemPage(IReadOnlyList<ShoppingListItemResponse> Items, long? NextBeforeId);
 
 public sealed record ShoppingListItemDeleteRequest([property: JsonRequired] DateTime ExpectedUpdatedDate);
+public sealed record PriceRefreshResult(int Queued, int AlreadyRunning, int Current, int Deferred);
+
 public sealed record ShoppingListMultibuy(int Quantity, decimal Total, decimal UnitPrice, decimal Savings);
 public sealed record ShoppingListQuantityPrice(int Quantity, decimal Total, decimal OrdinaryTotal,
     decimal Savings, int AppliedBundles, int RemainingQuantity);

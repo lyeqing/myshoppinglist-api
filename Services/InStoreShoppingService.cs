@@ -48,6 +48,7 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
         var mappingIds = mappings.Select(m => m.Id).ToArray();
         var prices = await db.ShopProductPrices.AsNoTracking().Where(p => mappingIds.Contains(p.ShopProductId)
             && p.ShopLocationId == null).ToArrayAsync(token);
+        var refreshStatuses = await PriceRefreshService.ReadStatusesAsync(db, mappings, clock.GetUtcNow().UtcDateTime, token);
         var rows = items.Select(i => new InStoreItem(new(i.Id, i.ShoppingListId,
             new(i.Product.Id, i.Product.Name, i.Product.Brand, i.Product.Variant, i.Product.PackQuantity, i.Product.PackSize, i.Product.PackUnit, i.Product.ImageUrl),
             i.Quantity, i.Notes, i.IsPurchased, i.PurchasedDate, i.IsHidden, i.PreferredShopId, i.AddedDate, i.UpdatedDate),
@@ -59,7 +60,9 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
                 var status = PriceStatus(price, clock.GetUtcNow(), freshness);
                 var offer = status == "Fresh" ? SinglePriceMultibuy(price) : null;
                 return new InStorePrice(mapping.ShopId, mapping.Shop.Name, status == "Fresh" ? price!.Price : null, status, price?.CheckedDate,
-                    offer, status == "Fresh" ? PromotionCalculationService.Calculate(price!.Price, i.Quantity, offer) : null);
+                    offer, status == "Fresh" ? PromotionCalculationService.Calculate(price!.Price, i.Quantity, offer) : null,
+                    !i.IsPurchased ? refreshStatuses.GetValueOrDefault(mapping.Id) : null,
+                    status != "Fresh" && price is { Currency: "AUD", Price: >= 0 } ? price.Price : null);
             }).OrderBy(p => p.ShopName).ToArray())).ToArray();
         if (!await Accessible(accountId).AnyAsync(l => l.Id == listId, token)) return null;
         await transaction.CommitAsync(token);

@@ -40,6 +40,10 @@ public class PriceRefreshServiceTests
             Assert.Equal("Waiting", price.RefreshStatus);
             Assert.Equal(23m, price.Price);
             Assert.False(price.IncludedInTotal);
+            var detail = await new InStoreShoppingService(f.Scope.Db, f.Scope.Clock, new()).DetailAsync(f.Scope.UserId, f.Scope.ListId, default);
+            Assert.Null(detail!.Items[0].Prices[0].Price);
+            Assert.Equal(23m, detail.Items[0].Prices[0].PreviousPrice);
+            Assert.Equal(0, detail.SplitPricedCount);
             await f.Scope.Db.ColesExtensionTasks.Where(t => t.Key == key).ExecuteUpdateAsync(s => s
                 .SetProperty(t => t.Status, "Failed").SetProperty(t => t.Attempts, 3)
                 .SetProperty(t => t.CompletedAt, f.Scope.Clock.Now.UtcDateTime));
@@ -155,4 +159,89 @@ public class PriceRefreshServiceTests
         }
         finally { await f.Scope.Db.ColesExtensionTasks.Where(t => t.Key == key).ExecuteDeleteAsync(); }
     }
+    [PostgreSqlFact]
+    public async Task Manual_refresh_checks_yesterday_even_when_weekly_cache_is_fresh_and_reports_running()
+    {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
+        await using var f = await ListFixture.CreateAsync();
+        var key = await StaleAsync(f);
+        f.Scope.Clock.Now = new DateTimeOffset(2026, 10, 15, 12, 0, 0, TimeSpan.Zero);
+        await f.Scope.Db.UserAccounts.Where(a => a.Id == f.Scope.UserId).ExecuteUpdateAsync(s => s.SetProperty(a => a.ExpiresDate, f.Scope.Clock.Now.UtcDateTime.AddDays(2)));
+        await f.Scope.Db.ShoppingLists.Where(l => l.Id == f.Scope.ListId).ExecuteUpdateAsync(s => s.SetProperty(l => l.ExpiresDate, (DateTime?)null));
+        await f.Scope.Db.ShopProductPrices.Where(p => p.ShopProduct.ShopProductCode == f.Scope.Code)
+            .ExecuteUpdateAsync(s => s.SetProperty(p => p.CheckedDate, f.Scope.Clock.Now.UtcDateTime.AddDays(-1)));
+        Assert.Equal(0, await Service(f).ScanAsync(default));
+        var result = (await Service(f).RequestRefreshAsync(f.Scope.UserId, f.Scope.ListId, f.ItemId, "Australia/Adelaide", default))!;
+        Assert.Equal(1, result.Queued);
+        Assert.Equal(1, (await Service(f).RequestRefreshAsync(f.Scope.UserId, f.Scope.ListId, f.ItemId, "Australia/Adelaide", default))!.AlreadyRunning);
+        var price = Assert.Single((await f.Service.PlanAsync(f.Scope.UserId, f.Scope.ListId, default))!.Items[0].Prices);
+        Assert.True(price.IncludedInTotal);
+        Assert.Equal("Waiting", price.RefreshStatus);
+        var inStore = await new InStoreShoppingService(f.Scope.Db, f.Scope.Clock, new()).DetailAsync(f.Scope.UserId, f.Scope.ListId, default);
+        Assert.Equal("Waiting", inStore!.Items[0].Prices[0].RefreshStatus);
+        f.Scope.Db.RetailerWorkloadStates.Add(new() { Retailer = "coles", PausedUntil = f.Scope.Clock.Now.UtcDateTime.AddMinutes(15) });
+        await f.Scope.Db.SaveChangesAsync(); f.Scope.Db.ChangeTracker.Clear();
+        Assert.Equal("Paused", (await f.Service.PlanAsync(f.Scope.UserId, f.Scope.ListId, default))!.Items[0].Prices[0].RefreshStatus);
+        await f.Scope.Db.ColesExtensionTasks.Where(t => t.Key == key).ExecuteUpdateAsync(s => s.SetProperty(t => t.Status, "Failed").SetProperty(t => t.CompletedAt, f.Scope.Clock.Now.UtcDateTime));
+        Assert.Equal(1, (await Service(f).RequestRefreshAsync(f.Scope.UserId, f.Scope.ListId, f.ItemId, "Australia/Adelaide", default))!.Deferred);
+        Assert.Equal(23m, (await f.Service.PlanAsync(f.Scope.UserId, f.Scope.ListId, default))!.Items[0].Prices[0].Price);
+    }
+
+    [PostgreSqlFact]
+    public async Task Manual_refresh_uses_local_midnight_and_rejects_other_users_items()
+    {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
+        await using var f = await ListFixture.CreateAsync();
+        await using var other = await ListFixture.CreateAsync();
+        var key = await StaleAsync(f);
+        f.Scope.Clock.Now = new DateTimeOffset(2026, 10, 15, 13, 31, 0, TimeSpan.Zero);
+        await f.Scope.Db.UserAccounts.Where(a => a.Id == f.Scope.UserId).ExecuteUpdateAsync(s => s.SetProperty(a => a.ExpiresDate, f.Scope.Clock.Now.UtcDateTime.AddDays(2)));
+        await f.Scope.Db.ShoppingLists.Where(l => l.Id == f.Scope.ListId).ExecuteUpdateAsync(s => s.SetProperty(l => l.ExpiresDate, (DateTime?)null));
+        await f.Scope.Db.ShopProductPrices.Where(p => p.ShopProduct.ShopProductCode == f.Scope.Code)
+            .ExecuteUpdateAsync(s => s.SetProperty(p => p.CheckedDate, f.Scope.Clock.Now.UtcDateTime.AddMinutes(-2)));
+        Assert.Equal(1, (await Service(f).RequestRefreshAsync(f.Scope.UserId, f.Scope.ListId, f.ItemId, "UTC", default))!.Current);
+        Assert.Null(await Service(f).RequestRefreshAsync(other.Scope.UserId, f.Scope.ListId, f.ItemId, "UTC", default));
+        Assert.Null(await Service(f).RequestRefreshAsync(f.Scope.UserId, f.Scope.ListId, other.ItemId, "UTC", default));
+        Assert.Equal(1, (await Service(f).RequestRefreshAsync(f.Scope.UserId, f.Scope.ListId, f.ItemId, "Australia/Adelaide", default))!.Queued);
+        await f.Scope.Db.ColesExtensionTasks.Where(t => t.Key == key).ExecuteDeleteAsync();
+        await f.Scope.Db.ShopProductPrices.Where(p => p.ShopProduct.ShopProductCode == f.Scope.Code)
+            .ExecuteUpdateAsync(s => s.SetProperty(p => p.CheckedDate, f.Scope.Clock.Now.UtcDateTime.AddMinutes(-1)));
+        Assert.Equal(1, (await Service(f).RequestRefreshAsync(f.Scope.UserId, f.Scope.ListId, f.ItemId, "Australia/Adelaide", default))!.Current);
+        await f.Scope.Db.ShopProductPrices.Where(p => p.ShopProduct.ShopProductCode == f.Scope.Code)
+            .ExecuteUpdateAsync(s => s.SetProperty(p => p.CheckedDate, f.Scope.Clock.Now.UtcDateTime.AddMinutes(1)));
+        Assert.Equal(1, (await Service(f).RequestRefreshAsync(f.Scope.UserId, f.Scope.ListId, f.ItemId, "Australia/Adelaide", default))!.Queued);
+    }
+
+    [PostgreSqlFact]
+    public async Task Product_request_is_scoped_and_list_request_includes_remaining_products_only()
+    {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
+        await using var f = await ListFixture.CreateAsync();
+        await StaleAsync(f);
+        await f.AddItemAsync();
+        var second = await f.Scope.Db.ShoppingListProducts.SingleAsync(i => i.ShoppingListId == f.Scope.ListId && i.Id != f.ItemId);
+        var url = "https://www.coles.com.au/product/" + Random.Shared.NextInt64(100000000, 900000000);
+        f.Scope.Db.ShopProducts.Add(new()
+        {
+            ProductId = second.ProductId,
+            ShopId = 1,
+            ShopProductCode = url.Split('/').Last(),
+            ProductUrl = url,
+            NameAtShop = "Second product",
+            MatchType = myshoppinglist_api.Models.MatchType.Exact,
+            FirstFoundDate = f.Scope.Clock.Now.UtcDateTime,
+            LastFoundDate = f.Scope.Clock.Now.UtcDateTime
+        });
+        await f.Scope.Db.SaveChangesAsync(); f.Scope.Db.ChangeTracker.Clear();
+        Assert.Equal(1, (await Service(f).RequestRefreshAsync(f.Scope.UserId, f.Scope.ListId, f.ItemId, "UTC", default))!.Queued);
+        Assert.False(await f.Scope.Db.ColesExtensionTasks.AnyAsync(t => t.Url == url));
+        await f.Scope.Db.ShoppingListProducts.Where(i => i.Id == second.Id).ExecuteUpdateAsync(s => s.SetProperty(i => i.IsHidden, true));
+        var hidden = (await Service(f).RequestRefreshAsync(f.Scope.UserId, f.Scope.ListId, null, "UTC", default))!;
+        Assert.Equal(0, hidden.Queued); Assert.Equal(1, hidden.AlreadyRunning);
+        await f.Scope.Db.ShoppingListProducts.Where(i => i.Id == second.Id).ExecuteUpdateAsync(s => s.SetProperty(i => i.IsHidden, false));
+        Assert.Equal(1, (await Service(f).RequestRefreshAsync(f.Scope.UserId, f.Scope.ListId, null, "UTC", default))!.Queued);
+        Assert.True(await f.Scope.Db.ColesExtensionTasks.AnyAsync(t => t.Url == url));
+        await f.Scope.Db.ShopProducts.Where(m => m.ProductId == second.ProductId).ExecuteDeleteAsync();
+    }
+
 }
