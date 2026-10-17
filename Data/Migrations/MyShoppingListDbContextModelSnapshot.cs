@@ -376,6 +376,79 @@ namespace myshoppinglist_api.Data.Migrations
                         });
                 });
 
+            modelBuilder.Entity("myshoppinglist_api.Models.ProductAlternativeRelationship", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("AlternativeFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<long>("AlternativeProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("Approved")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("DietaryAndCompositionChecked")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Evidence")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<long?>("PreviousReviewId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ProductFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<long>("ProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime>("ReviewedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("ReviewerAccountId")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("SameUseAndFormatConfirmed")
+                        .HasColumnType("boolean");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PreviousReviewId");
+
+                    b.HasIndex("ReviewerAccountId");
+
+                    b.HasIndex("AlternativeProductId", "ProductId", "Id");
+
+                    b.HasIndex("ProductId", "AlternativeProductId", "Id");
+
+                    b.HasIndex("ProductId", "AlternativeProductId", "PreviousReviewId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_ProductAlternativeRelationships_ProductId_AlternativeProdu~1");
+
+                    NpgsqlIndexBuilderExtensions.AreNullsDistinct(b.HasIndex("ProductId", "AlternativeProductId", "PreviousReviewId"), false);
+
+                    b.ToTable("ProductAlternativeRelationships", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ProductAlternatives_Confirmation", "NOT \"Approved\" OR (\"SameUseAndFormatConfirmed\" AND \"DietaryAndCompositionChecked\")");
+
+                            t.HasCheckConstraint("CK_ProductAlternatives_Evidence", "length(btrim(\"Evidence\")) > 0");
+
+                            t.HasCheckConstraint("CK_ProductAlternatives_OrderedPair", "\"ProductId\" < \"AlternativeProductId\"");
+                        });
+                });
+
             modelBuilder.Entity("myshoppinglist_api.Models.ProductImportJob", b =>
                 {
                     b.Property<long>("Id")
@@ -1412,6 +1485,36 @@ namespace myshoppinglist_api.Data.Migrations
                     b.Navigation("ShoppingListProduct");
 
                     b.Navigation("UserAccount");
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.ProductAlternativeRelationship", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.Product", "AlternativeProduct")
+                        .WithMany()
+                        .HasForeignKey("AlternativeProductId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.ProductAlternativeRelationship", null)
+                        .WithMany()
+                        .HasForeignKey("PreviousReviewId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("myshoppinglist_api.Models.Product", "Product")
+                        .WithMany()
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("ReviewerAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("AlternativeProduct");
+
+                    b.Navigation("Product");
                 });
 
             modelBuilder.Entity("myshoppinglist_api.Models.ProductImportJob", b =>

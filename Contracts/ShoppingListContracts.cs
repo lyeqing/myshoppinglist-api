@@ -28,7 +28,7 @@ public sealed record ShoppingListComparison(long JobId, string Status, string? E
     bool CanRetry, ShoppingListRetailerCheck[] Retailers);
 public sealed record ShoppingListRetailerCheck(string Name, string Status, string? ErrorCode);
 public sealed record ShoppingListPlanningItem(ShoppingListItemResponse Item, ShoppingListPrice[] Prices,
-    ShoppingListComparison? Comparison = null, PackAlternative[]? PackAlternatives = null);
+    ShoppingListComparison? Comparison = null, PackAlternative[]? PackAlternatives = null, BrandAlternative[]? BrandAlternatives = null);
 public sealed record ShoppingListMissingItem(long ItemId, string Name, string Reason);
 public sealed record ShoppingListBasket(long? ShopId, string Name, decimal Subtotal, int PricedCount,
     ShoppingListMissingItem[] MissingItems);

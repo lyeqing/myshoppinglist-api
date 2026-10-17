@@ -1,0 +1,229 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using myshoppinglist_api.Configuration;
+using myshoppinglist_api.Contracts;
+using myshoppinglist_api.Data;
+using myshoppinglist_api.Models;
+using MatchType = myshoppinglist_api.Models.MatchType;
+
+namespace myshoppinglist_api.Services;
+
+public sealed class BrandAlternativeService(MyShoppingListDbContext db, TimeProvider clock, IOptions<AdminOptions> administrators)
+{
+    private async Task AuthorizeAsync(long administrator, CancellationToken ct)
+    {
+        if (!administrators.Value.AccountIds.Contains(administrator)
+            || !await db.UserAccounts.AnyAsync(a => a.Id == administrator && a.IsActive && !a.IsTrial, ct))
+            throw new UserImportException(403, "Administrator access required.");
+    }
+
+    private static (long First, long Second) Pair(long first, long second)
+    {
+        if (first <= 0 || second <= 0 || first == second)
+            throw new UserImportException(400, "Choose two different saved products.");
+        return first < second ? (first, second) : (second, first);
+    }
+
+    // Persist the evidence-bearing fields, not UpdatedDate: price refreshes should not
+    // invalidate a review, but changed names, formulation descriptions or identity must.
+    private static string Fingerprint(Product product) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+        JsonSerializer.Serialize(new
+        {
+            product.Name,
+            product.Brand,
+            product.Description,
+            product.ItemDetail,
+            product.GTIN,
+            product.ManufacturerPartNumber,
+            product.ModelNumber,
+            product.Variant,
+            product.PackQuantity,
+            product.PackSize,
+            product.PackUnit,
+            product.Category,
+            product.SubCategory,
+            product.IsDeleted
+        }))));
+
+    private static bool Compatible(Product first, Product second)
+    {
+        if (first.IsDeleted || second.IsDeleted) return false;
+        var normalisation = new ProductNormalisationService();
+        var a = normalisation.Normalise(ProductMatchingService.Identity(first));
+        var b = normalisation.Normalise(ProductMatchingService.Identity(second));
+        // Missing attributes are not evidence of compatibility. A human must also
+        // explicitly review use/format and dietary/composition suitability.
+        if (string.IsNullOrEmpty(a.Brand) || string.IsNullOrEmpty(b.Brand) || a.Brand == b.Brand
+            || a.Variant != b.Variant || a.ModelNumber != b.ModelNumber
+            || string.IsNullOrWhiteSpace(first.Category) || string.IsNullOrWhiteSpace(second.Category)
+            || normalisation.Text(first.Category) != normalisation.Text(second.Category)
+            || string.IsNullOrWhiteSpace(first.SubCategory) || string.IsNullOrWhiteSpace(second.SubCategory)
+            || normalisation.Text(first.SubCategory) != normalisation.Text(second.SubCategory)
+            || a.GTIN is not null && a.GTIN == b.GTIN) return false;
+        var packs = new PackComparisonService();
+        var x = packs.Read(ProductMatchingService.Identity(first));
+        var y = packs.Read(ProductMatchingService.Identity(second));
+        return x is not null && y is not null && x.Unit == y.Unit
+            && y.Total / x.Total is >= 0.1m and <= 10m;
+    }
+
+    private static bool Current(ProductAlternativeRelationship review, Product first, Product second) =>
+        review.Approved && review.SameUseAndFormatConfirmed && review.DietaryAndCompositionChecked
+        && review.ProductFingerprint == Fingerprint(first) && review.AlternativeFingerprint == Fingerprint(second)
+        && Compatible(first, second);
+
+    private static BrandAlternativeReviewResponse Response(ProductAlternativeRelationship review, Product first, Product second) =>
+        new(review.Id, review.ProductId, review.AlternativeProductId, review.PreviousReviewId, review.Approved,
+            review.Evidence, review.SameUseAndFormatConfirmed, review.DietaryAndCompositionChecked,
+            review.ReviewerAccountId, review.ReviewedAt, review.Approved && !Current(review, first, second));
+
+    public async Task<BrandAlternativeReviewResponse[]> HistoryAsync(long administrator, long productId, long alternativeProductId, CancellationToken ct) =>
+        (await ContextAsync(administrator, productId, alternativeProductId, ct)).Reviews;
+
+    public async Task<BrandAlternativeReviewContext> ContextAsync(long administrator, long productId, long alternativeProductId, CancellationToken ct)
+    {
+        await AuthorizeAsync(administrator, ct);
+        var pair = Pair(productId, alternativeProductId);
+        await using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, ct);
+        var products = await db.Products.AsNoTracking().Where(p => p.Id == pair.First || p.Id == pair.Second).ToArrayAsync(ct);
+        if (products.Length != 2) throw new UserImportException(404, "Product not found.");
+        var reviews = await db.ProductAlternativeRelationships.AsNoTracking()
+            .Where(r => r.ProductId == pair.First && r.AlternativeProductId == pair.Second)
+            .OrderByDescending(r => r.Id).Take(100).ToArrayAsync(ct);
+        BrandAlternativeReviewProduct Details(Product p) => new(new(p.Id, p.Name, p.Brand, p.Variant, p.PackQuantity,
+            p.PackSize, p.PackUnit, p.ImageUrl), p.Category, p.SubCategory, p.Description, p.ItemDetail,
+            p.GTIN, p.ManufacturerPartNumber, p.ModelNumber, p.IsDeleted, Fingerprint(p));
+        var first = products.Single(p => p.Id == pair.First);
+        var second = products.Single(p => p.Id == pair.Second);
+        var result = new BrandAlternativeReviewContext(Details(first), Details(second), reviews.Select(r => Response(r, first, second)).ToArray());
+        await transaction.CommitAsync(ct);
+        return result;
+    }
+
+    public async Task<BrandAlternativeReviewResponse> ReviewAsync(long administrator, long productId, long alternativeProductId,
+        BrandAlternativeReviewRequest request, CancellationToken ct)
+    {
+        await AuthorizeAsync(administrator, ct);
+        var pair = Pair(productId, alternativeProductId);
+        if (request.ExpectedReviewId < 0 || string.IsNullOrWhiteSpace(request.Evidence) || request.Evidence.Length > 2000)
+            throw new UserImportException(400, "Enter review evidence of at most 2000 characters and a valid expected review ID.");
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        // Match catalogue writes and serialize concurrent first reviews and reversals.
+        await ProductService.LockCatalogueAsync(db, ct);
+        var products = await db.Products.AsNoTracking().Where(p => p.Id == pair.First || p.Id == pair.Second).ToArrayAsync(ct);
+        if (products.Length != 2) throw new UserImportException(404, "Product not found.");
+        var first = products.Single(p => p.Id == pair.First);
+        var second = products.Single(p => p.Id == pair.Second);
+        var previous = await db.ProductAlternativeRelationships.AsNoTracking()
+            .Where(r => r.ProductId == pair.First && r.AlternativeProductId == pair.Second).OrderByDescending(r => r.Id).FirstOrDefaultAsync(ct);
+        if ((previous?.Id ?? 0) != request.ExpectedReviewId)
+            throw new UserImportException(409, "This relationship changed. Reload its review history before saving.");
+        if (request.Approved && (string.IsNullOrEmpty(request.ExpectedProductFingerprint) || string.IsNullOrEmpty(request.ExpectedAlternativeFingerprint)))
+            throw new UserImportException(400, "Load the product review context before approving a relationship.");
+        if (request.Approved && (request.ExpectedProductFingerprint != Fingerprint(first) || request.ExpectedAlternativeFingerprint != Fingerprint(second)))
+            throw new UserImportException(409, "Product details changed. Reload and review both products before approving.");
+        if (request.Approved && (!request.SameUseAndFormatConfirmed || !request.DietaryAndCompositionChecked || !Compatible(first, second)))
+            throw new UserImportException(400, "Approval requires compatible products from different brands, clear pack sizes, matching categories and variants, and both suitability confirmations.");
+        if (!request.Approved && previous is null)
+            throw new UserImportException(400, "There is no reviewed relationship to withdraw.");
+        var review = new ProductAlternativeRelationship
+        {
+            ProductId = pair.First,
+            AlternativeProductId = pair.Second,
+            PreviousReviewId = previous?.Id,
+            Approved = request.Approved,
+            Evidence = request.Evidence.Trim(),
+            SameUseAndFormatConfirmed = request.SameUseAndFormatConfirmed,
+            DietaryAndCompositionChecked = request.DietaryAndCompositionChecked,
+            ProductFingerprint = Fingerprint(first),
+            AlternativeFingerprint = Fingerprint(second),
+            ReviewerAccountId = administrator,
+            ReviewedAt = new DateTime(clock.GetUtcNow().UtcTicks / 10 * 10, DateTimeKind.Utc)
+        };
+        db.ProductAlternativeRelationships.Add(review);
+        await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
+        return Response(review, first, second);
+    }
+
+    // Catalogue-only query shared by planning and in-store views. This method cannot
+    // dispatch retailer work and never returns reviewer identity or private evidence.
+    public static async Task<Dictionary<long, BrandAlternative[]>> ReadForProductsAsync(MyShoppingListDbContext db,
+        TimeProvider clock, long accountId, Product[] originals, CancellationToken ct)
+    {
+        var result = new Dictionary<long, BrandAlternative[]>();
+        var now = clock.GetUtcNow();
+        if (!await db.UserAccounts.AnyAsync(a => a.Id == accountId && a.IsActive && a.IncludeDifferentBrands
+            && (!a.IsTrial || a.ExpiresDate > now.UtcDateTime), ct)) return result;
+        var originalIds = originals.Select(p => p.Id).Distinct().ToArray();
+        if (originalIds.Length == 0) return result;
+        var reviews = await db.ProductAlternativeRelationships.AsNoTracking()
+            .Where(r => originalIds.Contains(r.ProductId) || originalIds.Contains(r.AlternativeProductId))
+            .GroupBy(r => new { r.ProductId, r.AlternativeProductId })
+            .Select(g => g.OrderByDescending(r => r.Id).First()).ToArrayAsync(ct);
+        var ids = reviews.SelectMany(r => new[] { r.ProductId, r.AlternativeProductId }).Distinct().ToArray();
+        if (ids.Length == 0) return result;
+        var products = await db.Products.AsNoTracking().Where(p => ids.Contains(p.Id)).ToDictionaryAsync(p => p.Id, ct);
+        var approved = reviews.Where(r => Current(r, products[r.ProductId], products[r.AlternativeProductId])).ToArray();
+        ids = approved.SelectMany(r => new[] { r.ProductId, r.AlternativeProductId }).Distinct().ToArray();
+        if (ids.Length == 0) return result;
+        var allowed = ShoppingPreferencesService.AllowedShops(db, accountId).Select(s => s.Id);
+        var mappings = await db.ShopProducts.AsNoTracking().Include(m => m.Shop).Where(m => ids.Contains(m.ProductId)
+            && m.IsActive && m.Shop.IsActive && m.MatchType == MatchType.Exact && allowed.Contains(m.ShopId)
+            && (m.Shop.Code == "coles" || m.Shop.Code == "woolworths")).ToArrayAsync(ct);
+        var mappingIds = mappings.Select(m => m.Id).ToArray();
+        var observations = await db.ShopProductPrices.AsNoTracking().Where(p => mappingIds.Contains(p.ShopProductId)
+            && p.ShopLocationId == null).GroupBy(p => p.ShopProductId)
+            .Select(g => g.OrderByDescending(p => p.CheckedDate).ThenByDescending(p => p.Id).First()).ToArrayAsync(ct);
+        var prices = observations.ToDictionary(p => p.ShopProductId);
+        var freshness = new CatalogueFreshnessService();
+        var packs = new PackComparisonService();
+        PackComparisonPrice Price(ShopProduct mapping, PackComparisonService.Quantity quantity)
+        {
+            prices.TryGetValue(mapping.Id, out var price);
+            var status = price?.CheckedDate > now.UtcDateTime ? "Unverified price date"
+                : price is not null && price.PriceScope is not (PriceScope.Unknown or PriceScope.Online or PriceScope.National)
+                    ? "Not comparable" : InStoreShoppingService.PriceStatus(price, now, freshness);
+            var amount = price is { Currency: "AUD", Price: >= 0 } ? price.Price : (decimal?)null;
+            return new(mapping.ShopId, mapping.Shop.Name, amount,
+                amount.HasValue ? PackComparisonService.UnitPrice(amount.Value, quantity) : null,
+                status, price?.CheckedDate, mapping.ProductUrl);
+        }
+        IEnumerable<ShopProduct> UniqueMappings(long id) => mappings.Where(m => m.ProductId == id)
+            .GroupBy(m => m.ShopId).Where(g => g.Count() == 1).Select(g => g.Single());
+        foreach (var originalId in originalIds)
+        {
+            var relationships = approved.Where(r => r.ProductId == originalId || r.AlternativeProductId == originalId).ToArray();
+            if (relationships.Length == 0) continue;
+            var original = products[originalId];
+            var quantity = packs.Read(ProductMatchingService.Identity(original))!;
+            var baseline = UniqueMappings(originalId).Select(m => Price(m, quantity))
+                .Where(p => p.Status == "Fresh" && p.Price.HasValue).OrderBy(p => p.Price).ThenBy(p => p.ShopId).FirstOrDefault();
+            var alternatives = new List<BrandAlternative>();
+            foreach (var relationship in relationships)
+            {
+                var candidate = products[relationship.ProductId == originalId ? relationship.AlternativeProductId : relationship.ProductId];
+                var candidateQuantity = packs.Read(ProductMatchingService.Identity(candidate))!;
+                foreach (var mapping in UniqueMappings(candidate.Id))
+                {
+                    var offer = Price(mapping, candidateQuantity);
+                    if (offer.Price is null) continue;
+                    var comparable = baseline is not null && offer.Status == "Fresh";
+                    alternatives.Add(new("EquivalentDifferentBrand", "Similar product — different brand",
+                        new(candidate.Id, candidate.Name, candidate.Brand, candidate.Variant, candidate.PackQuantity, candidate.PackSize, candidate.PackUnit, candidate.ImageUrl),
+                        candidateQuantity.Total, candidateQuantity.Unit, candidateQuantity.Total / quantity.Total, offer, baseline,
+                        comparable ? PackComparisonService.DifferencePercent(baseline!.UnitPrice!.Value, offer.UnitPrice!.Value) : null,
+                        comparable ? offer.Price - baseline!.Price : null));
+                }
+            }
+            // Only comparable observations rank by unit price; historical offers remain labelled.
+            result[originalId] = alternatives.OrderBy(a => a.Offer.Status != "Fresh")
+                .ThenBy(a => a.Offer.Status == "Fresh" ? a.Offer.UnitPrice : null)
+                .ThenBy(a => a.Product.Name).ThenBy(a => a.Offer.ShopId).ToArray();
+        }
+        return result;
+    }
+}

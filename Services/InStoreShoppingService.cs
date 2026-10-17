@@ -60,6 +60,7 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
             && p.ShopLocationId == null).ToArrayAsync(token);
         var refreshStatuses = await PriceRefreshService.ReadStatusesAsync(db, mappings, clock.GetUtcNow().UtcDateTime, token);
         var alternatives = await new PackAlternativeService(db, clock).ReadAsync(accountId, items.Select(i => i.Product).ToArray(), token);
+        var brandAlternatives = await BrandAlternativeService.ReadForProductsAsync(db, clock, accountId, items.Select(i => i.Product).ToArray(), token);
         var rows = items.Select(i => new InStoreItem(new(i.Id, i.ShoppingListId,
             new(i.Product.Id, i.Product.Name, i.Product.Brand, i.Product.Variant, i.Product.PackQuantity, i.Product.PackSize, i.Product.PackUnit, i.Product.ImageUrl),
             i.Quantity, i.Notes, i.IsPurchased, i.PurchasedDate, i.IsHidden, i.PreferredShopId, i.AddedDate, i.UpdatedDate),
@@ -74,7 +75,7 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
                     offer, status == "Fresh" ? PromotionCalculationService.Calculate(price!.Price, i.Quantity, offer) : null,
                     !i.IsPurchased ? refreshStatuses.GetValueOrDefault(mapping.Id) : null,
                     status != "Fresh" && price is { Currency: "AUD", Price: >= 0 } ? price.Price : null);
-            }).OrderBy(p => p.ShopName).ToArray(), alternatives.GetValueOrDefault(i.ProductId, []))).ToArray();
+            }).OrderBy(p => p.ShopName).ToArray(), alternatives.GetValueOrDefault(i.ProductId, []), brandAlternatives.GetValueOrDefault(i.ProductId, []))).ToArray();
         if (!await Accessible(accountId).AnyAsync(l => l.Id == listId, token)) return null;
         var context = await ShoppingPreferencesService.ContextAsync(db, accountId, token);
         var retailers = context.PreferredOnly ? await PreferredRetailers(accountId, token) : Retailers(mappings);

@@ -199,8 +199,10 @@ public class PackDiscoveryTests
         await using var isolated = await IsolatedDatabaseScope.CreateAsync(); await using var f = await ListFixture.CreateAsync();
         var before = await f.ItemAsync();
         await f.Scope.Db.Database.ExecuteSqlRawAsync("DROP TABLE \"PackDiscoveryJobs\"");
-        var migrations = f.Scope.Db.Database.GetMigrations().ToArray(); var latest = migrations[^1]; var previous = migrations[^2];
-        Assert.EndsWith("AddPackDiscoveryJobs", latest);
+        var migrations = f.Scope.Db.Database.GetMigrations().ToArray();
+        var target = Array.FindIndex(migrations, m => m.EndsWith("_AddPackDiscoveryJobs", StringComparison.Ordinal));
+        Assert.True(target > 0);
+        var latest = migrations[target]; var previous = migrations[target - 1];
         var history = f.Scope.Db.GetService<IHistoryRepository>();
         await f.Scope.Db.Database.ExecuteSqlRawAsync(history.GetCreateIfNotExistsScript());
         await f.Scope.Db.Database.ExecuteSqlRawAsync(f.Scope.Db.GetService<IMigrator>().GenerateScript(previous, latest));

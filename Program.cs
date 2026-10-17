@@ -63,6 +63,7 @@ try
     builder.Services.AddHttpContextAccessor();
     builder.Services.Configure<AdminOptions>(builder.Configuration.GetSection("Admin"));
     builder.Services.AddScoped<AdminAccountService>();
+    builder.Services.AddScoped<BrandAlternativeService>();
     builder.Services.AddScoped<AdminHealthService>();
     builder.Services.AddScoped<ContributionService>();
     builder.Services.AddAuthorization(o => o.AddPolicy("Administrator", p => p.RequireAuthenticatedUser().RequireClaim("administrator", "true")));
@@ -199,6 +200,7 @@ try
     app.UseRateLimiter();
     app.MapAuthEndpoints();
     app.MapAdminAccountEndpoints();
+    app.MapAdminProductAlternativeEndpoints();
     app.MapAdminHealthEndpoints();
     app.MapContributionEndpoints();
     app.MapUserExtensionEndpoints();

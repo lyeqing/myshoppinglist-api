@@ -144,6 +144,7 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
         var refreshStatuses = await PriceRefreshService.ReadStatusesAsync(db, mappings, now.UtcDateTime, token);
         var comparisons = await new ShoppingListComparisonRetryService(db, clock).ReadAsync(accountId, listId, token);
         var alternatives = await new PackAlternativeService(db, clock).ReadAsync(accountId, items.Select(i => i.Product).ToArray(), token);
+        var brandAlternatives = await BrandAlternativeService.ReadForProductsAsync(db, clock, accountId, items.Select(i => i.Product).ToArray(), token);
         var rows = items.Select(item => new ShoppingListPlanningItem(Response(item),
             mappings.Where(m => m.ProductId == item.ProductId).GroupBy(m => m.ShopId).Select(group =>
             {
@@ -161,7 +162,7 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
                     price is { Currency: "AUD", Price: >= 0 } ? price.Price : null, status == "Fresh", status,
                     mapping.ProductUrl, price?.CheckedDate, price?.SpecialDescription, refreshStatus,
                     offer, status == "Fresh" ? PromotionCalculationService.Calculate(price!.Price, item.Quantity, offer) : null);
-            }).OrderBy(p => p.ShopName).ToArray(), comparisons.GetValueOrDefault(item.Id), alternatives.GetValueOrDefault(item.ProductId, []))).ToArray();
+            }).OrderBy(p => p.ShopName).ToArray(), comparisons.GetValueOrDefault(item.Id), alternatives.GetValueOrDefault(item.ProductId, []), brandAlternatives.GetValueOrDefault(item.ProductId, []))).ToArray();
         if (!Accessible(list?.UserAccount, list, accountId)) return null;
         var plan = SummarizePlan(list!.Id, list.Name, rows, shops.Select(s => (s.Id, s.Name)).ToArray());
         plan = plan with { StoreContext = await ShoppingPreferencesService.ContextAsync(db, accountId, token) };
