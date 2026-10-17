@@ -19,6 +19,7 @@ public class MyShoppingListDbContext(DbContextOptions<MyShoppingListDbContext> o
     public DbSet<ShoppingListProduct> ShoppingListProducts => Set<ShoppingListProduct>();
     public DbSet<Product> Products => Set<Product>();
     public DbSet<Shop> Shops => Set<Shop>();
+    public DbSet<ShopLocationReview> ShopLocationReviews => Set<ShopLocationReview>();
     public DbSet<ShopLocation> ShopLocations => Set<ShopLocation>();
     public DbSet<ShopProduct> ShopProducts => Set<ShopProduct>();
     public DbSet<ShopProductPrice> ShopProductPrices => Set<ShopProductPrice>();

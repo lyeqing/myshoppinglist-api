@@ -14,6 +14,11 @@ public class ShopLocation
     public string? Postcode { get; set; }
     public decimal? Latitude { get; set; }
     public decimal? Longitude { get; set; }
+    // Legacy records remain unverified until an administrator reviews them.
+    public string? SourceReference { get; set; }
+    public DateTime? VerifiedAt { get; set; }
+    public long? VerifiedByAccountId { get; set; }
+    public string? DirectoryKey { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedDate { get; set; }
     public DateTime UpdatedDate { get; set; }

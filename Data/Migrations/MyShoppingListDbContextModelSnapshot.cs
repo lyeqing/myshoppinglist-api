@@ -786,6 +786,10 @@ namespace myshoppinglist_api.Data.Migrations
                     b.Property<DateTime>("CreatedDate")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("DirectoryKey")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
 
@@ -809,6 +813,10 @@ namespace myshoppinglist_api.Data.Migrations
                     b.Property<long>("ShopId")
                         .HasColumnType("bigint");
 
+                    b.Property<string>("SourceReference")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
                     b.Property<string>("State")
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
@@ -824,17 +832,88 @@ namespace myshoppinglist_api.Data.Migrations
                     b.Property<DateTime>("UpdatedDate")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTime?>("VerifiedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long?>("VerifiedByAccountId")
+                        .HasColumnType("bigint");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("VerifiedByAccountId");
+
+                    b.HasIndex("ShopId", "DirectoryKey")
+                        .IsUnique()
+                        .HasFilter("\"DirectoryKey\" IS NOT NULL AND \"IsActive\"");
 
                     b.HasIndex("ShopId", "StoreCode")
                         .IsUnique()
                         .HasFilter("\"StoreCode\" IS NOT NULL");
+
+                    b.HasIndex("ShopId", "IsActive", "Postcode");
 
                     b.ToTable("ShopLocations", null, t =>
                         {
                             t.HasCheckConstraint("CK_ShopLocations_Latitude", "\"Latitude\" BETWEEN -90 AND 90");
 
                             t.HasCheckConstraint("CK_ShopLocations_Longitude", "\"Longitude\" BETWEEN -180 AND 180");
+
+                            t.HasCheckConstraint("CK_ShopLocations_Verification", "\"VerifiedAt\" IS NULL AND \"VerifiedByAccountId\" IS NULL AND \"SourceReference\" IS NULL AND \"DirectoryKey\" IS NULL OR \"VerifiedAt\" IS NOT NULL AND \"VerifiedByAccountId\" IS NOT NULL AND length(btrim(\"SourceReference\")) > 0 AND \"SourceReference\" IS NOT NULL AND \"DirectoryKey\" IS NOT NULL");
+                        });
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.ShopLocationReview", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<string>("AfterJson")
+                        .IsRequired()
+                        .HasMaxLength(16000)
+                        .HasColumnType("character varying(16000)");
+
+                    b.Property<string>("BeforeJson")
+                        .HasMaxLength(16000)
+                        .HasColumnType("character varying(16000)");
+
+                    b.Property<string>("Evidence")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<DateTime>("ReviewedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("ReviewerAccountId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("ShopLocationId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("SourceReference")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ReviewerAccountId");
+
+                    b.HasIndex("ShopLocationId", "Id");
+
+                    b.ToTable("ShopLocationReviews", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ShopLocationReviews_Action", "\"Action\" IN ('Created','Updated','Retired','Reactivated')");
+
+                            t.HasCheckConstraint("CK_ShopLocationReviews_Evidence", "length(btrim(\"Evidence\")) > 0 AND length(btrim(\"SourceReference\")) > 0");
                         });
                 });
 
@@ -1594,7 +1673,27 @@ namespace myshoppinglist_api.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("VerifiedByAccountId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.Navigation("Shop");
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.ShopLocationReview", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("ReviewerAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.ShopLocation", null)
+                        .WithMany()
+                        .HasForeignKey("ShopLocationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("myshoppinglist_api.Models.ShopProduct", b =>
