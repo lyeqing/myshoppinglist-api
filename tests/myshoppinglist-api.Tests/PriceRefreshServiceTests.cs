@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using myshoppinglist_api.Configuration;
+using myshoppinglist_api.Contracts;
+using myshoppinglist_api.Models;
 using myshoppinglist_api.Services;
 
 namespace myshoppinglist_api.Tests;
@@ -242,6 +244,73 @@ public class PriceRefreshServiceTests
         Assert.Equal(1, (await Service(f).RequestRefreshAsync(f.Scope.UserId, f.Scope.ListId, null, "UTC", default))!.Queued);
         Assert.True(await f.Scope.Db.ColesExtensionTasks.AnyAsync(t => t.Url == url));
         await f.Scope.Db.ShopProducts.Where(m => m.ProductId == second.ProductId).ExecuteDeleteAsync();
+    }
+
+    [PostgreSqlFact]
+    public async Task Recent_checks_distinguish_usable_prices_from_unavailable_observations_without_requeueing()
+    {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
+        await using var f = await ListFixture.CreateAsync();
+        var key = await StaleAsync(f);
+        var now = f.Scope.Clock.Now.UtcDateTime;
+        now = now.AddTicks(-(now.Ticks % 10)); // PostgreSQL stores microsecond precision.
+        var prices = f.Scope.Db.ShopProductPrices.Where(p => p.ShopProduct.ShopProductCode == f.Scope.Code);
+        foreach (var condition in new[] { "online", "national", "unknown", "zero", "multibuy", "out_of_stock",
+            "conditional", "in_store", "catalogue", "invalid_scope", "wrong_currency", "future_promotion" })
+        {
+            var scope = condition switch
+            {
+                "national" => PriceScope.National, "unknown" => PriceScope.Unknown,
+                "in_store" => PriceScope.InStore, "catalogue" => PriceScope.Catalogue,
+                "invalid_scope" => (PriceScope)999, _ => PriceScope.Online
+            };
+            var usable = condition is "online" or "national" or "unknown" or "zero" or "multibuy";
+            await prices.ExecuteUpdateAsync(s => s.SetProperty(p => p.CheckedDate, now)
+                .SetProperty(p => p.PriceScope, scope).SetProperty(p => p.Price, condition == "zero" ? 0m : 23m)
+                .SetProperty(p => p.Currency, condition == "wrong_currency" ? "USD" : "AUD")
+                .SetProperty(p => p.InStock, condition != "out_of_stock")
+                .SetProperty(p => p.SourceType, SourceType.RetailerPage)
+                .SetProperty(p => p.SpecialType, condition == "multibuy" ? "SPECIAL" : null)
+                .SetProperty(p => p.SpecialDescription, condition == "conditional" ? "Members only" : condition == "multibuy" ? "2 for $30" : null)
+                .SetProperty(p => p.SpecialStartDate, condition == "future_promotion" ? now.AddDays(1) : (DateTime?)null));
+            var expected = new PriceRefreshResult(0, 0, usable ? 1 : 0, 0, usable ? 0 : 1);
+            var service = Service(f);
+            Assert.Equal(expected, await service.RequestRefreshAsync(f.Scope.UserId, f.Scope.ListId, f.ItemId, "UTC", default));
+            Assert.Equal(expected, await service.RequestRefreshAsync(f.Scope.UserId, f.Scope.ListId, null, "UTC", default));
+            Assert.Equal(0, await service.ScanAsync(default));
+            Assert.False(await f.Scope.Db.ColesExtensionTasks.AnyAsync(t => t.Key == key));
+            var observation = await prices.AsNoTracking().SingleAsync();
+            Assert.Equal(now, observation.CheckedDate);
+            Assert.Equal(condition == "zero" ? 0 : 23, observation.Price);
+        }
+
+        // A completed lookup without an observation (including a branch-only
+        // observation) must not be reported as a usable general retailer price.
+        var mapping = await f.Scope.Db.ShopProducts.AsNoTracking().SingleAsync(m => m.ShopProductCode == f.Scope.Code);
+        await prices.ExecuteDeleteAsync();
+        await f.Scope.Db.ShopProducts.Where(m => m.Id == mapping.Id)
+            .ExecuteUpdateAsync(s => s.SetProperty(m => m.LastCheckedDate, now));
+        var unavailable = new PriceRefreshResult(0, 0, 0, 0, 1);
+        Assert.Equal(unavailable, await Service(f).RequestRefreshAsync(f.Scope.UserId, f.Scope.ListId, f.ItemId, "UTC", default));
+        var location = new ShopLocation { ShopId = mapping.ShopId, Name = "Test branch", CreatedDate = now, UpdatedDate = now };
+        try
+        {
+            f.Scope.Db.ShopProductPrices.Add(new()
+            {
+                ShopProductId = mapping.Id, ShopLocation = location, PriceScope = PriceScope.StoreSpecific,
+                Price = 1, CheckedDate = now, CreatedDate = now, UpdatedDate = now
+            });
+            await f.Scope.Db.SaveChangesAsync(); f.Scope.Db.ChangeTracker.Clear();
+            Assert.Equal(unavailable, await Service(f).RequestRefreshAsync(f.Scope.UserId, f.Scope.ListId, null, "UTC", default));
+            Assert.Equal(0, await Service(f).ScanAsync(default));
+            Assert.False(await f.Scope.Db.ColesExtensionTasks.AnyAsync(t => t.Key == key));
+        }
+        finally
+        {
+            f.Scope.Db.ChangeTracker.Clear();
+            await f.Scope.Db.ShopProductPrices.Where(p => p.ShopLocationId == location.Id).ExecuteDeleteAsync();
+            await f.Scope.Db.ShopLocations.Where(l => l.Id == location.Id).ExecuteDeleteAsync();
+        }
     }
 
 }

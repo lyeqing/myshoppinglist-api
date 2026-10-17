@@ -54,6 +54,7 @@ public sealed class PriceRefreshService(MyShoppingListDbContext db, TimeProvider
         if (!options.Value.Enabled && manualZone is null) return new(0, 0, 0, 0);
         var running = 0;
         var current = 0;
+        var checkedUnavailable = 0;
         var deferred = 0;
         var seen = new HashSet<string>(StringComparer.Ordinal);
         long cursor = 0;
@@ -102,7 +103,14 @@ public sealed class PriceRefreshService(MyShoppingListDbContext db, TimeProvider
                 var checkedAt = price?.CheckedDate ?? mapping.LastCheckedDate;
                 var recent = manualZone is null ? freshness.IsFresh(checkedAt, now)
                     : CheckedToday(checkedAt, now, manualZone);
-                if (recent && !(price?.SpecialEndDate <= utc)) { current++; continue; }
+                if (recent && !(price?.SpecialEndDate <= utc))
+                {
+                    // A completed check avoids duplicate collection, but only a
+                    // usable comparison price can be described as current.
+                    if (InStoreShoppingService.PriceStatus(price, now, freshness) == "Fresh") current++;
+                    else checkedUnavailable++;
+                    continue;
+                }
                 if (!options.Value.Enabled || task?.RefreshNotBefore > utc
                     || task is { Status: "Failed" } && (task.CompletedAt ?? task.ClaimedAt)?.AddHours(options.Value.RetryCooldownHours) > utc)
                 { deferred++; continue; }
@@ -123,7 +131,7 @@ public sealed class PriceRefreshService(MyShoppingListDbContext db, TimeProvider
             db.ChangeTracker.Clear();
             cursor = mappings[^1].Id;
         }
-        return new(queued, running, current, deferred);
+        return new(queued, running, current, deferred, checkedUnavailable);
     }
 
     internal static async Task<Dictionary<long, string>> ReadStatusesAsync(MyShoppingListDbContext db,
