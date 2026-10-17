@@ -1445,6 +1445,27 @@ namespace myshoppinglist_api.Data.Migrations
                         });
                 });
 
+            modelBuilder.Entity("myshoppinglist_api.Models.UserPreferredShopLocation", b =>
+                {
+                    b.Property<long>("UserAccountId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("ShopLocationId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("integer");
+
+                    b.HasKey("UserAccountId", "ShopLocationId");
+
+                    b.HasIndex("ShopLocationId");
+
+                    b.ToTable("UserPreferredShopLocations", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_UserPreferredShopLocations_Order", "\"DisplayOrder\" >= 0");
+                        });
+                });
+
             modelBuilder.Entity("myshoppinglist_api.Models.UserSession", b =>
                 {
                     b.Property<long>("Id")
@@ -1824,6 +1845,25 @@ namespace myshoppinglist_api.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("Shop");
+
+                    b.Navigation("UserAccount");
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.UserPreferredShopLocation", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.ShopLocation", "ShopLocation")
+                        .WithMany()
+                        .HasForeignKey("ShopLocationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", "UserAccount")
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("ShopLocation");
 
                     b.Navigation("UserAccount");
                 });

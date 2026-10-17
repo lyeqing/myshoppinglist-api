@@ -25,6 +25,20 @@ public sealed class ShoppingPreferencesService(MyShoppingListDbContext db, TimeP
             && (!a.IsTrial || a.ExpiresDate > clock.GetUtcNow().UtcDateTime), ct)
         ?? throw new UserImportException(401, "Your session is unavailable.");
 
+    // Use the same publication requirements as the customer branch directory. Saving a preference
+    // never turns a directory record into a source of branch-specific prices.
+    private static bool Available(ShopLocation branch, DateTime now) =>
+        branch.IsActive && branch.Shop.IsActive && branch.VerifiedAt is not null && branch.VerifiedAt <= now
+        && branch.VerifiedByAccountId is not null && branch.SourceReference is not null && branch.DirectoryKey is not null;
+
+    private static PreferredShopLocationResponse BranchResponse(ShopLocation branch, DateTime now)
+    {
+        var available = Available(branch, now);
+        return new(new(branch.Id, branch.ShopId, branch.Shop.Name, branch.StoreCode, branch.Name,
+            branch.Address1, branch.Address2, branch.Suburb, branch.State, branch.Postcode, branch.VerifiedAt),
+            available, available ? null : "This branch is no longer available. Remove it or choose another branch.");
+    }
+
     public async Task<ShoppingPreferencesResponse> ReadAsync(long accountId, CancellationToken ct)
     {
         await using var tx = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, ct);
@@ -32,13 +46,16 @@ public sealed class ShoppingPreferencesService(MyShoppingListDbContext db, TimeP
         var shops = await db.Shops.AsNoTracking().Where(s => s.IsActive).OrderBy(s => s.Id).ToArrayAsync(ct);
         var preferences = await db.UserPreferredShops.AsNoTracking().Where(p => p.UserAccountId == accountId && p.Shop.IsActive)
             .OrderBy(p => p.DisplayOrder).ThenBy(p => p.ShopId).Select(p => new PreferredShopSelection(p.ShopId, p.IsEnabled)).ToArrayAsync(ct);
+        var branches = await db.UserPreferredShopLocations.AsNoTracking().Where(p => p.UserAccountId == accountId)
+            .Include(p => p.ShopLocation).ThenInclude(l => l.Shop)
+            .OrderBy(p => p.DisplayOrder).ThenBy(p => p.ShopLocationId).ToArrayAsync(ct);
         var result = new ShoppingPreferencesResponse(account.Id, account.CompareOnlyPreferredShops, account.IncludeDifferentPackSizes,
             account.IncludeDifferentBrands, preferences, shops.Select(s =>
             {
                 var capability = registry.FindByCode(s.Code);
                 return new ShoppingPreferenceShop(s.Id, s.Name, s.Code, capability?.IsImplemented == true,
                     capability?.CapabilityStatus ?? "NotImplemented", capability?.CapabilityMessage ?? "Comparison not available yet.");
-            }).ToArray(), account.UpdatedDate);
+            }).ToArray(), account.UpdatedDate, branches.Select(p => BranchResponse(p.ShopLocation, clock.GetUtcNow().UtcDateTime)).ToArray());
         await AccountAsync(accountId, ct);
         await tx.CommitAsync(ct);
         return result;
@@ -51,6 +68,10 @@ public sealed class ShoppingPreferencesService(MyShoppingListDbContext db, TimeP
             || request.Shops.Select(s => s.ShopId).Distinct().Count() != request.Shops.Length
             || request.ExpectedUpdatedDate == default || request.ExpectedUpdatedDate.Kind != DateTimeKind.Utc)
             throw new UserImportException(400, "Send valid, unique stores and the current settings timestamp.");
+        if (request.Branches is not null && (request.Branches.Length > 100
+            || request.Branches.Any(b => b is null || b.ShopId <= 0 || b.ShopLocationId <= 0)
+            || request.Branches.Select(b => b.ShopLocationId).Distinct().Count() != request.Branches.Length))
+            throw new UserImportException(400, "Send at most 100 unique branch selections with valid retailer and branch IDs.");
         if (request.CompareOnlyPreferredShops && !request.Shops.Any(s => s.IsEnabled))
             throw new UserImportException(400, "Choose at least one enabled store, or compare all stores.");
         await using (var tx = await db.Database.BeginTransactionAsync(ct))
@@ -65,6 +86,32 @@ public sealed class ShoppingPreferencesService(MyShoppingListDbContext db, TimeP
             var ids = request.Shops.Select(s => s.ShopId).ToArray();
             if (await db.Shops.CountAsync(s => s.IsActive && ids.Contains(s.Id), ct) != ids.Length)
                 throw new UserImportException(400, "One or more stores are unavailable. Reload settings and try again.");
+            // Omitted/null branches preserve selections made by newer clients. An explicit empty
+            // array clears them. Retired selections may be retained, but cannot be newly added.
+            if (request.Branches is not null)
+            {
+                var saved = await db.UserPreferredShopLocations.Where(p => p.UserAccountId == accountId).ToArrayAsync(ct);
+                var selectedIds = request.Branches.Select(b => b.ShopLocationId).ToArray();
+                var locations = await db.ShopLocations.AsNoTracking().Include(l => l.Shop)
+                    .Where(l => selectedIds.Contains(l.Id)).ToDictionaryAsync(l => l.Id, ct);
+                foreach (var selection in request.Branches)
+                {
+                    if (!locations.TryGetValue(selection.ShopLocationId, out var branch) || branch.ShopId != selection.ShopId)
+                        throw new UserImportException(400, "One or more branches do not belong to the selected retailer. Reload settings and try again.");
+                    if (!saved.Any(p => p.ShopLocationId == branch.Id)
+                        && (!ids.Contains(branch.ShopId) || !Available(branch, now)))
+                        throw new UserImportException(400, "Choose an active, verified branch from one of your saved supermarkets.");
+                }
+                db.UserPreferredShopLocations.RemoveRange(saved.Where(p => !selectedIds.Contains(p.ShopLocationId)));
+                for (var index = 0; index < request.Branches.Length; index++)
+                {
+                    var id = request.Branches[index].ShopLocationId;
+                    var preference = saved.SingleOrDefault(p => p.ShopLocationId == id);
+                    if (preference is null)
+                        db.UserPreferredShopLocations.Add(new() { UserAccountId = accountId, ShopLocationId = id, DisplayOrder = index });
+                    else preference.DisplayOrder = index;
+                }
+            }
             await db.UserPreferredShops.Where(p => p.UserAccountId == accountId).ExecuteDeleteAsync(ct);
             db.UserPreferredShops.AddRange(request.Shops.Select((s, index) => new UserPreferredShop
             { UserAccountId = accountId, ShopId = s.ShopId, IsEnabled = s.IsEnabled, DisplayOrder = index }));

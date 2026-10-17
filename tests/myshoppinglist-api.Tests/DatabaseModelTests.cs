@@ -49,10 +49,16 @@ public class DatabaseModelTests
         .UseNpgsql("Host=localhost;Database=model_only").Options);
 
     [Fact]
-    public void Model_contains_only_the_seventeen_application_entities()
+    public void Model_contains_only_the_expected_application_entities()
     {
         using var db = ModelContext();
-        Assert.Equal(17, db.Model.GetEntityTypes().Count());
+        Type[] expected = [typeof(AccountAdminAudit), typeof(ColesExtensionTask), typeof(ContributionObservation),
+            typeof(PackDiscoveryJob), typeof(Product), typeof(ProductAlternativeRelationship), typeof(ProductImportJob),
+            typeof(ProductImportRetailerResult), typeof(RetailerWorkloadState), typeof(Shop), typeof(ShopLocation),
+            typeof(ShopLocationReview), typeof(ShopProduct), typeof(ShopProductPrice), typeof(ShopProductPriceHistory),
+            typeof(ShoppingList), typeof(ShoppingListProduct), typeof(UserAccount), typeof(UserExtensionImportTask),
+            typeof(UserPreferredShop), typeof(UserPreferredShopLocation), typeof(UserSession)];
+        Assert.Equal(expected.Select(t => t.FullName).Order(), db.Model.GetEntityTypes().Select(e => e.ClrType.FullName).Order());
         Assert.DoesNotContain(db.Model.GetEntityTypes(), e => e.Name.Contains("Company"));
         Assert.All(db.Model.GetEntityTypes().SelectMany(e => e.GetProperties()), p => Assert.False(p.IsShadowProperty()));
     }
