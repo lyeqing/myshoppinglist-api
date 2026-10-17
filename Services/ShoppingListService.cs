@@ -165,7 +165,7 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
             }).OrderBy(p => p.ShopName).ToArray(), comparisons.GetValueOrDefault(item.Id), alternatives.GetValueOrDefault(item.ProductId, []), brandAlternatives.GetValueOrDefault(item.ProductId, []))).ToArray();
         if (!Accessible(list?.UserAccount, list, accountId)) return null;
         var plan = SummarizePlan(list!.Id, list.Name, rows, shops.Select(s => (s.Id, s.Name)).ToArray());
-        plan = plan with { StoreContext = await ShoppingPreferencesService.ContextAsync(db, accountId, token) };
+        plan = plan with { StoreContext = await ShoppingPreferencesService.ContextAsync(db, accountId, token, clock) };
         await transaction.CommitAsync(token);
         return plan;
     }

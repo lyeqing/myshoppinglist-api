@@ -18,4 +18,6 @@ public sealed record ShoppingPreferenceShop(long Id, string Name, string Code, b
 public sealed record ShoppingPreferencesResponse(long AccountId, bool CompareOnlyPreferredShops, bool IncludeDifferentPackSizes,
     bool IncludeDifferentBrands, PreferredShopSelection[] Shops, ShoppingPreferenceShop[] AvailableShops, DateTime UpdatedDate,
     PreferredShopLocationResponse[] Branches);
-public sealed record ComparisonStoreContext(bool PreferredOnly, string[] ShopNames);
+public sealed record ComparisonBranchContext(ShopLocationSummary Location, bool IsAvailable,
+    string? UnavailableReason, bool SupermarketEnabled);
+public sealed record ComparisonStoreContext(bool PreferredOnly, string[] ShopNames, ComparisonBranchContext[]? Branches = null);

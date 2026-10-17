@@ -77,7 +77,7 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
                     status != "Fresh" && price is { Currency: "AUD", Price: >= 0 } ? price.Price : null);
             }).OrderBy(p => p.ShopName).ToArray(), alternatives.GetValueOrDefault(i.ProductId, []), brandAlternatives.GetValueOrDefault(i.ProductId, []))).ToArray();
         if (!await Accessible(accountId).AnyAsync(l => l.Id == listId, token)) return null;
-        var context = await ShoppingPreferencesService.ContextAsync(db, accountId, token);
+        var context = await ShoppingPreferencesService.ContextAsync(db, accountId, token, clock);
         var retailers = context.PreferredOnly ? await PreferredRetailers(accountId, token) : Retailers(mappings);
         if (context.PreferredOnly)
             rows = rows.Select(row => row with

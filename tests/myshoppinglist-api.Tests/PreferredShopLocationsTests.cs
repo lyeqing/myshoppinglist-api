@@ -228,6 +228,92 @@ public class PreferredShopLocationsTests
         Assert.False(f.Db.Database.HasPendingModelChanges());
     }
 
+    [PostgreSqlFact]
+    public async Task Comparison_context_is_ordered_private_and_does_not_change_supermarket_scope()
+    {
+        await using var f = await Fixture.CreateAsync();
+        var a = await f.BranchAsync("context-a"); var b = await f.BranchAsync("context-b", 2);
+        var saved = await f.Preferences.SaveAsync(f.Customer.Id, Request(await f.ViewAsync(), [new(2, b), new(1, a)]), default);
+        var context = await ShoppingPreferencesService.ContextAsync(f.Db, f.Customer.Id, default, f.Clock);
+        Assert.True(context.PreferredOnly); Assert.Equal(new[] { "Coles" }, context.ShopNames);
+        Assert.Equal(new[] { b, a }, context.Branches!.Select(x => x.Location.Id));
+        Assert.False(context.Branches![0].SupermarketEnabled); Assert.True(context.Branches![1].SupermarketEnabled);
+        Assert.All(context.Branches!, x => { Assert.True(x.IsAvailable); Assert.False(x.Location.BranchPricesSupported); });
+        var json = JsonSerializer.Serialize(context);
+        foreach (var secret in new[] { "SourceReference", "VerifiedByAccountId", "ReviewerAccountId", "Evidence", "private test evidence" }) Assert.DoesNotContain(secret, json);
+        Assert.Empty((await ShoppingPreferencesService.ContextAsync(f.Db, f.Trial.Id, default, f.Clock)).Branches!);
+        await f.Preferences.SaveAsync(f.Customer.Id, Request(saved) with { CompareOnlyPreferredShops = false }, default);
+        context = await ShoppingPreferencesService.ContextAsync(f.Db, f.Customer.Id, default, f.Clock);
+        Assert.False(context.PreferredOnly); Assert.Equal(5, context.ShopNames.Length);
+        Assert.False(context.Branches![0].SupermarketEnabled); Assert.Equal(new[] { b, a }, context.Branches!.Select(x => x.Location.Id));
+    }
+
+    [PostgreSqlFact]
+    public async Task Comparison_branch_availability_uses_the_response_clock_and_retains_unavailable_records()
+    {
+        await using var f = await Fixture.CreateAsync(); var id = await f.BranchAsync("context-availability");
+        await f.Preferences.SaveAsync(f.Customer.Id, Request(await f.ViewAsync(), [new(1, id)]), default);
+        foreach (var status in new[] { "retired", "unverified", "future", "inactive-retailer" })
+        {
+            var branch = await f.Db.ShopLocations.SingleAsync(x => x.Id == id);
+            branch.IsActive = status != "retired";
+            branch.VerifiedAt = status == "unverified" ? null : status == "future" ? f.Clock.Now.UtcDateTime.AddDays(1) : f.Clock.Now.UtcDateTime;
+            branch.VerifiedByAccountId = status == "unverified" ? null : f.Admin.Id;
+            branch.SourceReference = status == "unverified" ? null : "Private source";
+            branch.DirectoryKey = status == "unverified" ? null : "context-availability";
+            await f.Db.Shops.Where(x => x.Id == 1).ExecuteUpdateAsync(s => s.SetProperty(x => x.IsActive, status != "inactive-retailer"));
+            await f.Db.SaveChangesAsync(); f.Db.ChangeTracker.Clear();
+            var context = await ShoppingPreferencesService.ContextAsync(f.Db, f.Customer.Id, default, f.Clock);
+            var shown = Assert.Single(context.Branches!); Assert.Equal(id, shown.Location.Id);
+            Assert.False(shown.IsAvailable); Assert.NotEmpty(shown.UnavailableReason!);
+            Assert.Equal(status != "inactive-retailer", shown.SupermarketEnabled);
+            if (status == "future")
+            {
+                var future = new PersistenceClock { Now = f.Clock.Now.AddDays(2) };
+                Assert.True(Assert.Single((await ShoppingPreferencesService.ContextAsync(f.Db, f.Customer.Id, default, future)).Branches!).IsAvailable);
+            }
+        }
+    }
+
+    [PostgreSqlFact]
+    public async Task Comparison_context_rejects_expired_and_disabled_accounts()
+    {
+        await using var f = await Fixture.CreateAsync();
+        await f.Db.UserAccounts.Where(x => x.Id == f.Customer.Id).ExecuteUpdateAsync(s => s.SetProperty(x => x.IsActive, false));
+        await f.Db.UserAccounts.Where(x => x.Id == f.Trial.Id).ExecuteUpdateAsync(s => s.SetProperty(x => x.ExpiresDate, f.Clock.Now.UtcDateTime.AddMinutes(-1)));
+        foreach (var id in new[] { f.Customer.Id, f.Trial.Id, long.MaxValue })
+            Assert.Equal(401, (await Assert.ThrowsAsync<UserImportException>(() => ShoppingPreferencesService.ContextAsync(f.Db, id, default, f.Clock))).Status);
+    }
+
+    [PostgreSqlFact]
+    public async Task Both_comparison_views_return_branch_context_without_using_branch_prices_in_totals()
+    {
+        await using var f = await Fixture.CreateAsync(); var id = await f.BranchAsync("view-context");
+        await f.Preferences.SaveAsync(f.Customer.Id, Request(await f.ViewAsync(), [new(1, id)]), default);
+        // Make verification future-dated according to this response's clock, but past according
+        // to the system clock. Both views must use their injected clock for the availability flag.
+        f.Clock.Now = f.Clock.Now.AddMinutes(-1);
+        var now = f.Clock.Now.UtcDateTime;
+        var list = new ShoppingList { UserAccountId = f.Customer.Id, Name = "Branch comparison", CreatedDate = now, UpdatedDate = now };
+        var product = new Product { Name = "Comparison product", CreatedDate = now, UpdatedDate = now };
+        f.Db.ShoppingListProducts.Add(new() { ShoppingList = list, Product = product, Quantity = 1, AddedDate = now, UpdatedDate = now });
+        var mapping = new ShopProduct { Product = product, ShopId = 1, ShopProductCode = "context-product", NameAtShop = product.Name,
+            ProductUrl = "https://www.coles.com.au/product/context-product", MatchType = Models.MatchType.Exact, FirstFoundDate = now, LastFoundDate = now };
+        foreach (var branch in new long?[] { null, id })
+            f.Db.ShopProductPrices.Add(new() { ShopProduct = mapping, ShopLocationId = branch, Price = branch is null ? 10m : 1m, Currency = "AUD",
+                PriceScope = branch is null ? PriceScope.National : PriceScope.StoreSpecific, SourceUrl = mapping.ProductUrl, CheckedDate = now, CreatedDate = now, UpdatedDate = now });
+        await f.Db.SaveChangesAsync(); f.Db.ChangeTracker.Clear();
+        var plan = (await new ShoppingListService(f.Db, f.Clock).PlanAsync(f.Customer.Id, list.Id, default))!;
+        var detail = (await new InStoreShoppingService(f.Db, f.Clock, new CatalogueFreshnessService()).DetailAsync(f.Customer.Id, list.Id, default))!;
+        Assert.Equal(10m, plan.Lowest.Subtotal); Assert.Equal(10m, detail.SplitSubtotal);
+        foreach (var context in new[] { plan.StoreContext!, detail.StoreContext! })
+        {
+            var branch = Assert.Single(context.Branches!); Assert.Equal(id, branch.Location.Id);
+            Assert.False(branch.IsAvailable); Assert.True(branch.SupermarketEnabled); Assert.False(branch.Location.BranchPricesSupported);
+        }
+        Assert.False(await f.Db.ProductImportJobs.AnyAsync());
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private readonly IsolatedDatabaseScope isolation;

@@ -16,9 +16,27 @@ public sealed class ShoppingPreferencesService(MyShoppingListDbContext db, TimeP
     public static Task<bool> AllowsAsync(MyShoppingListDbContext db, long accountId, long shopId, CancellationToken ct) =>
         AllowedShops(db, accountId).AnyAsync(s => s.Id == shopId, ct);
 
-    public static async Task<ComparisonStoreContext> ContextAsync(MyShoppingListDbContext db, long accountId, CancellationToken ct) =>
-        new(await db.UserAccounts.Where(a => a.Id == accountId).Select(a => a.CompareOnlyPreferredShops).SingleAsync(ct),
-            await AllowedShops(db, accountId).OrderBy(s => s.Name).Select(s => s.Name).ToArrayAsync(ct));
+    public static async Task<ComparisonStoreContext> ContextAsync(MyShoppingListDbContext db, long accountId,
+        CancellationToken ct, TimeProvider clock)
+    {
+        // The list and in-store callers read this within their existing repeatable-read transaction.
+        var now = clock.GetUtcNow().UtcDateTime;
+        var account = await db.UserAccounts.AsNoTracking().SingleOrDefaultAsync(a => a.Id == accountId && a.IsActive
+            && (!a.IsTrial || a.ExpiresDate > now), ct)
+            ?? throw new UserImportException(401, "Your session is unavailable.");
+        var shops = await AllowedShops(db, accountId).OrderBy(s => s.Name).Select(s => s.Name).ToArrayAsync(ct);
+        var enabled = await db.UserPreferredShops.AsNoTracking().Where(p => p.UserAccountId == accountId && p.IsEnabled)
+            .Select(p => p.ShopId).ToArrayAsync(ct);
+        var branches = await db.UserPreferredShopLocations.AsNoTracking().Where(p => p.UserAccountId == accountId)
+            .Include(p => p.ShopLocation).ThenInclude(l => l.Shop)
+            .OrderBy(p => p.DisplayOrder).ThenBy(p => p.ShopLocationId).ToArrayAsync(ct);
+        return new(account.CompareOnlyPreferredShops, shops, branches.Select(p =>
+        {
+            var branch = BranchResponse(p.ShopLocation, now);
+            return new ComparisonBranchContext(branch.Location, branch.IsAvailable, branch.UnavailableReason,
+                p.ShopLocation.Shop.IsActive && enabled.Contains(p.ShopLocation.ShopId));
+        }).ToArray());
+    }
 
     private async Task<UserAccount> AccountAsync(long accountId, CancellationToken ct) =>
         await db.UserAccounts.AsNoTracking().SingleOrDefaultAsync(a => a.Id == accountId && a.IsActive
