@@ -4,9 +4,16 @@ using myshoppinglist_api.Services;
 namespace myshoppinglist_api.Providers.Coles;
 
 // Coles is exclusively served by the catalogue/extension queue. No HTTP/browser fallback.
-public sealed class ColesProductProvider(IColesExtensionQueue queue) : IShopProductProvider
+public sealed class ColesProductProvider(IColesExtensionQueue queue) : IShopProductProvider, IPackSizeSearchProvider
 {
     public string ShopCode => "coles";
+    public Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchPackSizesAsync(string familyQuery, CancellationToken token)
+    {
+        if (string.IsNullOrWhiteSpace(familyQuery) || familyQuery.Length > 160)
+            return Task.FromResult<ProviderResult<IReadOnlyList<ShopProductSearchResult>>>(new ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Failure(
+                new(ProviderFailureKind.InvalidProduct, "invalid_family_query", "A verified product family is required.")));
+        return queue.SearchAsync(familyQuery, token);
+    }
     public Task<ProviderResult<ExtractedShopProduct>> GetProductFromUrlAsync(Uri url, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();

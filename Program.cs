@@ -134,6 +134,10 @@ try
         .Validate(o => o.RenewalSeconds * 2 < o.LeaseSeconds, "Lease duration must exceed twice the renewal interval.")
         .ValidateOnStart();
     builder.Services.AddHostedService<ProductImportWorker>();
+    builder.Services.AddScoped<PackDiscoveryService>();
+    builder.Services.AddScoped<PackDiscoveryProcessor>();
+    builder.Services.AddScoped<PackDiscoveryPersistenceService>();
+    builder.Services.AddHostedService<PackDiscoveryWorker>();
     builder.Services.AddOptions<PriceRefreshOptions>().BindConfiguration(PriceRefreshOptions.SectionName)
         .ValidateDataAnnotations().ValidateOnStart();
     builder.Services.AddScoped<PriceRefreshService>();
@@ -201,6 +205,7 @@ try
     app.MapColesExtensionEndpoints();
     app.MapProductImportEndpoints();
     app.MapShoppingListEndpoints();
+    app.MapPackDiscoveryEndpoints();
     app.MapShoppingPreferencesEndpoints();
     app.MapGet("/", () => "MyShoppingList API").ExcludeFromDescription();
     app.Run();

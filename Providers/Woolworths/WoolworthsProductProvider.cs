@@ -9,7 +9,7 @@ namespace myshoppinglist_api.Providers.Woolworths;
 
 public sealed class WoolworthsProductProvider(RetailerHttpClient http, WoolworthsProductParser parser,
     ProductUrlValidator validator, ILogger<WoolworthsProductProvider> logger,
-    IRetailerSearchBrowser? searchBrowser = null, IOptions<RetailerSearchOptions>? searchOptions = null, IWoolworthsExtensionQueue? extension = null) : IShopProductProvider
+    IRetailerSearchBrowser? searchBrowser = null, IOptions<RetailerSearchOptions>? searchOptions = null, IWoolworthsExtensionQueue? extension = null) : IShopProductProvider, IPackSizeSearchProvider
 {
     public string ShopCode => "woolworths";
 
@@ -41,12 +41,23 @@ public sealed class WoolworthsProductProvider(RetailerHttpClient http, Woolworth
     public async Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchAsync(
         ProductIdentity product, ShopLocationContext? location, CancellationToken cancellationToken)
     {
+        return await SearchCoreAsync(product, location, null, cancellationToken);
+    }
+
+    public Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchPackSizesAsync(string familyQuery, CancellationToken token) =>
+        SearchCoreAsync(new ProductIdentity { Name = familyQuery }, null, familyQuery, token);
+
+    private async Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchCoreAsync(
+        ProductIdentity product, ShopLocationContext? location, string? familyQuery, CancellationToken cancellationToken)
+    {
         cancellationToken.ThrowIfCancellationRequested();
+        if (familyQuery is not null && (string.IsNullOrWhiteSpace(familyQuery) || familyQuery.Length > 160))
+            return SearchFailure(new(ProviderFailureKind.InvalidProduct, "invalid_family_query", "A verified product family is required."));
         if (location is not null)
             return SearchFailure(new(ProviderFailureKind.NotSupported, "unsupported_search_context", "Store-specific search is not supported."));
         if (searchBrowser is null)
             return SearchFailure(new(ProviderFailureKind.NotSupported, "search_not_configured", "Retailer search is not configured."));
-        var queries = ProductSearchQueryBuilder.BuildSearches(product);
+        var queries = familyQuery is null ? ProductSearchQueryBuilder.BuildSearches(product) : new[] { familyQuery };
         if (queries.Count == 0)
             return SearchFailure(new(ProviderFailureKind.InvalidProduct, "invalid_search_identity", "A product name is required."));
         var settings = searchOptions?.Value ?? new RetailerSearchOptions();
@@ -65,7 +76,7 @@ public sealed class WoolworthsProductProvider(RetailerHttpClient http, Woolworth
                     continue;
                 }
                 var links = await new WoolworthsSearchParser().ParseAsync(((ProviderResult<RetailerPage>.Success)rendered).Value,
-                    query, settings.MaximumCandidates, deadline.Token);
+                    query, Math.Clamp(settings.MaximumCandidates, 1, 8), deadline.Token);
                 if (links is ProviderResult<IReadOnlyList<Uri>>.Failure invalid)
                 {
                     var fallback = invalid.Error.Kind == ProviderFailureKind.AccessRestricted && extension is not null

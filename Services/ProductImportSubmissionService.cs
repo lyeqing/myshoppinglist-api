@@ -19,7 +19,10 @@ public sealed class ProductImportSubmissionService(MyShoppingListDbContext db, P
         if (userExtension && (userRequestId is null || userRequestId == Guid.Empty)) return new(null, 400, "invalid_request", "An import request ID is required.");
         var validated = urls.Validate(request.Url);
         if (!validated.IsValid) return new(null, 400, "invalid_url", "Enter a valid HTTPS product URL from a supported retailer.");
-        if (providers.FindByCode(validated.Retailer!.Code)?.IsImplemented != true)
+        var capability = providers.FindByCode(validated.Retailer!.Code);
+        if (capability?.CapabilityStatus == "Restricted")
+            return new(null, 400, "source_restricted", capability.CapabilityMessage);
+        if (capability?.IsImplemented != true)
             return new(null, 400, "source_not_supported", "Source imports from this retailer are not implemented yet.");
         var normalised = validated.ProductUrl!.AbsoluteUri;
         // Submission never acquires catalogue locks. Account -> list is the same relative order as worker writes.

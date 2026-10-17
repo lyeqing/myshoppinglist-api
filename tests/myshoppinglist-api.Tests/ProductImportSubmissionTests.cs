@@ -14,6 +14,36 @@ namespace myshoppinglist_api.Tests;
 public class ProductImportSubmissionTests
 {
     [PostgreSqlFact]
+    public async Task Restricted_aldi_submissions_never_queue_import_or_extension_collection()
+    {
+        await using var isolated = await IsolatedDatabaseScope.CreateAsync();
+        await using var scope = await SubmissionScope.CreateAsync();
+        var provider = new TestShopProductProvider("aldi");
+        var service = new ProductImportSubmissionService(scope.Db, new(new RetailerCatalog()), new RetailerProviderRegistry([provider]),
+            scope.Clock, NullLogger<ProductImportSubmissionService>.Instance);
+        foreach (var trial in new[] { true, false })
+        {
+            if (!trial)
+            {
+                var password = PasswordHasher.Hash("Testing123!");
+                await scope.Db.UserAccounts.Where(a => a.Id == scope.AccountId).ExecuteUpdateAsync(s => s.SetProperty(a => a.IsTrial, false)
+                    .SetProperty(a => a.Email, Guid.NewGuid() + "@example.test").SetProperty(a => a.PasswordHash, password.Hash)
+                    .SetProperty(a => a.PasswordSalt, password.Salt).SetProperty(a => a.ExpiresDate, (DateTime?)null));
+            }
+            foreach (var extension in new[] { false, true })
+            {
+                var result = await service.SubmitAsync(scope.AccountId, scope.ListId, new("https://www.aldi.com.au/product/example"), default,
+                    userExtension: extension, userRequestId: extension ? Guid.NewGuid() : null);
+                Assert.Equal(400, result.StatusCode); Assert.Equal("source_restricted", result.ErrorCode);
+                Assert.Contains("unavailable for ALDI", result.Message!); Assert.Null(result.Response);
+            }
+        }
+        Assert.Equal(0, provider.CallCount);
+        Assert.False(await scope.Db.ProductImportJobs.AnyAsync(j => j.ShoppingListId == scope.ListId));
+        Assert.False(await scope.Db.UserExtensionImportTasks.AnyAsync(t => t.ProductImportJob.ShoppingListId == scope.ListId));
+    }
+
+    [PostgreSqlFact]
     public async Task Creates_queued_job_and_pending_results_without_fetching()
     {
         await using var scope = await SubmissionScope.CreateAsync();

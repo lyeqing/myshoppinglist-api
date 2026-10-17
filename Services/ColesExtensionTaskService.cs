@@ -294,9 +294,13 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
         await db.SaveChangesAsync(token);
         if (leaseExpiresAt <= Now) return "claim_lost";
         if (task.Status is "Completed" or "Failed")
+        {
+            await db.PackDiscoveryJobs.Where(j => j.Status == "WaitingForExtension" && j.Shop.Code == Retailer(new Uri(task.Url)))
+                .ExecuteUpdateAsync(s => s.SetProperty(j => j.NextAttemptDate, (DateTime?)Now), token);
             await db.ProductImportJobs.Where(j => j.Status == ProductImportJobStatus.Queued
                 && j.ProgressStage == ProductImportProgressStage.WaitingForExtension)
                 .ExecuteUpdateAsync(s => s.SetProperty(j => j.NextAttemptDate, (DateTime?)Now), token);
+        }
         await tx.CommitAsync(token); db.ChangeTracker.Clear();
         if (transition is not null) logger?.LogInformation("Shared retailer work {Transition} for {Retailer}", transition, Retailer(new Uri(task.Url)));
         return null;

@@ -33,8 +33,12 @@ public sealed class ShoppingPreferencesService(MyShoppingListDbContext db, TimeP
         var preferences = await db.UserPreferredShops.AsNoTracking().Where(p => p.UserAccountId == accountId && p.Shop.IsActive)
             .OrderBy(p => p.DisplayOrder).ThenBy(p => p.ShopId).Select(p => new PreferredShopSelection(p.ShopId, p.IsEnabled)).ToArrayAsync(ct);
         var result = new ShoppingPreferencesResponse(account.Id, account.CompareOnlyPreferredShops, account.IncludeDifferentPackSizes,
-            account.IncludeDifferentBrands, preferences, shops.Select(s => new ShoppingPreferenceShop(s.Id, s.Name, s.Code,
-                registry.FindByCode(s.Code)?.IsImplemented == true)).ToArray(), account.UpdatedDate);
+            account.IncludeDifferentBrands, preferences, shops.Select(s =>
+            {
+                var capability = registry.FindByCode(s.Code);
+                return new ShoppingPreferenceShop(s.Id, s.Name, s.Code, capability?.IsImplemented == true,
+                    capability?.CapabilityStatus ?? "NotImplemented", capability?.CapabilityMessage ?? "Comparison not available yet.");
+            }).ToArray(), account.UpdatedDate);
         await AccountAsync(accountId, ct);
         await tx.CommitAsync(ct);
         return result;

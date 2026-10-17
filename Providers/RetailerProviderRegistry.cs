@@ -6,7 +6,18 @@ public sealed record RetailerDefinition(string Code, string Name, IReadOnlyList<
 
 public sealed record RetailerRegistration(RetailerDefinition Retailer, IShopProductProvider? Provider)
 {
-    public bool IsImplemented => Provider is not null;
+    // ALDI's published terms restrict automated collection and content reuse.
+    // Reviewed 2026-10-17: https://www.aldi.com.au/legal-notice
+    // Keep this explicit until a separately approved, permitted data source is available.
+    public string CapabilityStatus => Retailer.Code.Equals("aldi", StringComparison.OrdinalIgnoreCase)
+        ? "Restricted" : Provider is not null ? "Supported" : "NotImplemented";
+    public bool IsImplemented => CapabilityStatus == "Supported";
+    public string CapabilityMessage => CapabilityStatus switch
+    {
+        "Restricted" => "Automatic product imports and price checks are unavailable for ALDI.",
+        "Supported" => "Product comparisons supported",
+        _ => "Comparison not available yet. You can save this preference for later."
+    };
 }
 
 // Host policy has no provider dependencies, so the HTTP client cannot create a DI cycle.
@@ -75,7 +86,13 @@ public sealed class RetailerProviderRegistry
         foreach (var provider in providers)
         {
             var definition = string.IsNullOrWhiteSpace(provider.ShopCode) ? null : catalog.FindByCode(provider.ShopCode);
-            if (definition is null || !_registrations.TryAdd(provider.ShopCode, new(definition, provider)))
+            if (definition is null)
+                throw new ArgumentException("Providers require unique, known retailer codes.", nameof(providers));
+            var registration = new RetailerRegistration(definition, provider);
+            // Consumers also dispatch through Provider directly. Never expose a
+            // restricted adapter through that path, even if one is registered.
+            if (registration.CapabilityStatus == "Restricted") registration = registration with { Provider = null };
+            if (!_registrations.TryAdd(provider.ShopCode, registration))
                 throw new ArgumentException("Providers require unique, known retailer codes.", nameof(providers));
         }
     }

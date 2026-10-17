@@ -24,6 +24,22 @@ public class RetailerProviderRegistryTests
     }
 
     [Fact]
+    public void Capabilities_distinguish_supported_restricted_and_unimplemented_retailers()
+    {
+        var aldi = new TestShopProductProvider("ALDI");
+        var registry = new RetailerProviderRegistry([new TestShopProductProvider("coles"), new TestShopProductProvider("woolworths"), aldi]);
+        Assert.Equal("Supported", registry.FindByCode("coles")!.CapabilityStatus);
+        Assert.Equal("Supported", registry.FindByCode("woolworths")!.CapabilityStatus);
+        var restricted = registry.FindByHost("www.aldi.com.au")!;
+        Assert.Equal("Restricted", restricted.CapabilityStatus);
+        Assert.False(restricted.IsImplemented); Assert.Null(restricted.Provider);
+        Assert.Contains("unavailable for ALDI", restricted.CapabilityMessage);
+        Assert.Equal(0, aldi.CallCount);
+        foreach (var code in new[] { "iga", "foodland" })
+            Assert.Equal("NotImplemented", registry.FindByCode(code)!.CapabilityStatus);
+    }
+
+    [Fact]
     public void Registered_provider_resolves_by_code_and_exact_host_case_insensitively()
     {
         var provider = new TestShopProductProvider("coles");

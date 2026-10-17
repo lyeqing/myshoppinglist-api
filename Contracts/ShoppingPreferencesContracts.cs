@@ -10,7 +10,8 @@ public sealed record ShoppingPreferencesUpdate(
     [property: JsonRequired] bool IncludeDifferentBrands,
     PreferredShopSelection[]? Shops,
     [property: JsonRequired] DateTime ExpectedUpdatedDate);
-public sealed record ShoppingPreferenceShop(long Id, string Name, string Code, bool ComparisonSupported);
+public sealed record ShoppingPreferenceShop(long Id, string Name, string Code, bool ComparisonSupported,
+    string? CapabilityStatus = null, string? CapabilityMessage = null);
 public sealed record ShoppingPreferencesResponse(long AccountId, bool CompareOnlyPreferredShops, bool IncludeDifferentPackSizes,
     bool IncludeDifferentBrands, PreferredShopSelection[] Shops, ShoppingPreferenceShop[] AvailableShops, DateTime UpdatedDate);
 public sealed record ComparisonStoreContext(bool PreferredOnly, string[] ShopNames);
