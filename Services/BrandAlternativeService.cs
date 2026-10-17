@@ -204,12 +204,11 @@ public sealed class BrandAlternativeService(MyShoppingListDbContext db, TimeProv
         {
             prices.TryGetValue(mapping.Id, out var price);
             var status = price?.CheckedDate > now.UtcDateTime ? "Unverified price date"
-                : price is not null && price.PriceScope is not (PriceScope.Unknown or PriceScope.Online or PriceScope.National)
-                    ? "Not comparable" : InStoreShoppingService.PriceStatus(price, now, freshness);
+                : InStoreShoppingService.PriceStatus(price, now, freshness);
             var amount = price is { Currency: "AUD", Price: >= 0 } ? price.Price : (decimal?)null;
             return new(mapping.ShopId, mapping.Shop.Name, amount,
                 amount.HasValue ? PackComparisonService.UnitPrice(amount.Value, quantity) : null,
-                status, price?.CheckedDate, mapping.ProductUrl);
+                status, price?.CheckedDate, mapping.ProductUrl, PriceObservationContextService.From(price, mapping.Shop.Code));
         }
         IEnumerable<ShopProduct> UniqueMappings(long id) => mappings.Where(m => m.ProductId == id)
             .GroupBy(m => m.ShopId).Where(g => g.Count() == 1).Select(g => g.Single());

@@ -161,7 +161,8 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
                 return new ShoppingListPrice(mapping.ShopId, mapping.Shop.Name,
                     price is { Currency: "AUD", Price: >= 0 } ? price.Price : null, status == "Fresh", status,
                     mapping.ProductUrl, price?.CheckedDate, price?.SpecialDescription, refreshStatus,
-                    offer, status == "Fresh" ? PromotionCalculationService.Calculate(price!.Price, item.Quantity, offer) : null);
+                    offer, status == "Fresh" ? PromotionCalculationService.Calculate(price!.Price, item.Quantity, offer) : null,
+                    PriceObservationContextService.From(price, mapping.Shop.Code));
             }).OrderBy(p => p.ShopName).ToArray(), comparisons.GetValueOrDefault(item.Id), alternatives.GetValueOrDefault(item.ProductId, []), brandAlternatives.GetValueOrDefault(item.ProductId, []))).ToArray();
         if (!Accessible(list?.UserAccount, list, accountId)) return null;
         var plan = SummarizePlan(list!.Id, list.Name, rows, shops.Select(s => (s.Id, s.Name)).ToArray());

@@ -74,7 +74,8 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
                 return new InStorePrice(mapping.ShopId, mapping.Shop.Name, status == "Fresh" ? price!.Price : null, status, price?.CheckedDate,
                     offer, status == "Fresh" ? PromotionCalculationService.Calculate(price!.Price, i.Quantity, offer) : null,
                     !i.IsPurchased ? refreshStatuses.GetValueOrDefault(mapping.Id) : null,
-                    status != "Fresh" && price is { Currency: "AUD", Price: >= 0 } ? price.Price : null);
+                    status != "Fresh" && price is { Currency: "AUD", Price: >= 0 } ? price.Price : null,
+                    PriceObservationContextService.From(price, mapping.Shop.Code));
             }).OrderBy(p => p.ShopName).ToArray(), alternatives.GetValueOrDefault(i.ProductId, []), brandAlternatives.GetValueOrDefault(i.ProductId, []))).ToArray();
         if (!await Accessible(accountId).AnyAsync(l => l.Id == listId, token)) return null;
         var context = await ShoppingPreferencesService.ContextAsync(db, accountId, token, clock);
@@ -95,7 +96,7 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
         if (price is null) return "No price";
         if (!freshness.IsFresh(price.CheckedDate, now)) return "Stale price";
         if (price.InStock == false) return "Out of stock";
-        if (price.Currency != "AUD" || price.Price < 0 || price.ShopLocationId != null) return "Not comparable";
+        if (price.Currency != "AUD" || price.Price < 0 || !PriceObservationContextService.SupportsGeneralComparison(price)) return "Not comparable";
         if (price.SpecialStartDate > now.UtcDateTime || price.SpecialEndDate < now.UtcDateTime) return "Offer not current";
         if (SinglePriceMultibuy(price) is not null) return "Fresh";
         if (Regex.IsMatch($"{price.SpecialType} {price.SpecialDescription}", @"multi.?buy|multi.?save|member|loyalty|\bbuy\s+\d|\d\s+for\b", RegexOptions.IgnoreCase)) return "Conditional offer";

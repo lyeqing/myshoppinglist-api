@@ -23,7 +23,7 @@ public sealed record ShoppingListQuantityPrice(int Quantity, decimal Total, deci
     decimal Savings, int AppliedBundles, int RemainingQuantity);
 public sealed record ShoppingListPrice(long ShopId, string ShopName, decimal? Price, bool IncludedInTotal,
     string Status, string? ProductUrl, DateTime? CheckedDate, string? SpecialDescription,
-    string? RefreshStatus = null, ShoppingListMultibuy? Multibuy = null, ShoppingListQuantityPrice? QuantityPrice = null);
+    string? RefreshStatus = null, ShoppingListMultibuy? Multibuy = null, ShoppingListQuantityPrice? QuantityPrice = null, PriceObservationContext? Observation = null);
 public sealed record ShoppingListComparison(long JobId, string Status, string? ErrorCode, DateTime? RetryAfter,
     bool CanRetry, ShoppingListRetailerCheck[] Retailers);
 public sealed record ShoppingListRetailerCheck(string Name, string Status, string? ErrorCode);

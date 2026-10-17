@@ -52,7 +52,7 @@ public sealed class PackAlternativeService(MyShoppingListDbContext db, TimeProvi
             var amount = price is { Currency: "AUD", Price: >= 0 } ? price.Price : (decimal?)null;
             return new(mapping.ShopId, mapping.Shop.Name, amount,
                 amount.HasValue ? PackComparisonService.UnitPrice(amount.Value, quantity) : null,
-                status, price?.CheckedDate, mapping.ProductUrl);
+                status, price?.CheckedDate, mapping.ProductUrl, PriceObservationContextService.From(price, mapping.Shop.Code));
         }
         foreach (var product in originals.DistinctBy(p => p.Id))
         {
