@@ -1046,6 +1046,11 @@ namespace myshoppinglist_api.Data.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
 
+                    b.Property<bool>("CompareOnlyPreferredShops")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
                     b.Property<bool>("ContributionBlocked")
                         .HasColumnType("boolean");
 
@@ -1068,6 +1073,16 @@ namespace myshoppinglist_api.Data.Migrations
 
                     b.Property<DateTime?>("ExpiresDate")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IncludeDifferentBrands")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<bool>("IncludeDifferentPackSizes")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
 
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
@@ -1170,6 +1185,30 @@ namespace myshoppinglist_api.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("UserExtensionImportTasks");
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.UserPreferredShop", b =>
+                {
+                    b.Property<long>("UserAccountId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("ShopId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("boolean");
+
+                    b.HasKey("UserAccountId", "ShopId");
+
+                    b.HasIndex("ShopId");
+
+                    b.ToTable("UserPreferredShops", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_UserPreferredShops_Order", "\"DisplayOrder\" >= 0");
+                        });
                 });
 
             modelBuilder.Entity("myshoppinglist_api.Models.UserSession", b =>
@@ -1447,6 +1486,25 @@ namespace myshoppinglist_api.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("ProductImportJob");
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.UserPreferredShop", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.Shop", "Shop")
+                        .WithMany()
+                        .HasForeignKey("ShopId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", "UserAccount")
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Shop");
+
+                    b.Navigation("UserAccount");
                 });
 
             modelBuilder.Entity("myshoppinglist_api.Models.UserSession", b =>

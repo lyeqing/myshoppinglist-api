@@ -11,6 +11,9 @@ public class UserAccount
     public DateTime? ExpiresDate { get; set; }
     public bool IsActive { get; set; } = true;
     public bool IsPaid { get; set; }
+    public bool CompareOnlyPreferredShops { get; set; }
+    public bool IncludeDifferentPackSizes { get; set; } = true;
+    public bool IncludeDifferentBrands { get; set; }
     public bool ContributionEnabled { get; set; } = true;
     public bool ContributionBlocked { get; set; }
     public string? RestrictionReason { get; set; }

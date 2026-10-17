@@ -65,17 +65,18 @@ public sealed class PriceRefreshService(MyShoppingListDbContext db, TimeProvider
             await ProductService.LockCatalogueAsync(db, token);
             var now = clock.GetUtcNow();
             var utc = now.UtcDateTime;
-            var eligibleProducts = db.ShoppingListProducts.Where(i => !i.IsPurchased && !i.IsHidden
+            var eligibleItems = db.ShoppingListProducts.Where(i => !i.IsPurchased && !i.IsHidden
                 && (itemId == null || i.Id == itemId)
                 && !i.Product.IsDeleted && !i.ShoppingList.IsArchived
                 && (listId == null || i.ShoppingListId == listId && i.ShoppingList.UserAccountId == accountId)
                 && (i.ShoppingList.ExpiresDate == null || i.ShoppingList.ExpiresDate > utc)
                 && i.ShoppingList.UserAccount.IsActive
-                && (!i.ShoppingList.UserAccount.IsTrial || i.ShoppingList.UserAccount.ExpiresDate > utc))
-                .Select(i => i.ProductId);
+                && (!i.ShoppingList.UserAccount.IsTrial || i.ShoppingList.UserAccount.ExpiresDate > utc));
             var mappings = await db.ShopProducts.AsNoTracking().Include(m => m.Shop)
                 .Where(m => m.Id > cursor && m.IsActive && m.Shop.IsActive && m.MatchType == MatchType.Exact
-                    && (m.Shop.Code == "coles" || m.Shop.Code == "woolworths") && eligibleProducts.Contains(m.ProductId))
+                    && (m.Shop.Code == "coles" || m.Shop.Code == "woolworths")
+                    && eligibleItems.Any(i => i.ProductId == m.ProductId && (!i.ShoppingList.UserAccount.CompareOnlyPreferredShops
+                        || db.UserPreferredShops.Any(p => p.UserAccountId == i.ShoppingList.UserAccountId && p.ShopId == m.ShopId && p.IsEnabled))))
                 .OrderBy(m => m.Id).Take(200).ToArrayAsync(token);
             if (mappings.Length == 0) { await tx.CommitAsync(token); break; }
             var ids = mappings.Select(m => m.Id).ToArray();

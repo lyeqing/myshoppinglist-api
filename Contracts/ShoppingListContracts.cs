@@ -28,12 +28,12 @@ public sealed record ShoppingListComparison(long JobId, string Status, string? E
     bool CanRetry, ShoppingListRetailerCheck[] Retailers);
 public sealed record ShoppingListRetailerCheck(string Name, string Status, string? ErrorCode);
 public sealed record ShoppingListPlanningItem(ShoppingListItemResponse Item, ShoppingListPrice[] Prices,
-    ShoppingListComparison? Comparison = null);
+    ShoppingListComparison? Comparison = null, PackAlternative[]? PackAlternatives = null);
 public sealed record ShoppingListMissingItem(long ItemId, string Name, string Reason);
 public sealed record ShoppingListBasket(long? ShopId, string Name, decimal Subtotal, int PricedCount,
     ShoppingListMissingItem[] MissingItems);
 public sealed record ShoppingListPlan(long Id, string Name, ShoppingListPlanningItem[] Items,
-    ShoppingListBasket Lowest, ShoppingListBasket[] Retailers);
+    ShoppingListBasket Lowest, ShoppingListBasket[] Retailers, ComparisonStoreContext? StoreContext = null);
 
 // PUT replaces the editable fields; explicit null clears notes. The timestamp protects against stale edits.
 public sealed record ShoppingListItemUpdateRequest(

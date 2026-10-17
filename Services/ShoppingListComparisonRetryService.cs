@@ -18,25 +18,44 @@ public sealed class ShoppingListComparisonRetryService(MyShoppingListDbContext d
                 && newer.ShoppingListProductId == j.ShoppingListProductId && newer.Id > j.Id)).ToArrayAsync(ct);
         var latest = jobs.DistinctBy(j => j.ShoppingListProductId).ToArray();
         var ids = latest.Select(j => j.Id).ToArray();
+        var allowed = ShoppingPreferencesService.AllowedShops(db, accountId).Select(s => s.Id);
         var results = await db.ProductImportRetailerResults.AsNoTracking().Include(r => r.Shop)
-            .Where(r => ids.Contains(r.ProductImportJobId)).ToArrayAsync(ct);
+            .Where(r => ids.Contains(r.ProductImportJobId) && allowed.Contains(r.ShopId)).ToArrayAsync(ct);
+        var desiredShops = await ShoppingPreferencesService.AllowedShops(db, accountId).AsNoTracking()
+            .Where(s => s.Code == "coles" || s.Code == "woolworths").ToArrayAsync(ct);
         var taskIds = latest.Select(j => TaskId(j.ErrorCode)).OfType<long>().ToArray();
         var tasks = await db.ColesExtensionTasks.AsNoTracking().Where(t => taskIds.Contains(t.Id)).ToDictionaryAsync(t => t.Id, ct);
         return latest.ToDictionary(j => j.ShoppingListProductId!.Value, j =>
         {
-            var checks = results.Where(r => r.ProductImportJobId == j.Id && r.ShopId != j.SourceShopId
-                && r.Shop.Code is "coles" or "woolworths").ToArray();
-            var task = TaskId(j.ErrorCode) is { } id ? tasks.GetValueOrDefault(id) : null;
+            var running = j.Status is ProductImportJobStatus.Queued or ProductImportJobStatus.Processing;
+            // A newly selected retailer may have no row in an older import. Reads stay side-effect free;
+            // the existing explicit retry action starts its comparison only when the customer requests it.
+            var checks = desiredShops.Where(s => s.Id != j.SourceShopId).Select(shop =>
+            {
+                var stored = results.SingleOrDefault(r => r.ProductImportJobId == j.Id && r.ShopId == shop.Id);
+                if (stored is not null && (running || stored.Status is not (RetailerLookupStatus.Pending or RetailerLookupStatus.Checking))) return stored;
+                return new ProductImportRetailerResult
+                {
+                    ProductImportJobId = j.Id,
+                    ShopId = shop.Id,
+                    Shop = shop,
+                    Status = running ? RetailerLookupStatus.Pending : RetailerLookupStatus.CheckFailed,
+                    ErrorCode = running ? null : "comparison_not_checked"
+                };
+            }).ToArray();
+            var task = checks.Length > 0 && TaskId(j.ErrorCode) is { } id ? tasks.GetValueOrDefault(id) : null;
+            if (task is not null && (!Uri.TryCreate(task.Url, UriKind.Absolute, out var taskUrl)
+                || !checks.Any(r => taskUrl.Host == r.Shop.Domain || taskUrl.Host == "www." + r.Shop.Domain))) task = null;
             var failed = checks.Any(r => r.Status == RetailerLookupStatus.CheckFailed)
-                || j.Status == ProductImportJobStatus.Failed || task?.Status == "Failed";
-            var active = j.Status is ProductImportJobStatus.Queued or ProductImportJobStatus.Processing;
+                || checks.Length > 0 && (j.Status == ProductImportJobStatus.Failed || task?.Status == "Failed");
+            var active = checks.Length > 0 && running;
             var blocked = task?.ErrorCode == "retailer_access_restricted"
                 || checks.Any(r => r.ErrorCode == "retailer_access_restricted");
             DateTime? retryAfter = active ? j.NextAttemptDate : blocked
                 ? (task?.CompletedAt ?? j.CompletedDate ?? j.LastActivityDate ?? j.CreatedDate).AddMinutes(15) : null;
             if (task?.NextAttemptAt is { } due && (retryAfter is null || due > retryAfter)) retryAfter = due;
             return new ShoppingListComparison(j.Id, active ? "Checking" : failed ? "Failed" : "Completed",
-                task?.ErrorCode ?? checks.FirstOrDefault(r => r.Status == RetailerLookupStatus.CheckFailed)?.ErrorCode ?? j.ErrorCode,
+                !failed ? null : task?.ErrorCode ?? checks.FirstOrDefault(r => r.Status == RetailerLookupStatus.CheckFailed)?.ErrorCode ?? j.ErrorCode,
                 retryAfter, !active && failed && (retryAfter is null || retryAfter <= clock.GetUtcNow().UtcDateTime),
                 checks.Select(r => new ShoppingListRetailerCheck(r.Shop.Name, r.Status.ToString(), r.ErrorCode)).ToArray());
         });
@@ -62,10 +81,12 @@ public sealed class ShoppingListComparisonRetryService(MyShoppingListDbContext d
         if (!view.CanRetry) throw new UserImportException(409, view.RetryAfter > now
             ? "This comparison is cooling down. Please try again later." : "There is no failed comparison to retry.");
         var job = await db.ProductImportJobs.SingleAsync(j => j.Id == view.JobId, ct);
-        if (TaskId(job.ErrorCode) is { } taskId)
+        if (view.Retailers.Length > 0 && TaskId(job.ErrorCode) is { } taskId)
         {
             var task = await db.ColesExtensionTasks.SingleOrDefaultAsync(t => t.Id == taskId, ct);
-            if (task?.Status == "Failed") ColesExtensionTaskService.Reset(task);
+            if (task?.Status == "Failed" && Uri.TryCreate(task.Url, UriKind.Absolute, out var taskUrl)
+                && await ShoppingPreferencesService.AllowedShops(db, accountId).AnyAsync(s => s.Domain == taskUrl.Host || "www." + s.Domain == taskUrl.Host, ct))
+                ColesExtensionTaskService.Reset(task);
         }
         // Hand personal-extension failures to the normal queue. Existing item identity prevents source re-import.
         await db.UserExtensionImportTasks.Where(t => t.ProductImportJobId == job.Id).ExecuteDeleteAsync(ct);
@@ -79,7 +100,8 @@ public sealed class ShoppingListComparisonRetryService(MyShoppingListDbContext d
         job.ErrorCode = null;
         job.ErrorMessage = null;
         job.LastActivityDate = now;
-        await db.ProductImportRetailerResults.Where(r => r.ProductImportJobId == job.Id && r.ShopId != job.SourceShopId
+        var allowedRetry = ShoppingPreferencesService.AllowedShops(db, accountId).Select(s => s.Id);
+        await db.ProductImportRetailerResults.Where(r => r.ProductImportJobId == job.Id && r.ShopId != job.SourceShopId && allowedRetry.Contains(r.ShopId)
             && r.Status == RetailerLookupStatus.CheckFailed).ExecuteUpdateAsync(s => s
                 .SetProperty(r => r.Status, RetailerLookupStatus.Pending).SetProperty(r => r.ErrorCode, (string?)null)
                 .SetProperty(r => r.CompletedDate, (DateTime?)null).SetProperty(r => r.UpdatedDate, now), ct);

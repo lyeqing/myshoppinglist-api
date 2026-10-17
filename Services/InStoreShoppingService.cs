@@ -26,14 +26,24 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
         var items = await db.ShoppingListProducts.AsNoTracking().Where(i => ids.Contains(i.ShoppingListId)
             && !i.IsHidden && !i.Product.IsDeleted).Select(i => new { i.ShoppingListId, i.ProductId, i.IsPurchased }).ToArrayAsync(token);
         var productIds = items.Select(i => i.ProductId).Distinct().ToArray();
-        var mappings = await Mappings(productIds).ToArrayAsync(token);
+        var mappings = await Mappings(productIds, accountId).ToArrayAsync(token);
+        var preferred = await db.UserAccounts.AnyAsync(a => a.Id == accountId && a.CompareOnlyPreferredShops, token);
+        var preferredRetailers = preferred ? await PreferredRetailers(accountId, token) : null;
         return lists.Select(l => new InStoreList(l.Id, l.Name, items.Count(i => i.ShoppingListId == l.Id && !i.IsPurchased),
-            Retailers(mappings.Where(m => items.Any(i => i.ShoppingListId == l.Id && i.ProductId == m.ProductId))))).ToArray();
+            preferredRetailers ?? Retailers(mappings.Where(m => items.Any(i => i.ShoppingListId == l.Id && i.ProductId == m.ProductId))))).ToArray();
     }
 
-    private IQueryable<ShopProduct> Mappings(long[] ids) => db.ShopProducts.AsNoTracking().Include(m => m.Shop)
-        .Where(m => ids.Contains(m.ProductId) && m.IsActive && m.Shop.IsActive && m.MatchType == MatchType.Exact
-            && (m.Shop.Code == "coles" || m.Shop.Code == "woolworths"));
+    private Task<InStoreRetailer[]> PreferredRetailers(long accountId, CancellationToken token) =>
+        ShoppingPreferencesService.AllowedShops(db, accountId).Where(s => s.Code == "coles" || s.Code == "woolworths")
+            .OrderBy(s => s.Name).Select(s => new InStoreRetailer(s.Id, s.Name)).ToArrayAsync(token);
+
+    private IQueryable<ShopProduct> Mappings(long[] ids, long accountId)
+    {
+        var allowed = ShoppingPreferencesService.AllowedShops(db, accountId).Select(s => s.Id);
+        return db.ShopProducts.AsNoTracking().Include(m => m.Shop)
+            .Where(m => ids.Contains(m.ProductId) && m.IsActive && m.Shop.IsActive && m.MatchType == MatchType.Exact
+                && allowed.Contains(m.ShopId) && (m.Shop.Code == "coles" || m.Shop.Code == "woolworths"));
+    }
     private static InStoreRetailer[] Retailers(IEnumerable<ShopProduct> mappings) => mappings
         .Select(m => new InStoreRetailer(m.ShopId, m.Shop.Name)).Distinct().OrderBy(s => s.Name).ToArray();
 
@@ -44,11 +54,12 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
         if (list is null) return null;
         var items = await db.ShoppingListProducts.AsNoTracking().Include(i => i.Product)
             .Where(i => i.ShoppingListId == listId && !i.IsHidden && !i.Product.IsDeleted).OrderBy(i => i.Product.Name).ToArrayAsync(token);
-        var mappings = await Mappings(items.Select(i => i.ProductId).Distinct().ToArray()).ToArrayAsync(token);
+        var mappings = await Mappings(items.Select(i => i.ProductId).Distinct().ToArray(), accountId).ToArrayAsync(token);
         var mappingIds = mappings.Select(m => m.Id).ToArray();
         var prices = await db.ShopProductPrices.AsNoTracking().Where(p => mappingIds.Contains(p.ShopProductId)
             && p.ShopLocationId == null).ToArrayAsync(token);
         var refreshStatuses = await PriceRefreshService.ReadStatusesAsync(db, mappings, clock.GetUtcNow().UtcDateTime, token);
+        var alternatives = await new PackAlternativeService(db, clock).ReadAsync(accountId, items.Select(i => i.Product).ToArray(), token);
         var rows = items.Select(i => new InStoreItem(new(i.Id, i.ShoppingListId,
             new(i.Product.Id, i.Product.Name, i.Product.Brand, i.Product.Variant, i.Product.PackQuantity, i.Product.PackSize, i.Product.PackUnit, i.Product.ImageUrl),
             i.Quantity, i.Notes, i.IsPurchased, i.PurchasedDate, i.IsHidden, i.PreferredShopId, i.AddedDate, i.UpdatedDate),
@@ -63,10 +74,19 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
                     offer, status == "Fresh" ? PromotionCalculationService.Calculate(price!.Price, i.Quantity, offer) : null,
                     !i.IsPurchased ? refreshStatuses.GetValueOrDefault(mapping.Id) : null,
                     status != "Fresh" && price is { Currency: "AUD", Price: >= 0 } ? price.Price : null);
-            }).OrderBy(p => p.ShopName).ToArray())).ToArray();
+            }).OrderBy(p => p.ShopName).ToArray(), alternatives.GetValueOrDefault(i.ProductId, []))).ToArray();
         if (!await Accessible(accountId).AnyAsync(l => l.Id == listId, token)) return null;
+        var context = await ShoppingPreferencesService.ContextAsync(db, accountId, token);
+        var retailers = context.PreferredOnly ? await PreferredRetailers(accountId, token) : Retailers(mappings);
+        if (context.PreferredOnly)
+            rows = rows.Select(row => row with
+            {
+                Prices = retailers.Select(shop => row.Prices.FirstOrDefault(p => p.ShopId == shop.Id)
+                ?? new InStorePrice(shop.Id, shop.Name, null, "Match not checked", null)).ToArray()
+            }).ToArray();
+        var result = Summarize(list.Id, list.Name, retailers, rows) with { StoreContext = context };
         await transaction.CommitAsync(token);
-        return Summarize(list.Id, list.Name, Retailers(mappings), rows);
+        return result;
     }
 
     public static string PriceStatus(ShopProductPrice? price, DateTimeOffset now, CatalogueFreshnessService freshness)

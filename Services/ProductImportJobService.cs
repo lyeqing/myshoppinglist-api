@@ -171,8 +171,9 @@ public sealed class ProductImportJobService(MyShoppingListDbContext db, IOptions
             else
             {
                 if (job.ShoppingListProductId is null || job.SourceShopId is null) return false;
-                var shops = await db.Shops.Where(s => s.IsActive && s.Id != job.SourceShopId).Select(s => s.Id).ToListAsync(token);
-                var results = await db.ProductImportRetailerResults.Where(r => r.ProductImportJobId == job.Id).ToListAsync(token);
+                var shops = await ShoppingPreferencesService.AllowedShops(db, claim.UserAccountId).Where(s => s.Id != job.SourceShopId).Select(s => s.Id).ToListAsync(token);
+                var allowed = ShoppingPreferencesService.AllowedShops(db, claim.UserAccountId).Select(s => s.Id);
+                var results = await db.ProductImportRetailerResults.Where(r => r.ProductImportJobId == job.Id && (r.ShopId == job.SourceShopId || allowed.Contains(r.ShopId))).ToListAsync(token);
                 foreach (var shopId in shops)
                 {
                     var result = results.SingleOrDefault(r => r.ShopId == shopId);

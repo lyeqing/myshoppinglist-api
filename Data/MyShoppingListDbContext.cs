@@ -10,6 +10,7 @@ public class MyShoppingListDbContext(DbContextOptions<MyShoppingListDbContext> o
     public DbSet<AccountAdminAudit> AccountAdminAudits => Set<AccountAdminAudit>();
     public DbSet<UserExtensionImportTask> UserExtensionImportTasks => Set<UserExtensionImportTask>();
     public DbSet<ColesExtensionTask> ColesExtensionTasks => Set<ColesExtensionTask>();
+    public DbSet<UserPreferredShop> UserPreferredShops => Set<UserPreferredShop>();
     public DbSet<UserAccount> UserAccounts => Set<UserAccount>();
     public DbSet<UserSession> UserSessions => Set<UserSession>();
     public DbSet<ShoppingList> ShoppingLists => Set<ShoppingList>();

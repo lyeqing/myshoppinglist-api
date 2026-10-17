@@ -20,7 +20,7 @@ public sealed class RetailerComparisonService(IServiceScopeFactory scopes, IOpti
         var jobs = control.ServiceProvider.GetRequiredService<ProductImportJobService>();
         var job = await jobs.ReadAsync(claim, token);
         if (job?.ProductId is null || job.ShoppingListProductId is null) return;
-        var shopIds = await db.Shops.Where(s => s.IsActive && s.Id != job.SourceShopId).OrderBy(s => s.Id).Select(s => s.Id).ToListAsync(token);
+        var shopIds = await ShoppingPreferencesService.AllowedShops(db, claim.UserAccountId).Where(s => s.Id != job.SourceShopId).OrderBy(s => s.Id).Select(s => s.Id).ToListAsync(token);
         var retry = false;
         var extensionPending = false;
         ColesWorkFailedException? extensionFailure = null;
@@ -30,6 +30,7 @@ public sealed class RetailerComparisonService(IServiceScopeFactory scopes, IOpti
         {
             token.ThrowIfCancellationRequested();
             if (!await jobs.HasAccessAsync(claim, token)) break;
+            if (!await ShoppingPreferencesService.AllowsAsync(db, claim.UserAccountId, shopId, token)) continue;
             await using var scope = scopes.CreateAsyncScope();
             var services = scope.ServiceProvider;
             var store = services.GetRequiredService<RetailerComparisonPersistenceService>();
@@ -72,6 +73,7 @@ public sealed class RetailerComparisonService(IServiceScopeFactory scopes, IOpti
     private static async Task<ProviderFailure?> CheckAsync(IServiceProvider services, RetailerComparisonPersistenceService store,
         ProductImportClaim claim, long shopId, CancellationToken token)
     {
+        if (!await ShoppingPreferencesService.AllowsAsync(services.GetRequiredService<MyShoppingListDbContext>(), claim.UserAccountId, shopId, token)) return null;
         if (await store.TryCacheAsync(claim, shopId, token)) return null;
         var db = services.GetRequiredService<MyShoppingListDbContext>();
         var jobs = services.GetRequiredService<ProductImportJobService>();
@@ -90,6 +92,7 @@ public sealed class RetailerComparisonService(IServiceScopeFactory scopes, IOpti
         ExtractedShopProduct? selected = null;
         if (known.Count == 1)
         {
+            if (!await ShoppingPreferencesService.AllowsAsync(db, claim.UserAccountId, shopId, token)) return null;
             var fetched = await provider.GetProductFromUrlAsync(new Uri(known[0].ProductUrl), token);
             if (fetched is ProviderResult<ExtractedShopProduct>.Failure error) return error.Error;
             selected = ((ProviderResult<ExtractedShopProduct>.Success)fetched).Value;
@@ -99,6 +102,7 @@ public sealed class RetailerComparisonService(IServiceScopeFactory scopes, IOpti
         }
         else
         {
+            if (!await ShoppingPreferencesService.AllowsAsync(db, claim.UserAccountId, shopId, token)) return null;
             var search = await provider.SearchAsync(identity, null, token);
             if (search is ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Failure error) return error.Error;
             var candidates = ((ProviderResult<IReadOnlyList<ShopProductSearchResult>>.Success)search).Value;

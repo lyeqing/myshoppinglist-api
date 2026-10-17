@@ -81,7 +81,8 @@ public sealed class ProductImportSubmissionService(MyShoppingListDbContext db, P
             }
             db.ProductImportJobs.Add(job);
             if (userExtension) db.UserExtensionImportTasks.Add(new() { ProductImportJob = job, RequestId = userRequestId!.Value, Url = normalised, UpdatedDate = now });
-            var shopIds = await db.Shops.Where(s => s.IsActive).Select(s => s.Id).ToListAsync(token);
+            var allowed = ShoppingPreferencesService.AllowedShops(db, accountId).Select(s => s.Id);
+            var shopIds = await db.Shops.Where(s => s.IsActive && (s.Id == shop.Id || allowed.Contains(s.Id))).Select(s => s.Id).ToListAsync(token);
             foreach (var shopId in shopIds) db.ProductImportRetailerResults.Add(new()
             { ProductImportJob = job, ShopId = shopId, Status = RetailerLookupStatus.Pending, CreatedDate = now, UpdatedDate = now });
             await db.SaveChangesAsync(token);

@@ -9,6 +9,9 @@ public class UserAccountConfiguration : IEntityTypeConfiguration<UserAccount>
     public void Configure(EntityTypeBuilder<UserAccount> builder)
     {
         builder.HasKey(x => x.Id);
+        builder.Property(x => x.IncludeDifferentPackSizes).HasDefaultValue(true);
+        builder.Property(x => x.IncludeDifferentBrands).HasDefaultValue(false);
+        builder.Property(x => x.CompareOnlyPreferredShops).HasDefaultValue(false);
         builder.Property(x => x.ContributionEnabled).HasDefaultValue(true);
         builder.Property(x => x.RestrictionReason).HasMaxLength(1000);
         builder.Property(x => x.Id).UseIdentityByDefaultColumn();
