@@ -15,6 +15,12 @@ public static class AdminProductAlternativeEndpoints
             try { return await next(context); }
             catch (UserImportException error) { return Results.Problem(statusCode: error.Status, title: error.Message); }
         });
+        group.MapGet("/products", async (HttpContext context, BrandAlternativeService service, CancellationToken ct) =>
+        {
+            var values = context.Request.Query["search"];
+            if (values.Count != 1) return Results.Problem(statusCode: 400, title: "Send one product search value.");
+            return Results.Ok(await service.SearchAsync(long.Parse(context.User.FindFirstValue(ClaimTypes.NameIdentifier)!), values[0], ct));
+        });
         group.MapGet("/{productId:long}/{alternativeProductId:long}", async (long productId, long alternativeProductId,
             HttpContext context, BrandAlternativeService service, CancellationToken ct) =>
             Results.Ok(await service.ContextAsync(long.Parse(context.User.FindFirstValue(ClaimTypes.NameIdentifier)!),

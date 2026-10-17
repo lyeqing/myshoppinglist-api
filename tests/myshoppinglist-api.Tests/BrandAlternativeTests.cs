@@ -294,6 +294,49 @@ public class BrandAlternativeTests
         Assert.Equal(before, await list.ItemAsync());
     }
 
+    [PostgreSqlFact]
+    public async Task Catalogue_search_is_literal_bounded_and_includes_retired_records_for_review()
+    {
+        await using var f = await Fixture.CreateAsync();
+        Assert.Equal(f.Original.Id, Assert.Single((await f.Service.SearchAsync(f.AdminId, "ACME", default)).Items).Product.Id);
+        Assert.Equal(f.Alternative.Id, Assert.Single((await f.Service.SearchAsync(f.AdminId, f.Alternative.Id.ToString(), default)).Items).Product.Id);
+        Assert.Empty((await f.Service.SearchAsync(f.AdminId, "no-such-catalogue-product", default)).Items);
+        Assert.Empty((await f.Service.SearchAsync(f.AdminId, "%_", default)).Items);
+        Assert.Empty((await f.Service.SearchAsync(f.AdminId, "", default)).Items);
+        foreach (var bad in new string?[] { null, "a", "0", new string('x', 101), "co\nffee" })
+            Assert.Equal(400, (await Assert.ThrowsAsync<UserImportException>(() => f.Service.SearchAsync(f.AdminId, bad, default))).Status);
+        Assert.Equal(403, (await Assert.ThrowsAsync<UserImportException>(() => f.Service.SearchAsync(f.AccountId, "coffee", default))).Status);
+        await f.Db.Products.Where(p => p.Id == f.Alternative.Id).ExecuteUpdateAsync(s => s.SetProperty(p => p.IsDeleted, true));
+        Assert.True(Assert.Single((await f.Service.SearchAsync(f.AdminId, "Other", default)).Items).IsDeleted);
+        var now = f.List.Scope.Clock.Now.UtcDateTime;
+        f.Db.Products.AddRange(Enumerable.Range(0, 55).Select(i => new Product { Name = "Bounded search " + i.ToString("D2"), Brand = "Bounded", CreatedDate = now, UpdatedDate = now }));
+        await f.Db.SaveChangesAsync(); f.Db.ChangeTracker.Clear();
+        var results = await f.Service.SearchAsync(f.AdminId, "bounded", default);
+        Assert.Equal(50, results.Items.Length); Assert.True(results.HasMore);
+        Assert.Equal("Bounded search 00", results.Items[0].Product.Name);
+        Assert.False(await f.Db.PackDiscoveryJobs.AnyAsync());
+    }
+
+    [PostgreSqlFact]
+    public async Task Search_endpoint_requires_administrator_and_rejects_ambiguous_queries()
+    {
+        await using var f = await Fixture.CreateAsync();
+        var token = new string('a', 64); var user = new string('b', 64);
+        f.Db.UserSessions.AddRange(Session(f.AdminId, token), Session(f.AccountId, user)); await f.Db.SaveChangesAsync();
+        await using var app = new ContributionTestApp(f.AdminId); using var client = app.CreateClient();
+        const string path = "/api/admin/product-alternatives/products?search=coffee";
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync(path)).StatusCode);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", user);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync(path)).StatusCode);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        using var response = await client.GetAsync(path);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode); Assert.True(response.Headers.CacheControl?.NoStore);
+        Assert.Equal(2, (await response.Content.ReadFromJsonAsync<AdminAlternativeProductSearchResult>())!.Items.Length);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync(path + "&search=tea")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/admin/product-alternatives/products")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/admin/product-alternatives/products?search=a")).StatusCode);
+    }
+
     private static UserSession Session(long id, string token) => new() { UserAccountId = id, TokenHash = SessionToken.Hash(token), CreatedDate = DateTime.UtcNow, ExpiresDate = DateTime.UtcNow.AddHours(1) };
 
     private sealed class Fixture : IAsyncDisposable

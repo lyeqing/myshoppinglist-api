@@ -24,3 +24,7 @@ public sealed record BrandAlternativeReviewProduct(ShoppingListItemProductRespon
     string? ModelNumber, bool IsDeleted, string Fingerprint);
 public sealed record BrandAlternativeReviewContext(BrandAlternativeReviewProduct Product,
     BrandAlternativeReviewProduct AlternativeProduct, BrandAlternativeReviewResponse[] Reviews);
+
+public sealed record AdminAlternativeProductSearchItem(ShoppingListItemProductResponse Product,
+    string? Category, string? SubCategory, bool IsDeleted);
+public sealed record AdminAlternativeProductSearchResult(AdminAlternativeProductSearchItem[] Items, bool HasMore);

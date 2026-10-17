@@ -20,6 +20,25 @@ public sealed class BrandAlternativeService(MyShoppingListDbContext db, TimeProv
             throw new UserImportException(403, "Administrator access required.");
     }
 
+    public async Task<AdminAlternativeProductSearchResult> SearchAsync(long administrator, string? search, CancellationToken ct)
+    {
+        await AuthorizeAsync(administrator, ct);
+        var term = search?.Trim() ?? "";
+        if (search is not null && term.Length == 0 && search.Length <= 100) return new([], false);
+        var numeric = long.TryParse(term, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var id) && id > 0;
+        if (search is null || search.Length > 100 || term.Length < 2 && !numeric || term.Any(char.IsControl))
+            throw new UserImportException(400, "Enter at least two characters or a positive product ID, using at most 100 characters.");
+        var lower = term.ToLowerInvariant();
+        // Literal substring search: punctuation and SQL wildcard characters are not
+        // treated as patterns. Retired records stay searchable for withdrawal.
+        var products = await db.Products.AsNoTracking()
+            .Where(p => numeric ? p.Id == id : p.Name.ToLower().Contains(lower) || p.Brand != null && p.Brand.ToLower().Contains(lower))
+            .OrderBy(p => p.IsDeleted).ThenBy(p => p.Name).ThenBy(p => p.Id).Take(51)
+            .Select(p => new AdminAlternativeProductSearchItem(new(p.Id, p.Name, p.Brand, p.Variant,
+                p.PackQuantity, p.PackSize, p.PackUnit, p.ImageUrl), p.Category, p.SubCategory, p.IsDeleted)).ToArrayAsync(ct);
+        return new(products.Take(50).ToArray(), products.Length > 50);
+    }
+
     private static (long First, long Second) Pair(long first, long second)
     {
         if (first <= 0 || second <= 0 || first == second)
