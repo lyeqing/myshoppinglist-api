@@ -1466,6 +1466,71 @@ namespace myshoppinglist_api.Data.Migrations
                         });
                 });
 
+            modelBuilder.Entity("myshoppinglist_api.Models.UserProductActivity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime>("AddedDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("ProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("PurchasedDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("integer");
+
+                    b.Property<long?>("ShoppingListProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("UserAccountId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProductId");
+
+                    b.HasIndex("ShoppingListProductId")
+                        .IsUnique();
+
+                    b.HasIndex("UserAccountId", "ProductId");
+
+                    b.ToTable("UserProductActivities", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_UserProductActivities_Quantity", "\"Quantity\" > 0");
+                        });
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.UserProductPreference", b =>
+                {
+                    b.Property<long>("UserAccountId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("ProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("IsEssential")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsFavorite")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime>("UpdatedDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("UserAccountId", "ProductId");
+
+                    b.HasIndex("ProductId");
+
+                    b.ToTable("UserProductPreferences");
+                });
+
             modelBuilder.Entity("myshoppinglist_api.Models.UserSession", b =>
                 {
                     b.Property<long>("Id")
@@ -1864,6 +1929,51 @@ namespace myshoppinglist_api.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("ShopLocation");
+
+                    b.Navigation("UserAccount");
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.UserProductActivity", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.Product", "Product")
+                        .WithMany()
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.ShoppingListProduct", "ShoppingListProduct")
+                        .WithMany()
+                        .HasForeignKey("ShoppingListProductId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", "UserAccount")
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Product");
+
+                    b.Navigation("ShoppingListProduct");
+
+                    b.Navigation("UserAccount");
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.UserProductPreference", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.Product", "Product")
+                        .WithMany()
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", "UserAccount")
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Product");
 
                     b.Navigation("UserAccount");
                 });

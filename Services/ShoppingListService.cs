@@ -53,6 +53,7 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
                 UpdatedDate = now
             };
             db.ShoppingLists.Add(list);
+            await ProductLibraryService.SeedEssentialsAsync(db, list, token);
             await db.SaveChangesAsync(token);
             await transaction.CommitAsync(token);
             return new(list.Id, list.Name, list.CreatedDate, list.UpdatedDate);
@@ -268,6 +269,7 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
                 ExpiresDate = user.IsTrial ? user.ExpiresDate : null
             };
             db.ShoppingLists.Add(list);
+            if (!user.IsTrial) await ProductLibraryService.SeedEssentialsAsync(db, list, token);
             await db.SaveChangesAsync(token);
             if (user.IsTrial && !(user.ExpiresDate > clock.GetUtcNow().UtcDateTime)) return null;
             await transaction.CommitAsync(token);
@@ -324,6 +326,7 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
                 // PostgreSQL microsecond precision; successive edits must have distinct versions even with a frozen clock.
                 item.UpdatedDate = now > item.UpdatedDate ? now : item.UpdatedDate.AddTicks(10);
                 if (item.UpdatedDate > list!.UpdatedDate) list.UpdatedDate = item.UpdatedDate;
+                await ProductLibraryService.TrackActivityAsync(db, accountId, item, token);
                 await db.SaveChangesAsync(token);
             }
             if (!Accessible(user, list, accountId)) return Missing();

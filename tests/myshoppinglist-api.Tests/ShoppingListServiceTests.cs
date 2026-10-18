@@ -10,6 +10,29 @@ namespace myshoppinglist_api.Tests;
 public class ShoppingListServiceTests
 {
     [PostgreSqlFact]
+    public async Task ProductLibrary_essentials_seed_manual_and_automatic_lists_once_at_quantity_one()
+    {
+        await using var isolated = await IsolatedDatabaseScope.CreateAsync();
+        await using var f = await ListFixture.CreateAsync();
+        await RegisterFixtureAsync(f, false);
+        var original = await f.ItemAsync();
+        var library = new ProductLibraryService(f.Scope.Db, f.Scope.Clock);
+        await library.SavePreferenceAsync(f.Scope.UserId, original.Product.Id, new(f.Scope.UserId, "essential", true), default);
+        var created = await f.Service.CreateAsync(f.Scope.UserId, new("New essentials"), null, default);
+        var seeded = Assert.Single((await f.Service.ReadAsync(f.Scope.UserId, created.Id, null, 24, true, true, default))!.Items);
+        Assert.Equal(original.Product.Id, seeded.Product.Id); Assert.Equal(1, seeded.Quantity); Assert.False(seeded.IsPurchased); Assert.Null(seeded.Notes);
+        foreach (var list in (await f.Service.ManageAsync(f.Scope.UserId, default)).Lists)
+            await f.Service.ChangeListAsync(f.Scope.UserId, list.Id, new(list.UpdatedDate), false, default);
+        var automatic = (await f.Service.EnsureDefaultAsync(f.Scope.UserId, default))!.Value;
+        Assert.Equal(automatic, await f.Service.EnsureDefaultAsync(f.Scope.UserId, default));
+        Assert.Equal(1, Assert.Single((await f.Service.ReadAsync(f.Scope.UserId, automatic, null, 24, true, true, default))!.Items).Quantity);
+        await library.SavePreferenceAsync(f.Scope.UserId, original.Product.Id, new(f.Scope.UserId, "essential", false), default);
+        var empty = await f.Service.CreateAsync(f.Scope.UserId, new("No essentials"), null, default);
+        Assert.Empty((await f.Service.ReadAsync(f.Scope.UserId, empty.Id, null, 24, true, true, default))!.Items);
+        Assert.Single((await f.Service.ReadAsync(f.Scope.UserId, automatic, null, 24, true, true, default))!.Items);
+    }
+
+    [PostgreSqlFact]
     public async Task Plan_returns_latest_comparison_without_import_history_pagination()
     {
         await using var database = await IsolatedDatabaseScope.CreateAsync();

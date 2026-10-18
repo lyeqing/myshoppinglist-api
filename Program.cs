@@ -117,6 +117,7 @@ try
     builder.Services.AddScoped<ProductImportSubmissionService>();
     builder.Services.AddScoped<ProductImportStatusService>();
     builder.Services.AddScoped<ShoppingListService>();
+    builder.Services.AddScoped<ProductLibraryService>();
     builder.Services.AddScoped<ShoppingPreferencesService>();
     builder.Services.Configure<UserExtensionOptions>(builder.Configuration.GetSection(UserExtensionOptions.SectionName));
     builder.Services.AddScoped<InStoreShoppingService>();
@@ -209,6 +210,7 @@ try
     app.MapColesExtensionEndpoints();
     app.MapProductImportEndpoints();
     app.MapShoppingListEndpoints();
+    app.MapProductLibraryEndpoints();
     app.MapPackDiscoveryEndpoints();
     app.MapShoppingPreferencesEndpoints();
     app.MapGet("/", () => "MyShoppingList API").ExcludeFromDescription();

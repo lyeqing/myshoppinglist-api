@@ -93,6 +93,7 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
                 }
             }
             // Notes, purchased state and hidden state are preserved on every import.
+            await ProductLibraryService.TrackActivityAsync(db, userAccountId, item, token);
             job.Product = product; job.ShoppingListProduct = item; job.SourceShopId = shop.Id;
             job.LastActivityDate = now; job.ProgressStage = ProductImportProgressStage.CheckingRetailers;
             var retailerResult = await db.ProductImportRetailerResults.SingleOrDefaultAsync(r => r.ProductImportJobId == jobId && r.ShopId == shop.Id, token);

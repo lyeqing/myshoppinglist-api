@@ -16,6 +16,20 @@ namespace myshoppinglist_api.Tests;
 public class ProductPersistenceTests
 {
     [PostgreSqlFact]
+    public async Task ProductLibrary_import_retries_record_a_single_activity_and_keep_its_identity()
+    {
+        await using var isolated = await IsolatedDatabaseScope.CreateAsync();
+        await using var scope = await PersistenceScope.CreateAsync();
+        var first = await scope.SaveAsync();
+        var repeated = await scope.SaveAsync();
+        Assert.Equal(ProductPersistenceStatus.Success, first.Status);
+        Assert.Equal(first.ShoppingListProductId, repeated.ShoppingListProductId);
+        var activity = Assert.Single(await scope.Db.UserProductActivities.ToArrayAsync());
+        Assert.Equal(first.ShoppingListProductId, activity.ShoppingListProductId);
+        Assert.Equal(scope.UserId, activity.UserAccountId);
+    }
+
+    [PostgreSqlFact]
     public async Task Same_gtin_across_retailers_reuses_one_canonical_product()
     {
         await using var scope = await PersistenceScope.CreateAsync();
