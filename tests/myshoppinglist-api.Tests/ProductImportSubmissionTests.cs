@@ -14,7 +14,7 @@ namespace myshoppinglist_api.Tests;
 public class ProductImportSubmissionTests
 {
     [PostgreSqlFact]
-    public async Task Restricted_aldi_submissions_never_queue_import_or_extension_collection()
+    public async Task Aldi_requires_explicit_extension_import_and_a_valid_product_page()
     {
         await using var isolated = await IsolatedDatabaseScope.CreateAsync();
         await using var scope = await SubmissionScope.CreateAsync();
@@ -32,15 +32,15 @@ public class ProductImportSubmissionTests
             }
             foreach (var extension in new[] { false, true })
             {
-                var result = await service.SubmitAsync(scope.AccountId, scope.ListId, new("https://www.aldi.com.au/product/example"), default,
+                var result = await service.SubmitAsync(scope.AccountId, scope.ListId, new(AldiProductParserTests.Url), default,
                     userExtension: extension, userRequestId: extension ? Guid.NewGuid() : null);
-                Assert.Equal(400, result.StatusCode); Assert.Equal("source_restricted", result.ErrorCode);
-                Assert.Contains("unavailable for ALDI", result.Message!); Assert.Null(result.Response);
+                if (extension) { Assert.NotNull(result.Response); Assert.Equal(202, result.StatusCode); }
+                else { Assert.Equal(400, result.StatusCode); Assert.Equal("extension_required", result.ErrorCode); Assert.Contains("using the extension", result.Message!); }
             }
         }
         Assert.Equal(0, provider.CallCount);
-        Assert.False(await scope.Db.ProductImportJobs.AnyAsync(j => j.ShoppingListId == scope.ListId));
-        Assert.False(await scope.Db.UserExtensionImportTasks.AnyAsync(t => t.ProductImportJob.ShoppingListId == scope.ListId));
+        Assert.Single(await scope.Db.ProductImportJobs.Where(j => j.ShoppingListId == scope.ListId).ToArrayAsync());
+        Assert.Single(await scope.Db.UserExtensionImportTasks.Where(t => t.ProductImportJob.ShoppingListId == scope.ListId).ToArrayAsync());
     }
 
     [PostgreSqlFact]

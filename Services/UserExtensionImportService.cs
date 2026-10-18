@@ -20,7 +20,7 @@ public sealed record UserImportCandidate(string Url, ColesEvidence Evidence);
 public sealed class UserExtensionImportService(MyShoppingListDbContext db, ProductImportSubmissionService submissions,
     SourceProductPersistenceService sourcePersistence, RetailerComparisonPersistenceService comparisons,
     ProductImportJobService jobs, ProductUrlValidator urls, ColesProductParser coles, WoolworthsProductParser woolworths,
-    ProductMatchingService matching, TimeProvider clock, IHttpContextAccessor? http = null)
+    ProductMatchingService matching, TimeProvider clock, IHttpContextAccessor? http = null, Providers.Aldi.AldiProductParser? aldi = null)
 {
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
     private async Task<long> Observe(long account, long? job, string url, CancellationToken ct)
@@ -55,6 +55,8 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
     {
         if (await db.UserAccounts.AnyAsync(a => a.Id == account && a.ContributionBlocked, ct))
         {
+            if (urls.Validate(request.Url).Retailer?.Code == "aldi")
+                throw new UserImportException(403, "ALDI imports are unavailable for this account because page contributions are disabled.");
             var queued = await submissions.SubmitAsync(account, request.ListId, new(request.Url, request.Quantity), ct);
             if (queued.Response is null) throw new UserImportException(queued.StatusCode, queued.Message ?? "Could not queue import.");
             await QueueTrusted(account, queued.Response.JobId, ct);
@@ -95,6 +97,9 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
         {
             if (task.Stage != "source" && task.Status == "Waiting" && await OtherShop(job, ct) is null)
                 return await Complete(task, job, await Claim(job, ct), ct);
+            if (task.Stage != "source" && task.Status == "Waiting" && await OtherShop(job, ct) is { } other
+                && urls.Validate(task.Url).Retailer?.Code != other.Code)
+                return await BeginComparison(task, job, await Claim(job, ct), ct);
             return View(task, job);
         }, ct);
 
@@ -108,6 +113,10 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
         if (job.ShoppingListProductId is null) throw new UserImportException(409, "Open the original product page and click Add again to read it.");
         if (task.Status != "Failed" && job.Status is not (ProductImportJobStatus.Partial or ProductImportJobStatus.Failed)) return View(task, job);
         var claim = await Claim(job, ct);
+        var allowed = ShoppingPreferencesService.AllowedShops(db, job.UserAccountId).Select(s => s.Id);
+        await db.ProductImportRetailerResults.Where(r => r.ProductImportJobId == job.Id && r.ShopId != job.SourceShopId
+            && allowed.Contains(r.ShopId) && (r.Status == RetailerLookupStatus.CheckFailed || r.Status == RetailerLookupStatus.Unavailable))
+            .ExecuteUpdateAsync(s => s.SetProperty(r => r.Status, RetailerLookupStatus.Pending).SetProperty(r => r.ErrorCode, (string?)null), ct);
         var other = await OtherShop(job, ct);
         if (other is null) return await Complete(task, job, claim, ct);
         await db.ProductImportRetailerResults.Where(r => r.ProductImportJobId == job.Id && r.ShopId == other.Id)
@@ -136,8 +145,9 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
         var claim = await Claim(job, ct);
         var other = await OtherShop(job, ct);
         if (other is null) return await Complete(task, job, claim, ct);
+        if (urls.Validate(task.Url).Retailer?.Code != other.Code) return await BeginComparison(task, job, claim, ct);
         if (await db.ProductImportRetailerResults.AnyAsync(r => r.ProductImportJobId == job.Id && r.ShopId == other.Id
-            && r.Status == RetailerLookupStatus.Exact, ct)) return await Complete(task, job, claim, ct);
+            && r.Status == RetailerLookupStatus.Exact, ct)) return await BeginComparison(task, job, claim, ct);
         if (!result.Ok && result.ErrorCode is "retailer_access_restricted" or "read_timeout"
             or "tab_closed" or "network_error" or "browser_error")
             return await Fail(task, job, claim, result.ErrorCode, ct);
@@ -203,16 +213,17 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
             await comparisons.SaveStatusAsync(claim, other.Id, exact.Count > 1 ? RetailerLookupStatus.Possible : RetailerLookupStatus.NotFound,
                 exact.Count > 1 ? "ambiguous_match" : "no_exact_match", ct);
         }
-        return await Complete(task, job, claim, ct);
+        return await BeginComparison(task, job, claim, ct);
     }, ct);
 
     private async Task<UserExtensionWork> BeginComparison(UserExtensionImportTask task, ProductImportJob job, ProductImportClaim claim, CancellationToken ct)
     {
         var other = await OtherShop(job, ct);
         if (other is null) return await Complete(task, job, claim, ct);
+        task.LinksJson = "[]"; task.MatchesJson = "[]"; task.HadFailures = false;
         var existing = await db.ProductImportRetailerResults.AsNoTracking().SingleOrDefaultAsync(r => r.ProductImportJobId == job.Id && r.ShopId == other.Id, ct);
         if (existing?.Status == RetailerLookupStatus.Exact || await comparisons.TryCacheAsync(claim, other.Id, ct))
-            return await Complete(task, job, claim, ct);
+            return await BeginComparison(task, job, claim, ct);
         var product = await db.Products.AsNoTracking().SingleAsync(p => p.Id == job.ProductId, ct);
         var known = await db.ShopProducts.AsNoTracking().Where(p => p.ProductId == product.Id && p.ShopId == other.Id
             && p.IsActive && p.MatchType == MatchType.Exact).ToArrayAsync(ct);
@@ -240,10 +251,13 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
 
     private async Task<UserExtensionWork> Complete(UserExtensionImportTask task, ProductImportJob job, ProductImportClaim claim, CancellationToken ct)
     {
-        var unsupported = await ShoppingPreferencesService.AllowedShops(db, job.UserAccountId).Where(s => s.Code != "coles" && s.Code != "woolworths").Select(s => s.Id).ToArrayAsync(ct);
+        var unsupported = await ShoppingPreferencesService.AllowedShops(db, job.UserAccountId).Where(s => s.Id != job.SourceShopId && s.Code != "coles" && s.Code != "woolworths").Select(s => s.Id).ToArrayAsync(ct);
         foreach (var shop in unsupported) await comparisons.SaveStatusAsync(claim, shop, RetailerLookupStatus.NotSupported, "not_supported", ct);
         if (!await jobs.CompleteSourceStageAsync(claim, ct)) throw new UserImportException(409, "The import changed. Refresh its progress.");
-        task.Status = "Completed"; task.Stage = "complete"; task.ErrorCode = null; task.MatchesJson = "[]";
+        var selected = ShoppingPreferencesService.AllowedShops(db, job.UserAccountId).Select(s => s.Id);
+        var failed = await db.ProductImportRetailerResults.AnyAsync(r => r.ProductImportJobId == job.Id && r.ShopId != job.SourceShopId
+            && selected.Contains(r.ShopId) && (r.Status == RetailerLookupStatus.CheckFailed || r.Status == RetailerLookupStatus.Unavailable), ct);
+        task.Status = failed ? "Failed" : "Completed"; task.Stage = "complete"; task.ErrorCode = failed ? "comparison_checks_failed" : null; task.MatchesJson = "[]";
         return await SaveView(task, job, ct);
     }
 
@@ -253,6 +267,7 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
         {
             var other = await OtherShop(job, ct);
             if (other is not null) await comparisons.SaveStatusAsync(claim, other.Id, RetailerLookupStatus.CheckFailed, code, ct);
+            if (await OtherShop(job, ct) is not null) return await BeginComparison(task, job, claim, ct);
             await jobs.CompleteSourceStageAsync(claim, ct);
         }
         else await jobs.FailAsync(claim, code, false, ct);
@@ -261,7 +276,9 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
     }
 
     private Task<Shop?> OtherShop(ProductImportJob job, CancellationToken ct) => ShoppingPreferencesService.AllowedShops(db, job.UserAccountId).AsNoTracking()
-        .SingleOrDefaultAsync(s => s.Id != job.SourceShopId && (s.Code == "coles" || s.Code == "woolworths"), ct);
+        .Where(s => s.Id != job.SourceShopId && (s.Code == "coles" || s.Code == "woolworths")
+            && !db.ProductImportRetailerResults.Any(r => r.ProductImportJobId == job.Id && r.ShopId == s.Id && r.Status != RetailerLookupStatus.Pending && r.Status != RetailerLookupStatus.Checking))
+        .OrderBy(s => s.Id).FirstOrDefaultAsync(ct);
 
     private async Task<ProductImportClaim> Claim(ProductImportJob job, CancellationToken ct)
     {
@@ -278,6 +295,12 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
     {
         var valid = urls.Validate(url);
         if (!valid.IsValid) throw new UserImportException(400, "Invalid product URL.");
+        if (valid.Retailer!.Code == "aldi")
+        {
+            var result = (aldi ?? new()).Parse(valid.ProductUrl!, evidence, clock.GetUtcNow());
+            if (result is ProviderResult<ExtractedShopProduct>.Success accepted) return accepted.Value;
+            throw new UserImportException(400, ((ProviderResult<ExtractedShopProduct>.Failure)result).Error.Message);
+        }
         var html = ColesExtensionTaskService.EvidenceHtml(evidence, valid.Retailer!.Code);
         if (html is null) throw new UserImportException(400, "Invalid product evidence.");
         var page = new RetailerPage(valid.ProductUrl!, html, clock.GetUtcNow());

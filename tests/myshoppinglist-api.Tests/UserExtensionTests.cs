@@ -24,6 +24,47 @@ public class UserExtensionTests
 {
     private const string ExtensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     [PostgreSqlFact]
+    public async Task Aldi_import_saves_once_checks_both_retailers_and_retries_only_failed_comparisons()
+    {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
+        await using var f = await ListFixture.CreateAsync();
+        await using var app = new ExtensionFactory(f);
+        using var scope = app.Services.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<UserExtensionImportService>();
+        var request = new UserExtensionStart(f.Scope.ListId, AldiProductParserTests.Url, 3, AldiProductParserTests.Evidence(), Guid.NewGuid());
+        var work = await service.StartAsync(f.Scope.UserId, request, default);
+        Assert.True(work.SourceSaved); Assert.Equal("Waiting", work.Status);
+        var duplicate = await service.StartAsync(f.Scope.UserId, request, default);
+        Assert.Equal(work.JobId, duplicate.JobId);
+        var retailers = new HashSet<string>();
+        var failed = false;
+        for (var i = 0; i < 15 && work.Status == "Waiting"; i++)
+        {
+            var host = new Uri(work.Url!).Host; retailers.Add(host);
+            if (!failed) { failed = true; work = await service.ResultAsync(f.Scope.UserId, work.JobId, new(work.StepToken, work.Url!, false, ErrorCode: "read_timeout"), default); }
+            else work = await service.ResultAsync(f.Scope.UserId, work.JobId, new(work.StepToken, work.Url!, true, Links: [], EmptyConfirmed: true), default);
+        }
+        Assert.Contains("www.coles.com.au", retailers); Assert.Contains("www.woolworths.com.au", retailers);
+        Assert.Equal("Failed", work.Status); Assert.True(work.SourceSaved);
+        var saved = Assert.Single((await f.Service.ReadAsync(f.Scope.UserId, f.Scope.ListId, null, 50, true, true, default))!.Items, i => i.Product.Brand == "FARMDALE");
+        Assert.Equal(3, saved.Quantity);
+        var source = await f.Scope.Db.ProductImportRetailerResults.Include(r => r.Shop).SingleAsync(r => r.ProductImportJobId == work.JobId && r.Shop.Code == "aldi");
+        Assert.Equal(RetailerLookupStatus.Exact, source.Status);
+        var retry = await service.RetryAsync(f.Scope.UserId, work.JobId, default);
+        for (var i = 0; i < 15 && retry.Status == "Waiting"; i++)
+        {
+            Assert.Equal("www.coles.com.au", new Uri(retry.Url!).Host);
+            retry = await service.ResultAsync(f.Scope.UserId, retry.JobId, new(retry.StepToken, retry.Url!, true, Links: [], EmptyConfirmed: true), default);
+        }
+        Assert.Equal("Completed", retry.Status);
+        Assert.Equal(1, await f.Scope.Db.ShoppingListProducts.CountAsync(i => i.ShoppingListId == f.Scope.ListId && i.ProductId == saved.Product.Id));
+        await f.Scope.Db.UserAccounts.Where(a => a.Id == f.Scope.UserId).ExecuteDeleteAsync();
+        await f.Scope.Db.ShopProductPrices.Where(p => p.ShopProduct.ProductId == saved.Product.Id).ExecuteDeleteAsync();
+        await f.Scope.Db.ShopProductPriceHistory.Where(p => p.ShopProduct.ProductId == saved.Product.Id).ExecuteDeleteAsync();
+        await f.Scope.Db.ShopProducts.Where(p => p.ProductId == saved.Product.Id).ExecuteDeleteAsync();
+        await f.Scope.Db.Products.Where(p => p.Id == saved.Product.Id).ExecuteDeleteAsync();
+    }
+    [PostgreSqlFact]
     public async Task Known_links_refresh_both_retailers_and_reject_changed_or_ambiguous_identity()
     {
         await using var database = await IsolatedDatabaseScope.CreateAsync();

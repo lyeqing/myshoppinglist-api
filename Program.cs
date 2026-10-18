@@ -170,6 +170,7 @@ try
     builder.Services.AddSingleton<ColesProductParser>();
     builder.Services.AddScoped<IShopProductProvider, ColesProductProvider>();
     builder.Services.AddSingleton<WoolworthsProductParser>();
+    builder.Services.AddSingleton<myshoppinglist_api.Providers.Aldi.AldiProductParser>();
     builder.Services.AddScoped<IShopProductProvider, WoolworthsProductProvider>();
     builder.Services.AddScoped(services => new RetailerProviderRegistry(services.GetRequiredService<RetailerCatalog>(),
         services.GetServices<IShopProductProvider>()));

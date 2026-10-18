@@ -31,9 +31,10 @@ public class RetailerProviderRegistryTests
         Assert.Equal("Supported", registry.FindByCode("coles")!.CapabilityStatus);
         Assert.Equal("Supported", registry.FindByCode("woolworths")!.CapabilityStatus);
         var restricted = registry.FindByHost("www.aldi.com.au")!;
-        Assert.Equal("Restricted", restricted.CapabilityStatus);
+        Assert.Equal("ExtensionOnly", restricted.CapabilityStatus);
+        Assert.True(restricted.SupportsExtensionImports);
         Assert.False(restricted.IsImplemented); Assert.Null(restricted.Provider);
-        Assert.Contains("unavailable for ALDI", restricted.CapabilityMessage);
+        Assert.Contains("using the extension", restricted.CapabilityMessage);
         Assert.Equal(0, aldi.CallCount);
         foreach (var code in new[] { "iga", "foodland" })
             Assert.Equal("NotImplemented", registry.FindByCode(code)!.CapabilityStatus);

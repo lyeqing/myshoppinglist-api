@@ -52,7 +52,7 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
         if (blocked)
         {
             state.BlockedAt = [.. state.BlockedAt.Where(t => t > Now.AddMinutes(-Limits.BlockedWindowMinutes)), Now];
-            if (state.PausedUntil is not null || state.BlockedAt.Length >= Limits.BlockedThreshold)
+            if (task.ErrorCode == "human_verification_required" || state.PausedUntil is not null || state.BlockedAt.Length >= Limits.BlockedThreshold)
             {
                 state.PausedUntil = Now.AddMinutes(Limits.PauseMinutes);
                 state.ProbeToken = null; state.ProbeExpiresAt = null;
@@ -218,9 +218,9 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
         var leaseExpiresAt = task.LeaseExpiresAt;
         if (!submission.Ok)
         {
-            var restricted = submission.ErrorCode == "retailer_access_restricted";
+            var restricted = submission.ErrorCode is "retailer_access_restricted" or "human_verification_required";
             var retryable = restricted || submission.ErrorCode is "read_timeout" or "browser_error" or "tab_closed" or "network_error";
-            task.ErrorCode = submission.ErrorCode is "retailer_access_restricted" or "invalid_product_evidence"
+            task.ErrorCode = submission.ErrorCode is "retailer_access_restricted" or "human_verification_required" or "invalid_product_evidence"
                 or "same_barcode_conflict" or "existing_mapping_conflict" or "ambiguous_canonical_product"
                 or "product_identity_conflict" or "invalid_product_link" or "invalid_search_result"
                 or "ambiguous_retailer_mapping" or "unverified_mapping" or "invalid_offer"
@@ -290,7 +290,7 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
             task.ResultJson = html; task.Status = "Completed"; task.CompletedAt = Now; task.LeaseExpiresAt = null;
         }
         task.SubmissionHash = digest;
-        var transition = await RecordWorkloadResultAsync(task, !submission.Ok && submission.ErrorCode == "retailer_access_restricted", token);
+        var transition = await RecordWorkloadResultAsync(task, !submission.Ok && (submission.ErrorCode is "retailer_access_restricted" or "human_verification_required"), token);
         await db.SaveChangesAsync(token);
         if (leaseExpiresAt <= Now) return "claim_lost";
         if (task.Status is "Completed" or "Failed")

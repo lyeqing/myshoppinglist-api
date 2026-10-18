@@ -20,10 +20,12 @@ public sealed class ProductImportSubmissionService(MyShoppingListDbContext db, P
         var validated = urls.Validate(request.Url);
         if (!validated.IsValid) return new(null, 400, "invalid_url", "Enter a valid HTTPS product URL from a supported retailer.");
         var capability = providers.FindByCode(validated.Retailer!.Code);
-        if (capability?.CapabilityStatus == "Restricted")
-            return new(null, 400, "source_restricted", capability.CapabilityMessage);
-        if (capability?.IsImplemented != true)
+        if (capability?.CapabilityStatus == "ExtensionOnly" && !userExtension)
+            return new(null, 400, "extension_required", capability.CapabilityMessage);
+        if (capability?.IsImplemented != true && !(userExtension && capability?.SupportsExtensionImports == true))
             return new(null, 400, "source_not_supported", "Source imports from this retailer are not implemented yet.");
+        if (validated.Retailer.Code == "aldi" && Providers.Aldi.AldiProductParser.ProductCode(validated.ProductUrl!) is null)
+            return new(null, 400, "invalid_product_url", "Open an ALDI product page to add it with the extension.");
         var normalised = validated.ProductUrl!.AbsoluteUri;
         // Submission never acquires catalogue locks. Account -> list is the same relative order as worker writes.
         await using var transaction = await db.Database.BeginTransactionAsync(token);

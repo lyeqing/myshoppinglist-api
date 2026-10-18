@@ -16,6 +16,26 @@ namespace myshoppinglist_api.Tests;
 public class ColesExtensionTaskTests
 {
     [PostgreSqlFact]
+    public async Task Human_verification_immediately_pauses_only_affected_retailer_and_is_idempotent()
+    {
+        await using var database = await IsolatedDatabaseScope.CreateAsync();
+        await using var f = new Fixture();
+        var id = await QueueAsync(f);
+        var claim = (await f.Service.ClaimAsync(id, "worker", default))!;
+        var result = new ColesTaskSubmission("worker", claim.ClaimToken, claim.Url, false, ErrorCode: "human_verification_required");
+        Assert.Null(await f.Service.SubmitAsync(id, result, default));
+        Assert.Null(await f.Service.SubmitAsync(id, result, default));
+        var state = await f.Db.RetailerWorkloadStates.AsNoTracking().SingleAsync();
+        Assert.Single(state.BlockedAt);
+        Assert.Equal(f.Clock.Now.UtcDateTime.AddMinutes(15), state.PausedUntil);
+        Assert.Null(await f.Service.ClaimAsync(await QueueAsync(f), "other", default));
+        Assert.NotNull(await f.Service.ClaimAsync(await QueueAsync(f, "woolworths"), "wool", default));
+        var task = await f.Db.ColesExtensionTasks.AsNoTracking().SingleAsync(t => t.Id == id);
+        Assert.Equal("human_verification_required", task.ErrorCode);
+        Assert.Null(task.ResultJson);
+    }
+
+    [PostgreSqlFact]
     public async Task In_flight_success_does_not_cancel_pause_and_probe_timeout_does_not_resume_work()
     {
         await using var database = await IsolatedDatabaseScope.CreateAsync();
