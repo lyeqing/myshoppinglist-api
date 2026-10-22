@@ -24,15 +24,15 @@ public sealed record ShoppingListQuantityPrice(int Quantity, decimal Total, deci
     decimal Savings, int AppliedBundles, int RemainingQuantity);
 public sealed record ShoppingListPrice(long ShopId, string ShopName, decimal? Price, bool IncludedInTotal,
     string Status, string? ProductUrl, DateTime? CheckedDate, string? SpecialDescription,
-    string? RefreshStatus = null, ShoppingListMultibuy? Multibuy = null, ShoppingListQuantityPrice? QuantityPrice = null, PriceObservationContext? Observation = null);
+    string? RefreshStatus = null, ShoppingListMultibuy? Multibuy = null, ShoppingListQuantityPrice? QuantityPrice = null, PriceObservationContext? Observation = null, ShoppingListSubstitutionChoice? Substitution = null);
 public sealed record ShoppingListComparison(long JobId, string Status, string? ErrorCode, DateTime? RetryAfter,
     bool CanRetry, ShoppingListRetailerCheck[] Retailers);
 public sealed record ShoppingListRetailerCheck(string Name, string Status, string? ErrorCode);
 public sealed record ShoppingListPlanningItem(ShoppingListItemResponse Item, ShoppingListPrice[] Prices,
-    ShoppingListComparison? Comparison = null, PackAlternative[]? PackAlternatives = null, BrandAlternative[]? BrandAlternatives = null);
+    ShoppingListComparison? Comparison = null, PackAlternative[]? PackAlternatives = null, BrandAlternative[]? BrandAlternatives = null, ShoppingListSubstitutionChoice[]? Substitutions = null);
 public sealed record ShoppingListMissingItem(long ItemId, string Name, string Reason);
 public sealed record ShoppingListBasket(long? ShopId, string Name, decimal Subtotal, int PricedCount,
-    ShoppingListMissingItem[] MissingItems);
+    ShoppingListMissingItem[] MissingItems, int NeedsChoiceCount = 0, int SubstitutionCount = 0);
 public sealed record ShoppingListPlan(long Id, string Name, ShoppingListPlanningItem[] Items,
     ShoppingListBasket Lowest, ShoppingListBasket[] Retailers, ComparisonStoreContext? StoreContext = null);
 
@@ -43,3 +43,11 @@ public sealed record ShoppingListItemUpdateRequest(
     [property: JsonRequired] bool IsPurchased,
     [property: JsonRequired] bool IsHidden,
     [property: JsonRequired] DateTime ExpectedUpdatedDate);
+
+public sealed record ShoppingListSubstitutionRequest(
+    [property: JsonRequired] long ExpectedAccountId,
+    [property: JsonRequired] long? AlternativeProductId,
+    [property: JsonRequired] int Quantity,
+    [property: JsonRequired] DateTime ExpectedUpdatedDate);
+public sealed record ShoppingListSubstitutionChoice(long ShopId, string ShopName, ShoppingListItemProductResponse Product,
+    int Quantity, string Status, DateTime UpdatedDate, PackComparisonPrice? Offer, ShoppingListMultibuy? Multibuy = null);

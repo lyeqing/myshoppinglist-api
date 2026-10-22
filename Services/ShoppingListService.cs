@@ -165,6 +165,8 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
                     offer, status == "Fresh" ? PromotionCalculationService.Calculate(price!.Price, item.Quantity, offer) : null,
                     PriceObservationContextService.From(price, mapping.Shop.Code));
             }).OrderBy(p => p.ShopName).ToArray(), comparisons.GetValueOrDefault(item.Id), alternatives.GetValueOrDefault(item.ProductId, []), brandAlternatives.GetValueOrDefault(item.ProductId, []))).ToArray();
+        var substitutions = await new ShoppingListSubstitutionService(db, clock).ReadAsync(accountId, listId, items, brandAlternatives, token);
+        rows = rows.Select(row => ShoppingListSubstitutionService.Apply(row, substitutions.GetValueOrDefault(row.Item.Id, []))).ToArray();
         if (!Accessible(list?.UserAccount, list, accountId)) return null;
         var plan = SummarizePlan(list!.Id, list.Name, rows, shops.Select(s => (s.Id, s.Name)).ToArray());
         plan = plan with { StoreContext = await ShoppingPreferencesService.ContextAsync(db, accountId, token, clock) };
@@ -180,20 +182,27 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
             decimal subtotal = 0;
             var count = 0;
             var missing = new List<ShoppingListMissingItem>();
+            var needsChoice = 0; var substitutionCount = 0;
             foreach (var row in items)
             {
                 var available = row.Prices.Where(p => shopId is null || p.ShopId == shopId).ToArray();
-                decimal Total(ShoppingListPrice p) => PromotionCalculationService.Calculate(p.Price!.Value, row.Item.Quantity, p.Multibuy).Total;
+                decimal Total(ShoppingListPrice p) => PromotionCalculationService.Calculate(p.Price!.Value, p.Substitution?.Quantity ?? row.Item.Quantity, p.Multibuy).Total;
                 var best = available.Where(p => p.IncludedInTotal && p.Price.HasValue).OrderBy(Total).FirstOrDefault();
                 if (best is not null)
                 {
                     subtotal += Total(best);
                     count++;
+                    if (best.Substitution is not null) substitutionCount++;
                 }
-                else missing.Add(new(row.Item.Id, row.Item.Product.Name,
-                    shopId is null ? "No current comparable price" : available.FirstOrDefault()?.Status ?? "No price available"));
+                else
+                {
+                    var choiceAvailable = (row.BrandAlternatives ?? []).Any(a => (shopId is null || a.Offer.ShopId == shopId) && a.Offer.Status == "Fresh" && a.Offer.Price.HasValue);
+                    if (choiceAvailable) needsChoice++;
+                    missing.Add(new(row.Item.Id, row.Item.Product.Name, choiceAvailable ? "Alternative available — choose a product"
+                        : shopId is null ? "No current comparable price" : available.FirstOrDefault()?.Status ?? "No price available"));
+                }
             }
-            return new(shopId, title, subtotal, count, missing.ToArray());
+            return new(shopId, title, subtotal, count, missing.ToArray(), needsChoice, substitutionCount);
         }
         return new(id, name, items, Basket(null, "Lowest total across shops"), shops.Select(s => Basket(s.Id, s.Name)).ToArray());
     }

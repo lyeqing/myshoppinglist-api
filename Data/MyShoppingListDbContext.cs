@@ -5,6 +5,7 @@ namespace myshoppinglist_api.Data;
 
 public class MyShoppingListDbContext(DbContextOptions<MyShoppingListDbContext> options) : DbContext(options)
 {
+    public DbSet<ShoppingListItemSubstitution> ShoppingListItemSubstitutions => Set<ShoppingListItemSubstitution>();
     public DbSet<BrandDiscoveryJob> BrandDiscoveryJobs => Set<BrandDiscoveryJob>();
     public DbSet<ProductBrandSuggestion> ProductBrandSuggestions => Set<ProductBrandSuggestion>();
     public DbSet<UserProductPreference> UserProductPreferences => Set<UserProductPreference>();

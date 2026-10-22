@@ -9,6 +9,13 @@ public static class ShoppingListEndpoints
 {
     public static void MapShoppingListEndpoints(this IEndpointRouteBuilder routes)
     {
+        routes.MapPut("/api/shopping-lists/{listId:long}/items/{itemId:long}/substitutions/{shopId:long}",
+            (long listId, long itemId, long shopId, ShoppingListSubstitutionRequest request, HttpContext context,
+                myshoppinglist_api.Data.MyShoppingListDbContext db, TimeProvider clock, CancellationToken token) => ListAction(context, async () =>
+            {
+                await new ShoppingListSubstitutionService(db, clock).ChangeAsync(AccountId(context), listId, itemId, shopId, request, token);
+                return Results.NoContent();
+            })).RequireAuthorization().RequireRateLimiting(ProductImportEndpoints.SubmissionRatePolicy);
         routes.MapPost("/api/shopping-lists/{listId:long}/items/{itemId:long}/retry-comparison",
             (long listId, long itemId, HttpContext context, myshoppinglist_api.Data.MyShoppingListDbContext db,
                 TimeProvider clock, CancellationToken token) => ListAction(context, async () => Results.Ok(

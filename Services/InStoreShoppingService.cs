@@ -29,8 +29,13 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
         var mappings = await Mappings(productIds, accountId).ToArrayAsync(token);
         var preferred = await db.UserAccounts.AnyAsync(a => a.Id == accountId && a.CompareOnlyPreferredShops, token);
         var preferredRetailers = preferred ? await PreferredRetailers(accountId, token) : null;
+        var originals = await db.Products.AsNoTracking().Where(p => productIds.Contains(p.Id)).ToArrayAsync(token);
+        var suggestions = preferred ? new Dictionary<long, BrandAlternative[]>()
+            : await BrandAlternativeService.ReadForProductsAsync(db, clock, accountId, originals, token);
         return lists.Select(l => new InStoreList(l.Id, l.Name, items.Count(i => i.ShoppingListId == l.Id && !i.IsPurchased),
-            preferredRetailers ?? Retailers(mappings.Where(m => items.Any(i => i.ShoppingListId == l.Id && i.ProductId == m.ProductId))))).ToArray();
+            preferredRetailers ?? Retailers(mappings.Where(m => items.Any(i => i.ShoppingListId == l.Id && i.ProductId == m.ProductId)))
+                .Concat(items.Where(i => i.ShoppingListId == l.Id).SelectMany(i => suggestions.GetValueOrDefault(i.ProductId, []))
+                    .Select(a => new InStoreRetailer(a.Offer.ShopId, a.Offer.ShopName))).Distinct().OrderBy(s => s.Name).ToArray())).ToArray();
     }
 
     private Task<InStoreRetailer[]> PreferredRetailers(long accountId, CancellationToken token) =>
@@ -86,6 +91,12 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
                 Prices = retailers.Select(shop => row.Prices.FirstOrDefault(p => p.ShopId == shop.Id)
                 ?? new InStorePrice(shop.Id, shop.Name, null, "Match not checked", null)).ToArray()
             }).ToArray();
+        var substitutions = await new ShoppingListSubstitutionService(db, clock).ReadAsync(accountId, listId, items, brandAlternatives, token);
+        rows = rows.Select(row => ShoppingListSubstitutionService.Apply(row, substitutions.GetValueOrDefault(row.Item.Id, []))).ToArray();
+        if (!context.PreferredOnly)
+            retailers = retailers.Concat(rows.SelectMany(r => r.BrandAlternatives ?? []).Select(a => new InStoreRetailer(a.Offer.ShopId, a.Offer.ShopName)))
+                .Concat(rows.SelectMany(r => r.Substitutions ?? []).Select(s => new InStoreRetailer(s.ShopId, s.ShopName)))
+                .Distinct().OrderBy(s => s.Name).ToArray();
         var result = Summarize(list.Id, list.Name, retailers, rows) with { StoreContext = context };
         await transaction.CommitAsync(token);
         return result;
@@ -126,8 +137,8 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
     {
         var remaining = items.Where(i => !i.Item.IsPurchased && !i.Item.IsHidden).ToArray();
         var priced = remaining.Where(i => i.Prices.Any(p => p.Price.HasValue)).ToArray();
-        var comparable = remaining.Where(i => retailers.Length >= 2 && retailers.All(s => i.Prices.Any(p => p.ShopId == s.Id && p.Price.HasValue))).ToArray();
-        decimal LineTotal(InStoreItem i, InStorePrice p) => PromotionCalculationService.Calculate(p.Price!.Value, i.Item.Quantity, p.Multibuy).Total;
+        var comparable = remaining.Where(i => !i.Prices.Any(p => p.Substitution is not null) && retailers.Length >= 2 && retailers.All(s => i.Prices.Any(p => p.ShopId == s.Id && p.Price.HasValue))).ToArray();
+        decimal LineTotal(InStoreItem i, InStorePrice p) => PromotionCalculationService.Calculate(p.Price!.Value, p.Substitution?.Quantity ?? i.Item.Quantity, p.Multibuy).Total;
         decimal Cheapest(InStoreItem i) => i.Prices.Where(p => p.Price.HasValue).Min(p => LineTotal(i, p));
         var split = comparable.Sum(Cheapest);
         var baskets = retailers.Select(s =>
@@ -135,7 +146,10 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
             var available = remaining.Where(i => i.Prices.Any(p => p.ShopId == s.Id && p.Price.HasValue)).ToArray();
             decimal Cost(InStoreItem i) => LineTotal(i, i.Prices.Single(p => p.ShopId == s.Id));
             var total = comparable.Sum(Cost);
-            return new InStoreBasket(s.Id, s.Name, available.Sum(Cost), available.Length, total, total - split);
+            var needsChoice = remaining.Count(i => !i.Prices.Any(p => p.ShopId == s.Id && p.Price.HasValue)
+                && (i.BrandAlternatives ?? []).Any(a => a.Offer.ShopId == s.Id && a.Offer.Status == "Fresh" && a.Offer.Price.HasValue));
+            return new InStoreBasket(s.Id, s.Name, available.Sum(Cost), available.Length, total, total - split,
+                needsChoice, available.Count(i => i.Prices.Any(p => p.ShopId == s.Id && p.Substitution is not null)));
         }).ToArray();
         return new(id, name, retailers, items, remaining.Length, baskets, priced.Sum(Cheapest), priced.Length, comparable.Length, split);
     }

@@ -1332,6 +1332,67 @@ namespace myshoppinglist_api.Data.Migrations
                     b.ToTable("ShoppingLists", (string)null);
                 });
 
+            modelBuilder.Entity("myshoppinglist_api.Models.ShoppingListItemSubstitution", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("AlternativeFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("OriginalFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<long>("ProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("ShopId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("ShopProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("ShoppingListId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("ShoppingListProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime>("UpdatedDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("UserAccountId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ShopId");
+
+                    b.HasIndex("ShopProductId");
+
+                    b.HasIndex("ShoppingListId", "UserAccountId");
+
+                    b.HasIndex("ShoppingListProductId", "ShopId")
+                        .IsUnique();
+
+                    b.HasIndex("ShoppingListProductId", "ShoppingListId", "ProductId");
+
+                    b.ToTable("ShoppingListItemSubstitutions", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ShoppingListItemSubstitutions_Quantity", "\"Quantity\" BETWEEN 1 AND 999");
+                        });
+                });
+
             modelBuilder.Entity("myshoppinglist_api.Models.ShoppingListProduct", b =>
                 {
                     b.Property<long>("Id")
@@ -2034,6 +2095,43 @@ namespace myshoppinglist_api.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("UserAccount");
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.ShoppingListItemSubstitution", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.Shop", "Shop")
+                        .WithMany()
+                        .HasForeignKey("ShopId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.ShopProduct", "ShopProduct")
+                        .WithMany()
+                        .HasForeignKey("ShopProductId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.ShoppingList", "ShoppingList")
+                        .WithMany()
+                        .HasForeignKey("ShoppingListId", "UserAccountId")
+                        .HasPrincipalKey("Id", "UserAccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.ShoppingListProduct", "ShoppingListProduct")
+                        .WithMany()
+                        .HasForeignKey("ShoppingListProductId", "ShoppingListId", "ProductId")
+                        .HasPrincipalKey("Id", "ShoppingListId", "ProductId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Shop");
+
+                    b.Navigation("ShopProduct");
+
+                    b.Navigation("ShoppingList");
+
+                    b.Navigation("ShoppingListProduct");
                 });
 
             modelBuilder.Entity("myshoppinglist_api.Models.ShoppingListProduct", b =>

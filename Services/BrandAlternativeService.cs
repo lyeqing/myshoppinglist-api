@@ -171,11 +171,11 @@ public sealed class BrandAlternativeService(MyShoppingListDbContext db, TimeProv
     // Catalogue-only query shared by planning and in-store views. This method cannot
     // dispatch retailer work and never returns reviewer identity or private evidence.
     public static async Task<Dictionary<long, BrandAlternative[]>> ReadForProductsAsync(MyShoppingListDbContext db,
-        TimeProvider clock, long accountId, Product[] originals, CancellationToken ct)
+        TimeProvider clock, long accountId, Product[] originals, CancellationToken ct, bool respectDisplayPreference = true)
     {
         var result = new Dictionary<long, BrandAlternative[]>();
         var now = clock.GetUtcNow();
-        if (!await db.UserAccounts.AnyAsync(a => a.Id == accountId && a.IsActive && a.IncludeDifferentBrands
+        if (!await db.UserAccounts.AnyAsync(a => a.Id == accountId && a.IsActive && (!respectDisplayPreference || a.IncludeDifferentBrands)
             && (!a.IsTrial || a.ExpiresDate > now.UtcDateTime), ct)) return result;
         result = await ReadSuggestionsAsync(db, clock, accountId, originals, ct);
         var originalIds = originals.Select(p => p.Id).Distinct().ToArray();
@@ -193,7 +193,7 @@ public sealed class BrandAlternativeService(MyShoppingListDbContext db, TimeProv
         var allowed = ShoppingPreferencesService.AllowedShops(db, accountId).Select(s => s.Id);
         var mappings = await db.ShopProducts.AsNoTracking().Include(m => m.Shop).Where(m => ids.Contains(m.ProductId)
             && m.IsActive && m.Shop.IsActive && m.MatchType == MatchType.Exact && allowed.Contains(m.ShopId)
-            && (m.Shop.Code == "coles" || m.Shop.Code == "woolworths")).ToArrayAsync(ct);
+            && (m.Shop.Code == "coles" || m.Shop.Code == "woolworths" || originalIds.Contains(m.ProductId) && m.Shop.Code == "aldi")).ToArrayAsync(ct);
         var mappingIds = mappings.Select(m => m.Id).ToArray();
         var observations = await db.ShopProductPrices.AsNoTracking().Where(p => mappingIds.Contains(p.ShopProductId)
             && p.ShopLocationId == null).GroupBy(p => p.ShopProductId)
@@ -220,17 +220,17 @@ public sealed class BrandAlternativeService(MyShoppingListDbContext db, TimeProv
             var original = products[originalId];
             var quantity = packs.Read(ProductMatchingService.Identity(original))!;
             var baseline = UniqueMappings(originalId).Select(m => Price(m, quantity))
-                .Where(p => p.Status == "Fresh" && p.Price.HasValue).OrderBy(p => p.Price).ThenBy(p => p.ShopId).FirstOrDefault();
+                .Where(p => p.Price.HasValue).OrderBy(p => p.Status != "Fresh").ThenBy(p => p.Status == "Fresh" ? p.Price : null).ThenByDescending(p => p.CheckedDate).ThenBy(p => p.ShopId).FirstOrDefault();
             var alternatives = new List<BrandAlternative>();
             foreach (var relationship in relationships)
             {
                 var candidate = products[relationship.ProductId == originalId ? relationship.AlternativeProductId : relationship.ProductId];
                 var candidateQuantity = packs.Read(ProductMatchingService.Identity(candidate))!;
-                foreach (var mapping in UniqueMappings(candidate.Id))
+                foreach (var mapping in UniqueMappings(candidate.Id).Where(m => m.Shop.Code == "coles" || m.Shop.Code == "woolworths"))
                 {
                     var offer = Price(mapping, candidateQuantity);
                     if (offer.Price is null) continue;
-                    var comparable = baseline is not null && offer.Status == "Fresh";
+                    var comparable = baseline is { Status: "Fresh" } && offer.Status == "Fresh";
                     alternatives.Add(new("EquivalentDifferentBrand", "Similar product — different brand",
                         new(candidate.Id, candidate.Name, candidate.Brand, candidate.Variant, candidate.PackQuantity, candidate.PackSize, candidate.PackUnit, candidate.ImageUrl),
                         candidateQuantity.Total, candidateQuantity.Unit, candidateQuantity.Total / quantity.Total, offer, baseline,
@@ -267,13 +267,25 @@ public sealed class BrandAlternativeService(MyShoppingListDbContext db, TimeProv
                     r.ProductId == s.BrandDiscoveryJob.ProductId && r.AlternativeProductId == s.AlternativeProductId
                     || r.AlternativeProductId == s.BrandDiscoveryJob.ProductId && r.ProductId == s.AlternativeProductId))
             .ToArrayAsync(ct);
-        var mappingIds = suggestions.Select(s => s.ShopProductId).Distinct().ToArray();
+        var originalMappings = await db.ShopProducts.AsNoTracking().Include(m => m.Shop).Where(m => ids.Contains(m.ProductId)
+            && m.IsActive && m.Shop.IsActive && m.MatchType == MatchType.Exact && allowed.Contains(m.ShopId)).ToArrayAsync(ct);
+        var mappingIds = suggestions.Select(s => s.ShopProductId).Concat(originalMappings.Select(m => m.Id)).Distinct().ToArray();
         var prices = await db.ShopProductPrices.AsNoTracking().Where(p => mappingIds.Contains(p.ShopProductId) && p.ShopLocationId == null)
             .GroupBy(p => p.ShopProductId).Select(g => g.OrderByDescending(p => p.CheckedDate).ThenByDescending(p => p.Id).First()).ToDictionaryAsync(p => p.ShopProductId, ct);
         var packs = new PackComparisonService(); var matcher = new BrandSuggestionMatchingService();
         foreach (var original in originals)
         {
             var quantity = packs.Read(ProductMatchingService.Identity(original)); if (quantity is null) continue;
+            var originalOffers = originalMappings.Where(m => m.ProductId == original.Id).GroupBy(m => m.ShopId)
+                .Where(g => g.Count() == 1).Select(g => g.Single()).Where(m => prices.ContainsKey(m.Id)).Select(m =>
+                {
+                    var p = prices[m.Id];
+                    var state = p.CheckedDate > now.UtcDateTime ? "Unverified price date" : InStoreShoppingService.PriceStatus(p, now, new CatalogueFreshnessService());
+                    var amount = p.Currency == "AUD" && p.Price >= 0 ? p.Price : (decimal?)null;
+                    return new PackComparisonPrice(m.ShopId, m.Shop.Name, amount, amount.HasValue ? PackComparisonService.UnitPrice(amount.Value, quantity) : null,
+                        state, p.CheckedDate, m.ProductUrl, PriceObservationContextService.From(p, m.Shop.Code));
+                }).Where(o => o.Price.HasValue).OrderBy(o => o.Status != "Fresh").ThenByDescending(o => o.CheckedDate).ToArray();
+            var baseline = originalOffers.FirstOrDefault();
             var rows = new List<BrandAlternative>();
             foreach (var suggestion in suggestions.Where(s => s.BrandDiscoveryJob.ProductId == original.Id).DistinctBy(s => s.ShopProductId))
             {
@@ -286,7 +298,9 @@ public sealed class BrandAlternativeService(MyShoppingListDbContext db, TimeProv
                     price.CheckedDate, mapping.ProductUrl, PriceObservationContextService.From(price, mapping.Shop.Code));
                 rows.Add(new("SuggestedDifferentBrand", "Suggested alternative — check suitability",
                     new(candidate.Id, candidate.Name, candidate.Brand, candidate.Variant, candidate.PackQuantity, candidate.PackSize, candidate.PackUnit, candidate.ImageUrl),
-                    size.Total, size.Unit, size.Total / quantity.Total, offer, null, null, null));
+                    size.Total, size.Unit, size.Total / quantity.Total, offer, baseline,
+                    baseline is { Status: "Fresh", UnitPrice: not null } && status == "Fresh" ? PackComparisonService.DifferencePercent(baseline.UnitPrice.Value, offer.UnitPrice!.Value) : null,
+                    baseline is { Status: "Fresh", Price: not null } && status == "Fresh" ? offer.Price - baseline.Price : null));
             }
             if (rows.Count > 0) result[original.Id] = rows.OrderBy(a => a.Offer.Status != "Fresh").ThenBy(a => a.Product.Name).ThenBy(a => a.Offer.ShopId).ToArray();
         }
