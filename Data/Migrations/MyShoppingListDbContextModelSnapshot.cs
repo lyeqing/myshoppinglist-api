@@ -59,6 +59,88 @@ namespace myshoppinglist_api.Data.Migrations
                     b.ToTable("AccountAdminAudits");
                 });
 
+            modelBuilder.Entity("myshoppinglist_api.Models.BrandDiscoveryJob", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid?>("ClaimToken")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("CompletedDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CreatedDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ErrorCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<long?>("FailedTaskId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("FoundCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("LeaseExpiresDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("NextAttemptDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("ProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("ShopId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("ShoppingListId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("ShoppingListProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<DateTime>("UpdatedDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("UserAccountId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ShopId");
+
+                    b.HasIndex("ShoppingListId", "UserAccountId");
+
+                    b.HasIndex("Status", "NextAttemptDate");
+
+                    b.HasIndex("ShoppingListProductId", "ShoppingListId", "ProductId");
+
+                    b.HasIndex("UserAccountId", "ShoppingListProductId", "ShopId")
+                        .IsUnique();
+
+                    b.ToTable("BrandDiscoveryJobs", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_BrandDiscoveryJobs_Claim", "(\"Status\" = 'Processing' AND \"ClaimToken\" IS NOT NULL AND \"LeaseExpiresDate\" IS NOT NULL) OR (\"Status\" <> 'Processing' AND \"ClaimToken\" IS NULL AND \"LeaseExpiresDate\" IS NULL)");
+
+                            t.HasCheckConstraint("CK_BrandDiscoveryJobs_Counts", "\"Attempts\" >= 0 AND \"FoundCount\" >= 0");
+
+                            t.HasCheckConstraint("CK_BrandDiscoveryJobs_Status", "\"Status\" IN ('Queued','Processing','WaitingForExtension','Completed','Failed','Cancelled')");
+                        });
+                });
+
             modelBuilder.Entity("myshoppinglist_api.Models.ColesExtensionTask", b =>
                 {
                     b.Property<long>("Id")
@@ -447,6 +529,38 @@ namespace myshoppinglist_api.Data.Migrations
 
                             t.HasCheckConstraint("CK_ProductAlternatives_OrderedPair", "\"ProductId\" < \"AlternativeProductId\"");
                         });
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.ProductBrandSuggestion", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<long>("AlternativeProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("BrandDiscoveryJobId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime>("DiscoveredDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("ShopProductId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AlternativeProductId");
+
+                    b.HasIndex("ShopProductId");
+
+                    b.HasIndex("BrandDiscoveryJobId", "AlternativeProductId")
+                        .IsUnique();
+
+                    b.ToTable("ProductBrandSuggestions");
                 });
 
             modelBuilder.Entity("myshoppinglist_api.Models.ProductImportJob", b =>
@@ -1615,6 +1729,43 @@ namespace myshoppinglist_api.Data.Migrations
                         });
                 });
 
+            modelBuilder.Entity("myshoppinglist_api.Models.BrandDiscoveryJob", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.Shop", "Shop")
+                        .WithMany()
+                        .HasForeignKey("ShopId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", "UserAccount")
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.ShoppingList", "ShoppingList")
+                        .WithMany()
+                        .HasForeignKey("ShoppingListId", "UserAccountId")
+                        .HasPrincipalKey("Id", "UserAccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.ShoppingListProduct", "ShoppingListProduct")
+                        .WithMany()
+                        .HasForeignKey("ShoppingListProductId", "ShoppingListId", "ProductId")
+                        .HasPrincipalKey("Id", "ShoppingListId", "ProductId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Shop");
+
+                    b.Navigation("ShoppingList");
+
+                    b.Navigation("ShoppingListProduct");
+
+                    b.Navigation("UserAccount");
+                });
+
             modelBuilder.Entity("myshoppinglist_api.Models.PackDiscoveryJob", b =>
                 {
                     b.HasOne("myshoppinglist_api.Models.Shop", "Shop")
@@ -1680,6 +1831,33 @@ namespace myshoppinglist_api.Data.Migrations
                     b.Navigation("AlternativeProduct");
 
                     b.Navigation("Product");
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.ProductBrandSuggestion", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.Product", "AlternativeProduct")
+                        .WithMany()
+                        .HasForeignKey("AlternativeProductId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.BrandDiscoveryJob", "BrandDiscoveryJob")
+                        .WithMany()
+                        .HasForeignKey("BrandDiscoveryJobId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.ShopProduct", "ShopProduct")
+                        .WithMany()
+                        .HasForeignKey("ShopProductId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("AlternativeProduct");
+
+                    b.Navigation("BrandDiscoveryJob");
+
+                    b.Navigation("ShopProduct");
                 });
 
             modelBuilder.Entity("myshoppinglist_api.Models.ProductImportJob", b =>

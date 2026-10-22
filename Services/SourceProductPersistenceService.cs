@@ -121,6 +121,8 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
                 retailerResult.ErrorMessage = source.Offer is null ? "The product was identified, but a price was not checked." : null;
             }
             await db.SaveChangesAsync(token);
+            await BrandDiscoveryService.EnqueueAddedAsync(db, item, product, user!, now, token);
+            await db.SaveChangesAsync(token);
             // Time may have elapsed while waiting for database locks. Never commit an expired lease or trial.
             eligibility = Eligibility(user, list, job, claimToken);
             if (eligibility is not null) return eligibility;

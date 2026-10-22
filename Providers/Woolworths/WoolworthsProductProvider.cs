@@ -9,8 +9,11 @@ namespace myshoppinglist_api.Providers.Woolworths;
 
 public sealed class WoolworthsProductProvider(RetailerHttpClient http, WoolworthsProductParser parser,
     ProductUrlValidator validator, ILogger<WoolworthsProductProvider> logger,
-    IRetailerSearchBrowser? searchBrowser = null, IOptions<RetailerSearchOptions>? searchOptions = null, IWoolworthsExtensionQueue? extension = null) : IShopProductProvider, IPackSizeSearchProvider
+    IRetailerSearchBrowser? searchBrowser = null, IOptions<RetailerSearchOptions>? searchOptions = null, IWoolworthsExtensionQueue? extension = null) : IShopProductProvider, IPackSizeSearchProvider, IBrandAlternativeSearchProvider
 {
+    public Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchAlternativeBrandsAsync(string query, CancellationToken token) =>
+        SearchPackSizesAsync(query, token);
+
     public string ShopCode => "woolworths";
 
     public async Task<ProviderResult<ExtractedShopProduct>> GetProductFromUrlAsync(Uri productUrl, CancellationToken cancellationToken)

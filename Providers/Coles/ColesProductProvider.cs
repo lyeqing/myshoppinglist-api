@@ -4,8 +4,11 @@ using myshoppinglist_api.Services;
 namespace myshoppinglist_api.Providers.Coles;
 
 // Coles is exclusively served by the catalogue/extension queue. No HTTP/browser fallback.
-public sealed class ColesProductProvider(IColesExtensionQueue queue) : IShopProductProvider, IPackSizeSearchProvider
+public sealed class ColesProductProvider(IColesExtensionQueue queue) : IShopProductProvider, IPackSizeSearchProvider, IBrandAlternativeSearchProvider
 {
+    public Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchAlternativeBrandsAsync(string query, CancellationToken token) =>
+        SearchPackSizesAsync(query, token);
+
     public string ShopCode => "coles";
     public Task<ProviderResult<IReadOnlyList<ShopProductSearchResult>>> SearchPackSizesAsync(string familyQuery, CancellationToken token)
     {
