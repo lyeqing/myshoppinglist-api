@@ -12,16 +12,47 @@ namespace myshoppinglist_api.Services;
 public sealed class PriceService(MyShoppingListDbContext db, IOptions<PriceOptions> options,
     TimeProvider clock, ProductUrlValidator urls)
 {
-    public async Task<PriceUpdateResult> SaveAsync(ShopProduct mapping, ShopProductOffer offer, CancellationToken token, long? observation = null)
+    public Task<PriceUpdateResult> SaveAsync(ShopProduct mapping, ShopProductOffer offer, CancellationToken token, long? observation = null) =>
+        SaveCoreAsync(null, mapping, offer, token, observation);
+
+    public Task<PriceUpdateResult> SavePersonalAsync(long accountId, ShopProduct mapping, ShopProductOffer offer,
+        CancellationToken token, long? observation = null)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(accountId);
+        return SaveCoreAsync(accountId, mapping, offer, token, observation);
+    }
+
+    private async Task<PriceUpdateResult> SaveCoreAsync(long? accountId, ShopProduct mapping, ShopProductOffer offer,
+        CancellationToken token, long? observation)
     {
         await ProductService.LockCatalogueAsync(db, token);
+        if (mapping.UserAccountId != accountId || !await db.ShopProducts.AsNoTracking().AnyAsync(p => p.Id == mapping.Id
+            && p.UserAccountId == accountId && p.Product.UserAccountId == accountId
+            && p.ProductId == mapping.ProductId && p.ShopId == mapping.ShopId && p.ProductUrl == mapping.ProductUrl, token))
+            return Invalid("mapping_owner_mismatch");
+        if (accountId is { } owner)
+        {
+            var accountNow = clock.GetUtcNow().UtcDateTime;
+            if (!await db.UserAccounts.AnyAsync(a => a.Id == owner && a.IsActive && (!a.IsTrial || a.ExpiresDate > accountNow), token))
+                return Invalid("inactive_account");
+            if (observation is null) return Invalid("personal_observation_required");
+            if (offer.SourceType != SourceType.BrowserExtension) return Invalid("personal_capture_required");
+        }
         if (observation is { } observed) {
-            var contributor = await db.ContributionObservations.Where(o => o.Id == observed).Select(o => o.UserAccountId).SingleAsync(token);
-            if (contributor is { } account && !await db.UserAccounts.AnyAsync(a => a.Id == account && a.IsActive && !a.ContributionBlocked, token))
+            var provenance = await db.ContributionObservations.AsNoTracking().SingleOrDefaultAsync(o => o.Id == observed, token);
+            if (provenance is null) return Invalid("invalid_observation");
+            if (accountId is not null && (provenance.UserAccountId != accountId || provenance.Source != "PersonalAdd"
+                || provenance.Url != mapping.ProductUrl || provenance.ImportJobId is { } job
+                    && !await db.ProductImportJobs.AnyAsync(j => j.Id == job && j.UserAccountId == accountId, token)))
+                return Invalid("observation_owner_mismatch");
+            if (accountId is null && provenance.UserAccountId is { } account
+                && !await db.UserAccounts.AnyAsync(a => a.Id == account && a.IsActive && !a.ContributionBlocked, token))
                 return Invalid("contribution_blocked");
         }
         var shop = await db.Shops.SingleAsync(s => s.Id == mapping.ShopId, token);
         var sourceUrl = urls.Validate(offer.SourceUrl.OriginalString);
+        if (accountId is not null && sourceUrl.ProductUrl?.AbsoluteUri != mapping.ProductUrl)
+            return Invalid("observation_product_mismatch");
         if (!string.Equals(offer.ShopCode, shop.Code, StringComparison.OrdinalIgnoreCase) || !sourceUrl.IsValid
             || sourceUrl.Retailer!.Code != shop.Code || !Amount(offer.Price) || !Amount(offer.NormalPrice) || !Amount(offer.UnitPrice)
             || offer.Currency.Length != 3 || !offer.Currency.All(char.IsAsciiLetter)
@@ -49,7 +80,7 @@ public sealed class PriceService(MyShoppingListDbContext db, IOptions<PriceOptio
         var checkedDate = StorageTime(offer.CheckedDate);
         var specialStart = offer.SpecialStartDate is { } start ? StorageTime(start) : (DateTime?)null;
         var specialEnd = offer.SpecialEndDate is { } end ? StorageTime(end) : (DateTime?)null;
-        var current = await db.ShopProductPrices.SingleOrDefaultAsync(p => p.ShopProductId == mapping.Id
+        var current = await db.ShopProductPrices.SingleOrDefaultAsync(p => p.UserAccountId == accountId && p.ShopProductId == mapping.Id
             && p.ShopLocationId == locationId && p.PriceScope == offer.PriceScope && p.Currency == currency, token);
         if (current?.CheckedDate > checkedDate) return new(PriceUpdateStatus.OlderObservation);
         var changed = current is null || current.Price != offer.Price || current.NormalPrice != offer.NormalPrice
@@ -57,7 +88,7 @@ public sealed class PriceService(MyShoppingListDbContext db, IOptions<PriceOptio
             || current.SpecialDescription != offer.SpecialDescription || current.SpecialStartDate != specialStart
             || current.SpecialEndDate != specialEnd;
         if (current?.CheckedDate == checkedDate && changed) return Invalid("conflicting_observation");
-        var latestHistory = await db.ShopProductPriceHistory.Where(p => p.ShopProductId == mapping.Id
+        var latestHistory = await db.ShopProductPriceHistory.Where(p => p.UserAccountId == accountId && p.ShopProductId == mapping.Id
             && p.ShopLocationId == locationId && p.PriceScope == offer.PriceScope && p.Currency == currency)
             .MaxAsync(p => (DateTime?)p.CheckedDate, token);
         var recordHistory = changed || latestHistory is null || checkedDate - latestHistory >= TimeSpan.FromHours(options.Value.HistorySampleHours);
@@ -72,7 +103,7 @@ public sealed class PriceService(MyShoppingListDbContext db, IOptions<PriceOptio
         }
         if (current is null)
         {
-            current = new() { ShopProductId = mapping.Id, ShopLocationId = locationId, Currency = currency, PriceScope = offer.PriceScope, CreatedDate = now };
+            current = new() { UserAccountId = accountId, ShopProductId = mapping.Id, ShopLocationId = locationId, Currency = currency, PriceScope = offer.PriceScope, CreatedDate = now };
             db.ShopProductPrices.Add(current);
         }
         current.Price = offer.Price; current.NormalPrice = offer.NormalPrice; current.UnitPrice = offer.UnitPrice;
@@ -83,7 +114,7 @@ public sealed class PriceService(MyShoppingListDbContext db, IOptions<PriceOptio
         current.ContributionObservationId = observation;
         if (recordHistory) db.ShopProductPriceHistory.Add(new()
         {
-            ShopProductId = mapping.Id, ShopLocationId = locationId, Currency = currency,
+            UserAccountId = accountId, ShopProductId = mapping.Id, ShopLocationId = locationId, Currency = currency,
             Price = current.Price, NormalPrice = current.NormalPrice, UnitPrice = current.UnitPrice,
             SpecialType = current.SpecialType, SpecialDescription = current.SpecialDescription,
             SpecialStartDate = current.SpecialStartDate, SpecialEndDate = current.SpecialEndDate,
