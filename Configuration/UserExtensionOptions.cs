@@ -6,6 +6,7 @@ public sealed class UserExtensionOptions
 {
     public const string SectionName = "UserExtension";
     public string[] AllowedExtensionIds { get; set; } = [];
+    public bool PersonalCapturesEnabled { get; set; }
 
     public bool Allows(HttpRequest request)
     {

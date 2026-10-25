@@ -305,33 +305,8 @@ public sealed class ColesExtensionTaskService(MyShoppingListDbContext db, Source
         if (transition is not null) logger?.LogInformation("Shared retailer work {Transition} for {Retailer}", transition, Retailer(new Uri(task.Url)));
         return null;
     }
-    public static string? EvidenceHtml(ColesEvidence? evidence, string retailer = "coles")
-    {
-        if (evidence is null || evidence.JsonLd?.Length > 20) return null;
-        var size = evidence.NextProductJson?.Length ?? 0;
-        size += evidence.JsonLd?.Sum(s => s?.Length ?? 0) ?? 0;
-        if (size > 2000000) return null;
-        try
-        {
-            var html = new StringBuilder();
-            if (evidence.NextProductJson is { } next)
-            {
-                using var doc = JsonDocument.Parse(next, new JsonDocumentOptions { MaxDepth = 64 });
-                var state = retailer == "woolworths"
-                    ? JsonSerializer.Serialize(new { props = new { pageProps = new { pdDetails = new { Product = doc.RootElement } } } })
-                    : JsonSerializer.Serialize(new { props = new { pageProps = new { product = doc.RootElement } } });
-                html.Append("<script id='__NEXT_DATA__' type='application/json'>").Append(state.Replace("<", "\\u003c")).Append("</script>");
-            }
-            foreach (var ld in evidence.JsonLd ?? [])
-            {
-                if (ld is null) return null;
-                using var doc = JsonDocument.Parse(ld, new JsonDocumentOptions { MaxDepth = 64 });
-                html.Append("<script type='application/ld+json'>").Append(doc.RootElement.GetRawText().Replace("<", "\\u003c")).Append("</script>");
-            }
-            return html.ToString();
-        }
-        catch (JsonException) { return null; }
-    }
+    public static string? EvidenceHtml(ColesEvidence? evidence, string retailer = "coles") =>
+        ExtensionProductEvidenceParser.EvidenceHtml(evidence, retailer);
     public async Task<bool> RetryAsync(long id, CancellationToken token)
     {
         await using var tx = await db.Database.BeginTransactionAsync(token);

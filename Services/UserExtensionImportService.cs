@@ -291,25 +291,8 @@ public sealed class UserExtensionImportService(MyShoppingListDbContext db, Produ
         return new(job.Id, job.UserAccountId, job.ShoppingListId, claim);
     }
 
-    private async Task<ExtractedShopProduct> ParseAsync(string url, ColesEvidence evidence, CancellationToken ct)
-    {
-        var valid = urls.Validate(url);
-        if (!valid.IsValid) throw new UserImportException(400, "Invalid product URL.");
-        if (valid.Retailer!.Code == "aldi")
-        {
-            var result = (aldi ?? new()).Parse(valid.ProductUrl!, evidence, clock.GetUtcNow());
-            if (result is ProviderResult<ExtractedShopProduct>.Success accepted) return accepted.Value;
-            throw new UserImportException(400, ((ProviderResult<ExtractedShopProduct>.Failure)result).Error.Message);
-        }
-        var html = ColesExtensionTaskService.EvidenceHtml(evidence, valid.Retailer!.Code);
-        if (html is null) throw new UserImportException(400, "Invalid product evidence.");
-        var page = new RetailerPage(valid.ProductUrl!, html, clock.GetUtcNow());
-        var parsed = valid.Retailer.Code == "coles" ? await coles.ParseAsync(page, ct) : await woolworths.ParseAsync(page, ct);
-        var code = valid.Retailer.Code == "coles" ? ColesProductParser.ProductCode(valid.ProductUrl!) : WoolworthsProductParser.ProductCode(valid.ProductUrl!);
-        if (parsed is not ProviderResult<ExtractedShopProduct>.Success success || success.Value.ShopProductCode != code)
-            throw new UserImportException(400, "The page evidence could not identify this product.");
-        return success.Value;
-    }
+    private Task<ExtractedShopProduct> ParseAsync(string url, ColesEvidence evidence, CancellationToken ct) =>
+        new ExtensionProductEvidenceParser(urls, coles, woolworths, clock, aldi).ParseAsync(url, evidence, ct);
 
     private UserExtensionWork View(UserExtensionImportTask task, ProductImportJob job) => new(job.Id,
         task.Status == "Waiting" && job.ErrorCode == "claim_expired" ? "Failed"

@@ -9,6 +9,22 @@ namespace myshoppinglist_api.Tests;
 
 public class DatabaseModelTests
 {
+    [Fact]
+    public void Personal_capture_receipts_are_optional_and_unique_per_account_without_replacing_legacy_owner_index()
+    {
+        using var db = ModelContext();
+        var job = db.Model.FindEntityType(typeof(ProductImportJob))!;
+        foreach (var property in new[] { "CaptureRequestId", "CaptureRequestHash", "CaptureResponseJson" })
+            Assert.True(job.FindProperty(property)!.IsNullable);
+        Assert.Equal(64, job.FindProperty("CaptureRequestHash")!.GetMaxLength());
+        Assert.Equal(10000, job.FindProperty("CaptureResponseJson")!.GetMaxLength());
+        var index = Assert.Single(job.GetIndexes(), i => i.Properties.Select(p => p.Name)
+            .SequenceEqual(new[] { "UserAccountId", "CaptureRequestId" }));
+        Assert.True(index.IsUnique);
+        Assert.Equal("\"CaptureRequestId\" IS NOT NULL", index.GetFilter());
+        Assert.Contains(job.GetIndexes(), i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "UserAccountId" }));
+    }
+
     [PostgreSqlFact]
     public async Task Workload_migration_upgrades_existing_schema_and_preserves_queue_data()
     {

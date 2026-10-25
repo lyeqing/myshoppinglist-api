@@ -159,7 +159,7 @@ public sealed class PersonalProductOwnershipMigrationTests
         var error = await Assert.ThrowsAsync<PostgresException>(() => db.GetService<IMigrator>().MigrateAsync(PreviousMigration));
         Assert.Contains("Cannot remove ownership", error.MessageText);
         Assert.Equal(account.Id, (await db.Products.SingleAsync()).UserAccountId);
-        Assert.Empty(await db.Database.GetPendingMigrationsAsync());
+        Assert.Contains("20261025030113_AddPersonalProductOwnership", await db.Database.GetAppliedMigrationsAsync());
     }
 
     private static async Task Reject(MyShoppingListDbContext db, FormattableString sql, string constraint)

@@ -29,5 +29,10 @@ public class ProductImportJob
     // A renewed claim token fences writes from an earlier worker after stale-job recovery.
     public Guid? ClaimToken { get; set; }
     public DateTime? LeaseExpiresDate { get; set; }
+    // Private capture receipts are committed with the product and list item.
+    // Legacy import jobs leave these fields null.
+    public Guid? CaptureRequestId { get; set; }
+    public string? CaptureRequestHash { get; set; }
+    public string? CaptureResponseJson { get; set; }
 }
 

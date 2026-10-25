@@ -122,6 +122,8 @@ try
     builder.Services.Configure<UserExtensionOptions>(builder.Configuration.GetSection(UserExtensionOptions.SectionName));
     builder.Services.AddScoped<InStoreShoppingService>();
     builder.Services.AddScoped<UserExtensionImportService>();
+    builder.Services.AddScoped<ExtensionProductEvidenceParser>();
+    builder.Services.AddScoped<PersonalProductCaptureService>();
     builder.Services.AddSingleton<ProductNormalisationService>();
     builder.Services.AddSingleton<ProductMatchingService>();
     builder.Services.AddScoped<ProductService>();

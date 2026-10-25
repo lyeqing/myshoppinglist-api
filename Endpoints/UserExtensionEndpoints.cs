@@ -20,6 +20,16 @@ public static class UserExtensionEndpoints
             catch (UserImportException e) { return Results.Problem(statusCode: e.Status, title: e.Message); }
         });
         static long Account(HttpContext c) => long.Parse(c.User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        routes.MapPost("/api/user-extension/captures", async (PersonalProductCaptureRequest request, HttpContext context,
+            IOptions<UserExtensionOptions> options, PersonalProductCaptureService service, CancellationToken ct) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            if (!options.Value.Allows(context.Request))
+                return Results.Problem(statusCode: 403, title: "This extension is not enabled on the server.");
+            try { return Results.Ok(await service.CaptureAsync(Account(context), request, ct)); }
+            catch (UserImportException e) { return Results.Problem(statusCode: e.Status, title: e.Message); }
+        }).RequireAuthorization().RequireRateLimiting(ProductImportEndpoints.SubmissionRatePolicy)
+            .WithMetadata(new RequestSizeLimitAttribute(2500000)).WithTags("User extension");
         imports.MapPost("/", async (UserExtensionStart request, HttpContext context, UserExtensionImportService service, CancellationToken ct) =>
             Results.Ok(await service.StartAsync(Account(context), request, ct)))
             .WithMetadata(new RequestSizeLimitAttribute(2500000)).RequireRateLimiting(ProductImportEndpoints.SubmissionRatePolicy);

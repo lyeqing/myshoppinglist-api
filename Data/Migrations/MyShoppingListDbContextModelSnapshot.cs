@@ -581,6 +581,17 @@ namespace myshoppinglist_api.Data.Migrations
                     b.Property<int>("AttemptCount")
                         .HasColumnType("integer");
 
+                    b.Property<string>("CaptureRequestHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid?>("CaptureRequestId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CaptureResponseJson")
+                        .HasMaxLength(10000)
+                        .HasColumnType("character varying(10000)");
+
                     b.Property<Guid?>("ClaimToken")
                         .IsConcurrencyToken()
                         .HasColumnType("uuid");
@@ -656,13 +667,17 @@ namespace myshoppinglist_api.Data.Migrations
 
                     b.HasIndex("SourceShopId");
 
-                    b.HasIndex("UserAccountId");
-
                     b.HasIndex("ShoppingListId", "Status");
 
                     b.HasIndex("ShoppingListId", "UserAccountId");
 
                     b.HasIndex("Status", "LeaseExpiresDate");
+
+                    b.HasIndex("UserAccountId");
+
+                    b.HasIndex("UserAccountId", "CaptureRequestId")
+                        .IsUnique()
+                        .HasFilter("\"CaptureRequestId\" IS NOT NULL");
 
                     b.HasIndex("ShoppingListProductId", "ShoppingListId", "ProductId");
 
