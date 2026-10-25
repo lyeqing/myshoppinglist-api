@@ -15,6 +15,24 @@ namespace myshoppinglist_api.Services;
 public sealed class PersonalProductCaptureService(MyShoppingListDbContext db, ExtensionProductEvidenceParser parser,
     SourceProductPersistenceService persistence, ProductUrlValidator urls, TimeProvider clock, IOptions<UserExtensionOptions> options)
 {
+    public async Task<PersonalProductPreviewResponse> PreviewAsync(long accountId, PersonalProductPreviewRequest request, CancellationToken ct)
+    {
+        if (!options.Value.PersonalCapturesEnabled)
+            throw new UserImportException(503, "Personal product capture is not enabled yet.");
+        CheckAccount(await db.UserAccounts.AsNoTracking().SingleOrDefaultAsync(a => a.Id == accountId, ct));
+        if (request.Evidence is null || request.ObservedAt == default || request.ObservedAt > clock.GetUtcNow())
+            throw new UserImportException(400, "Send product evidence and a valid observation date.");
+        var source = await parser.ParseAsync(request.Url, request.Evidence, ct, request.ObservedAt.ToUniversalTime());
+        if (!SourceProductPersistenceService.ValidSource(source, urls, new ProductNormalisationService(), clock))
+            throw new UserImportException(400, "The extracted product could not be validated. Check the page and read it again.");
+        var offer = (source.Offer as ProviderResult<ShopProductOffer>.Success)?.Value;
+        CheckAccount(await db.UserAccounts.AsNoTracking().SingleOrDefaultAsync(a => a.Id == accountId, ct));
+        return new(source.ProductUrl.AbsoluteUri, source.Identity.Name, source.Identity.Brand,
+            source.Identity.PackQuantity, source.Identity.PackSize, source.Identity.PackUnit,
+            offer?.Price, offer?.Currency, request.ObservedAt.ToUniversalTime(),
+            offer is null ? "No verified price is available. You can save the product without a price." : null);
+    }
+
     public async Task<PersonalProductCaptureResponse> CaptureAsync(long accountId, PersonalProductCaptureRequest request, CancellationToken ct)
     {
         if (!options.Value.PersonalCapturesEnabled)

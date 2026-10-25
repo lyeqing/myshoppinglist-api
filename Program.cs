@@ -151,6 +151,16 @@ try
         .ValidateDataAnnotations().ValidateOnStart();
     builder.Services.AddScoped<PriceRefreshService>();
     builder.Services.AddHostedService<PriceRefreshWorker>();
+    // Personal captures complete synchronously. Shared collection must stay off
+    // even when legacy worker settings still say Enabled=true.
+    builder.Services.AddOptions<ProductImportOptions>().PostConfigure<IOptions<UserExtensionOptions>>((imports, extension) =>
+    {
+        if (extension.Value.PersonalCapturesEnabled) imports.Enabled = false;
+    });
+    builder.Services.AddOptions<PriceRefreshOptions>().PostConfigure<IOptions<UserExtensionOptions>>((refresh, extension) =>
+    {
+        if (extension.Value.PersonalCapturesEnabled) refresh.Enabled = false;
+    });
     builder.Services.AddOptions<PriceOptions>().BindConfiguration(PriceOptions.SectionName)
         .ValidateDataAnnotations().ValidateOnStart();
     builder.Services.AddSingleton(services => new SafeRetailerConnection(services.GetRequiredService<RetailerCatalog>()));
@@ -206,6 +216,7 @@ try
     app.UseAuthentication();
     app.UseAuthorization();
     app.UseMiddleware<CookieRequestProtection>();
+    app.UseMiddleware<PersonalCaptureCollectionGuard>();
     app.UseRateLimiter();
     app.MapAuthEndpoints();
     app.MapAdminAccountEndpoints();

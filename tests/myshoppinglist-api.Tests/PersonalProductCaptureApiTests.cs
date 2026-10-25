@@ -236,6 +236,58 @@ public sealed class PersonalProductCaptureApiTests
     }
 
     [PostgreSqlFact]
+    public async Task Preview_validates_each_retailer_without_creating_products_jobs_or_prices()
+    {
+        await using var f = await CaptureApiScope.CreateAsync();
+        using var client = await f.ClientAsync(f.First.Id);
+        foreach (var retailer in new[] { "coles", "woolworths", "aldi" })
+        {
+            var request = f.Request(retailer);
+            var response = await client.PostAsJsonAsync(Path + "/preview",
+                new PersonalProductPreviewRequest(request.Url, request.Evidence, request.ObservedAt));
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("no-store", response.Headers.CacheControl!.ToString());
+            var preview = (await response.Content.ReadFromJsonAsync<PersonalProductPreviewResponse>())!;
+            Assert.False(string.IsNullOrWhiteSpace(preview.Name));
+            Assert.True(preview.Price > 0); Assert.Equal("AUD", preview.Currency);
+            Assert.Equal(request.ObservedAt, preview.ObservedAt);
+        }
+        var missing = f.Request("aldi") with { Evidence = AldiProductParserTests.Evidence(price: null) };
+        var result = await client.PostAsJsonAsync(Path + "/preview",
+            new PersonalProductPreviewRequest(missing.Url, missing.Evidence, missing.ObservedAt));
+        Assert.Equal(HttpStatusCode.OK, result.StatusCode);
+        var noPrice = (await result.Content.ReadFromJsonAsync<PersonalProductPreviewResponse>())!;
+        Assert.Null(noPrice.Price); Assert.Contains("without a price", noPrice.PriceNotice);
+        Assert.Empty(await f.Db.Products.ToArrayAsync()); Assert.Empty(await f.Db.ProductImportJobs.ToArrayAsync());
+        Assert.Empty(await f.Db.ContributionObservations.ToArrayAsync()); Assert.Empty(await f.Db.ShoppingListProducts.ToArrayAsync());
+        Assert.Empty(await f.Db.ShopProductPrices.ToArrayAsync());
+    }
+
+    [PostgreSqlFact]
+    public async Task Preview_requires_enabled_personal_mode_authentication_valid_identity_and_date()
+    {
+        await using var f = await CaptureApiScope.CreateAsync();
+        using var client = await f.ClientAsync(f.First.Id);
+        var r = f.Request();
+        var preview = new PersonalProductPreviewRequest(r.Url, r.Evidence, r.ObservedAt);
+        foreach (var invalid in new[] {
+            preview with { Url = "https://unrelated.example/product/123456" },
+            preview with { ObservedAt = default },
+            preview with { ObservedAt = f.Clock.Now.AddMinutes(1) },
+            preview with { Evidence = new ColesEvidence(null, [r.Evidence.JsonLd![0].Replace("123456", "999999")]) }
+        })
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync(Path + "/preview", invalid)).StatusCode);
+        client.DefaultRequestHeaders.Remove("X-MyShoppingList-Extension");
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync(Path + "/preview", preview)).StatusCode);
+        using var anonymous = f.Api.CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.PostAsJsonAsync(Path + "/preview", preview)).StatusCode);
+        await using var disabled = await CaptureApiScope.CreateAsync(enabled: false);
+        using var disabledClient = await disabled.ClientAsync(disabled.First.Id);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await disabledClient.PostAsJsonAsync(Path + "/preview", preview)).StatusCode);
+        Assert.Empty(await f.Db.Products.ToArrayAsync()); Assert.Empty(await f.Db.ProductImportJobs.ToArrayAsync());
+    }
+
+    [PostgreSqlFact]
     public async Task Capture_submission_rate_limit_counts_retries_without_duplicate_writes()
     {
         await using var f = await CaptureApiScope.CreateAsync(rateLimit: 2);
@@ -325,8 +377,9 @@ internal sealed class CaptureApiScope : IAsyncDisposable
                 services.AddDbContext<MyShoppingListDbContext>(o => o.UseNpgsql(f.ConnectionString));
                 services.RemoveAll<TimeProvider>(); services.AddSingleton<TimeProvider>(f.Clock);
                 services.Configure<UserExtensionOptions>(o => { o.PersonalCapturesEnabled = enabled; o.AllowedExtensionIds = [ExtensionId]; });
-                services.PostConfigure<ProductImportOptions>(o => { o.Enabled = false; o.SubmissionRequestsPerWindow = rateLimit; });
-                services.PostConfigure<PriceRefreshOptions>(o => o.Enabled = false);
+                services.Configure<ProductImportOptions>(o => { o.Enabled = enabled; o.SubmissionRequestsPerWindow = rateLimit; });
+                services.Configure<PriceRefreshOptions>(o => o.Enabled = enabled);
+                services.Configure<ColesExtensionOptions>(o => o.WorkerKey = new string('w', 64));
             });
         }
     }
