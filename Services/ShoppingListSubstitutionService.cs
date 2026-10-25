@@ -34,6 +34,9 @@ public sealed class ShoppingListSubstitutionService(MyShoppingListDbContext db, 
                 throw new UserImportException(404, "The shopping list was not found.");
             var item = await db.ShoppingListProducts.FromSqlInterpolated($"SELECT * FROM \"ShoppingListProducts\" WHERE \"Id\" = {itemId} AND \"ShoppingListId\" = {listId} FOR UPDATE").SingleOrDefaultAsync(ct)
                 ?? throw new UserImportException(404, "The shopping list item was not found.");
+            var original = await db.Products.AsNoTracking().SingleOrDefaultAsync(p => p.Id == item.ProductId
+                && (p.UserAccountId == null || p.UserAccountId == accountId), ct)
+                ?? throw new UserImportException(404, "The shopping list item was not found.");
             if (item.UpdatedDate != request.ExpectedUpdatedDate) throw new UserImportException(409, "This item changed. Reload before choosing an alternative.");
             var choice = await db.ShoppingListItemSubstitutions.SingleOrDefaultAsync(s => s.ShoppingListProductId == itemId && s.ShopId == shopId, ct);
             if (request.AlternativeProductId is null)
@@ -44,15 +47,17 @@ public sealed class ShoppingListSubstitutionService(MyShoppingListDbContext db, 
             else
             {
                 if (item.IsPurchased || item.IsHidden) throw new UserImportException(409, "Choose alternatives for an active, unpurchased item.");
-                var original = await db.Products.AsNoTracking().SingleAsync(p => p.Id == item.ProductId, ct);
+                var product = await db.Products.AsNoTracking().SingleOrDefaultAsync(p => p.Id == request.AlternativeProductId
+                    && p.UserAccountId == original.UserAccountId && !p.IsDeleted, ct)
+                    ?? throw new UserImportException(404, "The alternative product was not found.");
                 var alternatives = await BrandAlternativeService.ReadForProductsAsync(db, clock, accountId, [original], ct);
                 var alternative = alternatives.GetValueOrDefault(original.Id)?.SingleOrDefault(a => a.Product.Id == request.AlternativeProductId && a.Offer.ShopId == shopId);
                 if (alternative?.Offer is not { Status: "Fresh", Price: not null })
                     throw new UserImportException(409, "This alternative no longer has an eligible current price. Reload your list.");
                 var mappings = await db.ShopProducts.AsNoTracking().Where(m => m.ProductId == request.AlternativeProductId
+                    && m.UserAccountId == original.UserAccountId && m.Product.UserAccountId == original.UserAccountId
                     && m.ShopId == shopId && m.IsActive && m.MatchType == MatchType.Exact).ToArrayAsync(ct);
                 if (mappings.Length != 1) throw new UserImportException(409, "This alternative could not be verified. Reload your list.");
-                var product = await db.Products.AsNoTracking().SingleAsync(p => p.Id == request.AlternativeProductId, ct);
                 if (choice is null)
                 {
                     choice = new() { UserAccountId = accountId, ShoppingListId = listId, ShoppingListProductId = itemId,
@@ -80,12 +85,17 @@ public sealed class ShoppingListSubstitutionService(MyShoppingListDbContext db, 
         var allowed = ShoppingPreferencesService.AllowedShops(db, accountId).Select(s => s.Id);
         var choices = await db.ShoppingListItemSubstitutions.AsNoTracking().Include(s => s.ShopProduct).ThenInclude(m => m.Product)
             .Include(s => s.Shop).Where(s => s.UserAccountId == accountId && s.ShoppingListId == listId
+                && s.ShoppingList.UserAccountId == accountId
+                && (s.ShoppingListProduct.Product.UserAccountId == null || s.ShoppingListProduct.Product.UserAccountId == accountId)
+                && s.ShopProduct.Product.UserAccountId == s.ShoppingListProduct.Product.UserAccountId
+                && s.ShopProduct.UserAccountId == s.ShopProduct.Product.UserAccountId
                 && itemIds.Contains(s.ShoppingListProductId) && allowed.Contains(s.ShopId)).ToArrayAsync(ct);
         // Hiding suggestions must not revoke a choice the customer already made.
         if (choices.Length > 0 && !await db.UserAccounts.AnyAsync(a => a.Id == accountId && a.IncludeDifferentBrands, ct))
             alternatives = await BrandAlternativeService.ReadForProductsAsync(db, clock, accountId, items.Select(i => i.Product).DistinctBy(p => p.Id).ToArray(), ct, respectDisplayPreference: false);
         var mappingIds = choices.Select(s => s.ShopProductId).ToArray();
-        var prices = await db.ShopProductPrices.AsNoTracking().Where(p => mappingIds.Contains(p.ShopProductId) && p.ShopLocationId == null)
+        var prices = await db.ShopProductPrices.AsNoTracking().Where(p => mappingIds.Contains(p.ShopProductId) && p.ShopLocationId == null
+                && p.UserAccountId == p.ShopProduct.UserAccountId)
             .GroupBy(p => p.ShopProductId).Select(g => g.OrderByDescending(p => p.CheckedDate).ThenByDescending(p => p.Id).First())
             .ToDictionaryAsync(p => p.ShopProductId, ct);
         return choices.GroupBy(s => s.ShoppingListProductId).ToDictionary(g => g.Key, g => g.Select(s =>

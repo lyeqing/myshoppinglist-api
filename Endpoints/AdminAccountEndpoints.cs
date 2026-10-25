@@ -22,7 +22,8 @@ public static class AdminAccountEndpoints
                 a.IsPaid, a.IsActive, a.ContributionBlocked, a.ContributionEnabled, a.RestrictionReason, a.UpdatedDate }).ToListAsync(ct));
         });
         group.MapGet("/{id:long}/review", async (long id, MyShoppingListDbContext db, CancellationToken ct) => Results.Ok(new {
-            observations = await db.ContributionObservations.AsNoTracking().Where(o => o.UserAccountId == id).OrderByDescending(o => o.ReceivedAt).Take(100).ToListAsync(ct),
+            observations = await db.ContributionObservations.AsNoTracking().Where(o => o.UserAccountId == id && o.Source != "PersonalAdd")
+                .OrderByDescending(o => o.ReceivedAt).Take(100).ToListAsync(ct),
             actions = await db.AccountAdminAudits.AsNoTracking().Where(o => o.AccountId == id).OrderByDescending(o => o.CreatedAt).Take(100).ToListAsync(ct)
         }));
         group.MapPut("/{id:long}", async (long id, AdminAccountUpdate change, HttpContext context, AdminAccountService service, CancellationToken ct) => {

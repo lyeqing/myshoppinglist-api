@@ -20,6 +20,7 @@ public sealed class ProductImportStatusService(MyShoppingListDbContext db, TimeP
             .SingleOrDefaultAsync(token);
         if (access is null) return null;
         var jobs = await db.ProductImportJobs.AsNoTracking().Where(j => j.ShoppingListId == listId && j.UserAccountId == accountId
+            && (j.ProductId == null || j.Product!.UserAccountId == null || j.Product.UserAccountId == accountId)
             && (beforeId == null || j.Id < beforeId)).OrderByDescending(j => j.Id).Take(pageSize + 1)
             .Select(j => new ProductImportSummary(j.Id, j.Status, j.CreatedDate)).ToListAsync(token);
         now = clock.GetUtcNow().UtcDateTime;
@@ -35,6 +36,7 @@ public sealed class ProductImportStatusService(MyShoppingListDbContext db, TimeP
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.RepeatableRead, token);
         var now = clock.GetUtcNow().UtcDateTime;
         var job = await db.ProductImportJobs.AsNoTracking().Where(j => j.Id == jobId && j.UserAccountId == accountId
+            && (j.ProductId == null || j.Product!.UserAccountId == null || j.Product.UserAccountId == accountId)
             && j.UserAccount.IsActive && (!j.UserAccount.IsTrial || j.UserAccount.ExpiresDate > now)
             && j.ShoppingList.UserAccountId == accountId && !j.ShoppingList.IsArchived
             && (j.ShoppingList.ExpiresDate == null || j.ShoppingList.ExpiresDate > now))
@@ -42,15 +44,21 @@ public sealed class ProductImportStatusService(MyShoppingListDbContext db, TimeP
             .SingleOrDefaultAsync(token);
         if (job is null) return null;
         var stored = job.Job;
-        var product = await db.Products.AsNoTracking().Where(p => p.Id == stored.ProductId && !p.IsDeleted)
+        var owner = await db.Products.Where(p => p.Id == stored.ProductId).Select(p => p.UserAccountId).SingleOrDefaultAsync(token);
+        var product = await db.Products.AsNoTracking().Where(p => p.Id == stored.ProductId && !p.IsDeleted
+                && (p.UserAccountId == null || p.UserAccountId == accountId))
             .Select(p => new ImportProductResponse(p.Id, p.Name, p.Brand, p.Variant, p.PackQuantity, p.PackSize, p.PackUnit, p.ImageUrl))
             .SingleOrDefaultAsync(token);
         var allowed = ShoppingPreferencesService.AllowedShops(db, accountId).Select(s => s.Id);
-        var results = await db.ProductImportRetailerResults.AsNoTracking().Where(r => r.ProductImportJobId == jobId && allowed.Contains(r.ShopId))
+        var results = await db.ProductImportRetailerResults.AsNoTracking().Where(r => r.ProductImportJobId == jobId && allowed.Contains(r.ShopId)
+                && (owner == null || r.ShopId == stored.SourceShopId)
+                && (r.ShopProductId == null || r.ShopProduct!.UserAccountId == owner && r.ShopProduct.Product.UserAccountId == owner
+                    && r.ShopProduct.ProductId == stored.ProductId))
             .OrderBy(r => r.ShopId).Select(r => new { Result = r, ShopName = r.Shop.Name }).ToListAsync(token);
         var mappingIds = results.Where(r => r.Result.Status is RetailerLookupStatus.Exact or RetailerLookupStatus.Likely or RetailerLookupStatus.Possible)
             .Select(r => r.Result.ShopProductId).OfType<long>().ToArray();
         var prices = await db.ShopProductPrices.AsNoTracking().Where(p => mappingIds.Contains(p.ShopProductId)
+            && p.UserAccountId == owner && p.ShopProduct.UserAccountId == owner
             && p.ShopProduct.IsActive && p.ShopProduct.ProductId == stored.ProductId && !p.ShopProduct.Product.IsDeleted)
             .OrderBy(p => p.Id).Select(p => new
             {
@@ -66,7 +74,7 @@ public sealed class ProductImportStatusService(MyShoppingListDbContext db, TimeP
         now = clock.GetUtcNow().UtcDateTime;
         if (job.AccountExpiry <= now || job.ListExpiry <= now) return null;
         var status = stored.Status;
-        if (job.PreferredOnly && stored.ShoppingListProductId is not null && status is ProductImportJobStatus.Completed or ProductImportJobStatus.Partial)
+        if (owner is null && job.PreferredOnly && stored.ShoppingListProductId is not null && status is ProductImportJobStatus.Completed or ProductImportJobStatus.Partial)
         {
             var recorded = results.Select(r => r.Result.ShopId).ToArray();
             var missing = await ShoppingPreferencesService.AllowedShops(db, accountId).AnyAsync(s => s.Id != stored.SourceShopId

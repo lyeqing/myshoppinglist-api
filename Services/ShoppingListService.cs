@@ -116,7 +116,8 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
         await RegisteredAsync(accountId, token, true);
         var list = await db.ShoppingLists.AsNoTracking().SingleOrDefaultAsync(l => l.Id == listId && l.UserAccountId == accountId && l.IsArchived, token)
             ?? throw new UserImportException(404, "The archived list was not found.");
-        var items = await db.ShoppingListProducts.AsNoTracking().Include(i => i.Product).Where(i => i.ShoppingListId == listId).OrderBy(i => i.Id).ToArrayAsync(token);
+        var items = await db.ShoppingListProducts.AsNoTracking().Include(i => i.Product).Where(i => i.ShoppingListId == listId
+            && (i.Product.UserAccountId == null || i.Product.UserAccountId == accountId)).OrderBy(i => i.Id).ToArrayAsync(token);
         return new(new(list.Id, list.Name, list.CreatedDate, list.UpdatedDate), items.Select(i => Response(i) with { ListArchived = true }).ToArray());
     }
     public async Task<ShoppingListPlan?> PlanAsync(long accountId, long listId, CancellationToken token)
@@ -128,14 +129,17 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
 
         // Planning includes every saved item; purchased/hidden are in-store preferences only.
         var items = await db.ShoppingListProducts.AsNoTracking().Include(i => i.Product)
-            .Where(i => i.ShoppingListId == listId && !i.Product.IsDeleted).OrderByDescending(i => i.Id).ToArrayAsync(token);
+            .Where(i => i.ShoppingListId == listId && !i.Product.IsDeleted
+                && (i.Product.UserAccountId == null || i.Product.UserAccountId == accountId)).OrderByDescending(i => i.Id).ToArrayAsync(token);
         var ids = items.Select(i => i.ProductId).Distinct().ToArray();
         var allowed = ShoppingPreferencesService.AllowedShops(db, accountId).Select(s => s.Id);
         var mappings = await db.ShopProducts.AsNoTracking().Include(m => m.Shop)
-            .Where(m => ids.Contains(m.ProductId) && m.IsActive && m.Shop.IsActive && allowed.Contains(m.ShopId)).ToArrayAsync(token);
+            .Where(m => ids.Contains(m.ProductId) && m.IsActive && m.Shop.IsActive && allowed.Contains(m.ShopId)
+                && m.UserAccountId == m.Product.UserAccountId && (m.UserAccountId == null || m.UserAccountId == accountId)).ToArrayAsync(token);
         var mappingIds = mappings.Select(m => m.Id).ToArray();
         var prices = await db.ShopProductPrices.AsNoTracking()
-            .Where(p => mappingIds.Contains(p.ShopProductId) && p.ShopLocationId == null).ToArrayAsync(token);
+            .Where(p => mappingIds.Contains(p.ShopProductId) && p.ShopLocationId == null
+                && p.UserAccountId == p.ShopProduct.UserAccountId).ToArrayAsync(token);
         var shopIds = mappings.Select(m => m.ShopId).Distinct().ToArray();
         var shops = await db.Shops.AsNoTracking()
             .Where(s => s.IsActive && allowed.Contains(s.Id) && (s.Code == "coles" || s.Code == "woolworths" || shopIds.Contains(s.Id)))
@@ -156,7 +160,7 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
                 var price = prices.Where(p => eligibleIds.Contains(p.ShopProductId)).OrderByDescending(p => p.CheckedDate).ThenByDescending(p => p.Id).FirstOrDefault();
                 var mapping = price is null ? candidates[0] : candidates.Single(m => m.Id == price.ShopProductId);
                 var status = mapping.MatchType != MatchType.Exact ? "Match not verified" : InStoreShoppingService.PriceStatus(price, now, freshness);
-                var refreshStatus = !item.IsPurchased && !item.IsHidden
+                var refreshStatus = item.Product.UserAccountId is null && !item.IsPurchased && !item.IsHidden
                     ? refreshStatuses.GetValueOrDefault(mapping.Id) : null;
                 var offer = status == "Fresh" ? InStoreShoppingService.SinglePriceMultibuy(price) : null;
                 return new ShoppingListPrice(mapping.ShopId, mapping.Shop.Name,
@@ -164,7 +168,8 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
                     mapping.ProductUrl, price?.CheckedDate, price?.SpecialDescription, refreshStatus,
                     offer, status == "Fresh" ? PromotionCalculationService.Calculate(price!.Price, item.Quantity, offer) : null,
                     PriceObservationContextService.From(price, mapping.Shop.Code));
-            }).OrderBy(p => p.ShopName).ToArray(), comparisons.GetValueOrDefault(item.Id), alternatives.GetValueOrDefault(item.ProductId, []), brandAlternatives.GetValueOrDefault(item.ProductId, []))).ToArray();
+            }).OrderBy(p => p.ShopName).ToArray(), item.Product.UserAccountId is null ? comparisons.GetValueOrDefault(item.Id) : null,
+                alternatives.GetValueOrDefault(item.ProductId, []), brandAlternatives.GetValueOrDefault(item.ProductId, []))).ToArray();
         var substitutions = await new ShoppingListSubstitutionService(db, clock).ReadAsync(accountId, listId, items, brandAlternatives, token);
         rows = rows.Select(row => ShoppingListSubstitutionService.Apply(row, substitutions.GetValueOrDefault(row.Item.Id, []))).ToArray();
         if (!Accessible(list?.UserAccount, list, accountId)) return null;
@@ -223,7 +228,8 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
             var user = await db.UserAccounts.FromSqlInterpolated($"""SELECT * FROM "UserAccounts" WHERE "Id" = {accountId} FOR UPDATE""").SingleOrDefaultAsync(token);
             var list = await db.ShoppingLists.FromSqlInterpolated($"""SELECT * FROM "ShoppingLists" WHERE "Id" = {listId} AND "UserAccountId" = {accountId} FOR UPDATE""").SingleOrDefaultAsync(token);
             if (!Accessible(user, list, accountId)) return new(404, "The shopping list or item was not found.");
-            var item = await db.ShoppingListProducts.SingleOrDefaultAsync(i => i.Id == itemId && i.ShoppingListId == listId, token);
+            var item = await db.ShoppingListProducts.SingleOrDefaultAsync(i => i.Id == itemId && i.ShoppingListId == listId
+                && (i.Product.UserAccountId == null || i.Product.UserAccountId == accountId), token);
             if (item is null) return new(404, "The shopping list or item was not found.");
             if (item.UpdatedDate != request.ExpectedUpdatedDate) return new(409, "This item changed. Refresh your list before deleting it.");
             var now = clock.GetUtcNow().UtcDateTime;
@@ -297,6 +303,7 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
         if (!Accessible(list?.UserAccount, list, accountId)) return null;
         var items = await db.ShoppingListProducts.AsNoTracking().Include(i => i.Product)
             .Where(i => i.ShoppingListId == listId && !i.Product.IsDeleted && (beforeId == null || i.Id < beforeId)
+                && (i.Product.UserAccountId == null || i.Product.UserAccountId == accountId)
                 && (includeHidden || !i.IsHidden) && (includePurchased || !i.IsPurchased))
             .OrderByDescending(i => i.Id).Take(pageSize + 1).ToListAsync(token);
         if (!Accessible(list?.UserAccount, list, accountId)) return null;
@@ -322,7 +329,8 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
             if (!Accessible(user, list, accountId)) return Missing();
             var item = await db.ShoppingListProducts.FromSqlInterpolated($"""SELECT * FROM "ShoppingListProducts" WHERE "Id" = {itemId} AND "ShoppingListId" = {listId} FOR UPDATE""").SingleOrDefaultAsync(token);
             if (item is null) return Missing();
-            var product = await db.Products.AsNoTracking().SingleOrDefaultAsync(p => p.Id == item.ProductId && !p.IsDeleted, token);
+            var product = await db.Products.AsNoTracking().SingleOrDefaultAsync(p => p.Id == item.ProductId && !p.IsDeleted
+                && (p.UserAccountId == null || p.UserAccountId == accountId), token);
             if (product is null) return Missing();
             if (item.UpdatedDate != request.ExpectedUpdatedDate)
                 return new(null, 409, "This item changed. Reload it before saving your edits.");

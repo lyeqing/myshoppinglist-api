@@ -32,6 +32,7 @@ public sealed class BrandAlternativeService(MyShoppingListDbContext db, TimeProv
         // Literal substring search: punctuation and SQL wildcard characters are not
         // treated as patterns. Retired records stay searchable for withdrawal.
         var products = await db.Products.AsNoTracking()
+            .Where(p => p.UserAccountId == null)
             .Where(p => numeric ? p.Id == id : p.Name.ToLower().Contains(lower) || p.Brand != null && p.Brand.ToLower().Contains(lower))
             .OrderBy(p => p.IsDeleted).ThenBy(p => p.Name).ThenBy(p => p.Id).Take(51)
             .Select(p => new AdminAlternativeProductSearchItem(new(p.Id, p.Name, p.Brand, p.Variant,
@@ -92,7 +93,7 @@ public sealed class BrandAlternativeService(MyShoppingListDbContext db, TimeProv
     private static bool Current(ProductAlternativeRelationship review, Product first, Product second) =>
         review.Approved && review.SameUseAndFormatConfirmed && review.DietaryAndCompositionChecked
         && review.ProductFingerprint == Fingerprint(first) && review.AlternativeFingerprint == Fingerprint(second)
-        && Compatible(first, second);
+        && first.UserAccountId == second.UserAccountId && Compatible(first, second);
 
     private static BrandAlternativeReviewResponse Response(ProductAlternativeRelationship review, Product first, Product second) =>
         new(review.Id, review.ProductId, review.AlternativeProductId, review.PreviousReviewId, review.Approved,
@@ -107,7 +108,7 @@ public sealed class BrandAlternativeService(MyShoppingListDbContext db, TimeProv
         await AuthorizeAsync(administrator, ct);
         var pair = Pair(productId, alternativeProductId);
         await using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, ct);
-        var products = await db.Products.AsNoTracking().Where(p => p.Id == pair.First || p.Id == pair.Second).ToArrayAsync(ct);
+        var products = await db.Products.AsNoTracking().Where(p => p.UserAccountId == null && (p.Id == pair.First || p.Id == pair.Second)).ToArrayAsync(ct);
         if (products.Length != 2) throw new UserImportException(404, "Product not found.");
         var reviews = await db.ProductAlternativeRelationships.AsNoTracking()
             .Where(r => r.ProductId == pair.First && r.AlternativeProductId == pair.Second)
@@ -132,7 +133,7 @@ public sealed class BrandAlternativeService(MyShoppingListDbContext db, TimeProv
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
         // Match catalogue writes and serialize concurrent first reviews and reversals.
         await ProductService.LockCatalogueAsync(db, ct);
-        var products = await db.Products.AsNoTracking().Where(p => p.Id == pair.First || p.Id == pair.Second).ToArrayAsync(ct);
+        var products = await db.Products.AsNoTracking().Where(p => p.UserAccountId == null && (p.Id == pair.First || p.Id == pair.Second)).ToArrayAsync(ct);
         if (products.Length != 2) throw new UserImportException(404, "Product not found.");
         var first = products.Single(p => p.Id == pair.First);
         var second = products.Single(p => p.Id == pair.Second);
@@ -177,11 +178,16 @@ public sealed class BrandAlternativeService(MyShoppingListDbContext db, TimeProv
         var now = clock.GetUtcNow();
         if (!await db.UserAccounts.AnyAsync(a => a.Id == accountId && a.IsActive && (!respectDisplayPreference || a.IncludeDifferentBrands)
             && (!a.IsTrial || a.ExpiresDate > now.UtcDateTime), ct)) return result;
+        var requestedIds = originals.Select(p => p.Id).Distinct().ToArray();
+        originals = await db.Products.AsNoTracking().Where(p => requestedIds.Contains(p.Id) && !p.IsDeleted
+            && (p.UserAccountId == null || p.UserAccountId == accountId)).ToArrayAsync(ct);
         result = await ReadSuggestionsAsync(db, clock, accountId, originals, ct);
         var originalIds = originals.Select(p => p.Id).Distinct().ToArray();
         if (originalIds.Length == 0) return result;
         var reviews = await db.ProductAlternativeRelationships.AsNoTracking()
-            .Where(r => originalIds.Contains(r.ProductId) || originalIds.Contains(r.AlternativeProductId))
+            .Where(r => (originalIds.Contains(r.ProductId) || originalIds.Contains(r.AlternativeProductId))
+                && r.Product.UserAccountId == r.AlternativeProduct.UserAccountId
+                && (r.Product.UserAccountId == null || r.Product.UserAccountId == accountId))
             .GroupBy(r => new { r.ProductId, r.AlternativeProductId })
             .Select(g => g.OrderByDescending(r => r.Id).First()).ToArrayAsync(ct);
         var ids = reviews.SelectMany(r => new[] { r.ProductId, r.AlternativeProductId }).Distinct().ToArray();
@@ -192,11 +198,12 @@ public sealed class BrandAlternativeService(MyShoppingListDbContext db, TimeProv
         if (ids.Length == 0) return result;
         var allowed = ShoppingPreferencesService.AllowedShops(db, accountId).Select(s => s.Id);
         var mappings = await db.ShopProducts.AsNoTracking().Include(m => m.Shop).Where(m => ids.Contains(m.ProductId)
+            && m.UserAccountId == m.Product.UserAccountId && (m.UserAccountId == null || m.UserAccountId == accountId)
             && m.IsActive && m.Shop.IsActive && m.MatchType == MatchType.Exact && allowed.Contains(m.ShopId)
             && (m.Shop.Code == "coles" || m.Shop.Code == "woolworths" || originalIds.Contains(m.ProductId) && m.Shop.Code == "aldi")).ToArrayAsync(ct);
         var mappingIds = mappings.Select(m => m.Id).ToArray();
         var observations = await db.ShopProductPrices.AsNoTracking().Where(p => mappingIds.Contains(p.ShopProductId)
-            && p.ShopLocationId == null).GroupBy(p => p.ShopProductId)
+            && p.ShopLocationId == null && p.UserAccountId == p.ShopProduct.UserAccountId).GroupBy(p => p.ShopProductId)
             .Select(g => g.OrderByDescending(p => p.CheckedDate).ThenByDescending(p => p.Id).First()).ToArrayAsync(ct);
         var prices = observations.ToDictionary(p => p.ShopProductId);
         var freshness = new CatalogueFreshnessService();
@@ -256,6 +263,10 @@ public sealed class BrandAlternativeService(MyShoppingListDbContext db, TimeProv
             .Include(s => s.BrandDiscoveryJob).ThenInclude(j => j.ShoppingList)
             .Include(s => s.AlternativeProduct).Include(s => s.ShopProduct).ThenInclude(m => m.Shop)
             .Where(s => s.BrandDiscoveryJob.UserAccountId == accountId && ids.Contains(s.BrandDiscoveryJob.ProductId)
+                && s.BrandDiscoveryJob.ShoppingList.UserAccountId == accountId
+                && s.BrandDiscoveryJob.ShoppingListProduct.Product.UserAccountId == s.AlternativeProduct.UserAccountId
+                && (s.AlternativeProduct.UserAccountId == null || s.AlternativeProduct.UserAccountId == accountId)
+                && s.ShopProduct.UserAccountId == s.AlternativeProduct.UserAccountId
                 && s.BrandDiscoveryJob.Status != "Cancelled" && !s.BrandDiscoveryJob.ShoppingList.IsArchived
                 && (s.BrandDiscoveryJob.ShoppingList.ExpiresDate == null || s.BrandDiscoveryJob.ShoppingList.ExpiresDate > now.UtcDateTime)
                 && !s.AlternativeProduct.IsDeleted && s.ShopProduct.IsActive && s.ShopProduct.Shop.IsActive
@@ -268,9 +279,11 @@ public sealed class BrandAlternativeService(MyShoppingListDbContext db, TimeProv
                     || r.AlternativeProductId == s.BrandDiscoveryJob.ProductId && r.ProductId == s.AlternativeProductId))
             .ToArrayAsync(ct);
         var originalMappings = await db.ShopProducts.AsNoTracking().Include(m => m.Shop).Where(m => ids.Contains(m.ProductId)
+            && m.UserAccountId == m.Product.UserAccountId && (m.UserAccountId == null || m.UserAccountId == accountId)
             && m.IsActive && m.Shop.IsActive && m.MatchType == MatchType.Exact && allowed.Contains(m.ShopId)).ToArrayAsync(ct);
         var mappingIds = suggestions.Select(s => s.ShopProductId).Concat(originalMappings.Select(m => m.Id)).Distinct().ToArray();
-        var prices = await db.ShopProductPrices.AsNoTracking().Where(p => mappingIds.Contains(p.ShopProductId) && p.ShopLocationId == null)
+        var prices = await db.ShopProductPrices.AsNoTracking().Where(p => mappingIds.Contains(p.ShopProductId) && p.ShopLocationId == null
+                && p.UserAccountId == p.ShopProduct.UserAccountId)
             .GroupBy(p => p.ShopProductId).Select(g => g.OrderByDescending(p => p.CheckedDate).ThenByDescending(p => p.Id).First()).ToDictionaryAsync(p => p.ShopProductId, ct);
         var packs = new PackComparisonService(); var matcher = new BrandSuggestionMatchingService();
         foreach (var original in originals)

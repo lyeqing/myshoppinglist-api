@@ -14,10 +14,14 @@ public sealed class PackAlternativeService(MyShoppingListDbContext db, TimeProvi
         var now = clock.GetUtcNow();
         if (!await db.UserAccounts.AnyAsync(a => a.Id == accountId && a.IsActive && a.IncludeDifferentPackSizes
             && (!a.IsTrial || a.ExpiresDate > now.UtcDateTime), token)) return result;
+        var originalIds = originals.Select(p => p.Id).Distinct().ToArray();
+        originals = await db.Products.AsNoTracking().Where(p => originalIds.Contains(p.Id) && !p.IsDeleted
+            && (p.UserAccountId == null || p.UserAccountId == accountId)).ToArrayAsync(token);
         var brands = originals.Where(p => !string.IsNullOrWhiteSpace(p.Brand)).Select(p => p.Brand!.Trim().ToLowerInvariant()).Distinct().ToArray();
         if (brands.Length == 0) return result;
         // Catalogue-only discovery: these reads never initiate retailer collection.
         var candidates = await db.Products.AsNoTracking().Where(p => !p.IsDeleted && p.Brand != null
+            && (p.UserAccountId == null || p.UserAccountId == accountId)
             && brands.Contains(p.Brand.Trim().ToLower())).ToArrayAsync(token);
         var matcher = new ProductFamilyMatchingService();
         var packs = new PackComparisonService();
@@ -30,16 +34,18 @@ public sealed class PackAlternativeService(MyShoppingListDbContext db, TimeProvi
         {
             var quantity = packs.Read(ProductMatchingService.Identity(p));
             return quantity is null ? [] : byFamily.GetValueOrDefault(quantity.FamilyName, [])
-                .Where(c => c.Id != p.Id && matcher.IsDifferentSize(ProductMatchingService.Identity(p), ProductMatchingService.Identity(c))).ToArray();
+                .Where(c => c.Id != p.Id && c.UserAccountId == p.UserAccountId
+                    && matcher.IsDifferentSize(ProductMatchingService.Identity(p), ProductMatchingService.Identity(c))).ToArray();
         });
         var ids = families.Where(f => f.Value.Length > 0).SelectMany(f => f.Value.Select(p => p.Id).Append(f.Key)).Distinct().ToArray();
         if (ids.Length == 0) return result;
         var allowed = ShoppingPreferencesService.AllowedShops(db, accountId).Select(s => s.Id);
         var mappings = await db.ShopProducts.AsNoTracking().Include(m => m.Shop).Where(m => ids.Contains(m.ProductId)
+            && m.UserAccountId == m.Product.UserAccountId && (m.UserAccountId == null || m.UserAccountId == accountId)
             && m.IsActive && m.Shop.IsActive && m.MatchType == MatchType.Exact && allowed.Contains(m.ShopId)).ToArrayAsync(token);
         var mappingIds = mappings.Select(m => m.Id).ToArray();
         var observations = await db.ShopProductPrices.AsNoTracking().Where(p => mappingIds.Contains(p.ShopProductId)
-            && p.ShopLocationId == null).GroupBy(p => p.ShopProductId)
+            && p.ShopLocationId == null && p.UserAccountId == p.ShopProduct.UserAccountId).GroupBy(p => p.ShopProductId)
             .Select(g => g.OrderByDescending(p => p.CheckedDate).ThenByDescending(p => p.Id).First()).ToArrayAsync(token);
         var prices = observations.ToDictionary(p => p.ShopProductId);
         var freshness = new CatalogueFreshnessService();

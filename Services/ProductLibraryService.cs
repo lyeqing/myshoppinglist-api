@@ -14,7 +14,8 @@ public sealed class ProductLibraryService(MyShoppingListDbContext db, TimeProvid
         if (account.IsTrial) throw new UserImportException(403, "Create an account to save Favorites and Essentials and keep product history.");
     }
 
-    private IQueryable<Product> Known(long accountId) => db.Products.Where(p => !p.IsDeleted &&
+    private IQueryable<Product> Known(long accountId) => db.Products.Where(p => !p.IsDeleted
+        && (p.UserAccountId == null || p.UserAccountId == accountId) &&
         (db.UserProductActivities.Any(a => a.UserAccountId == accountId && a.ProductId == p.Id)
          || db.UserProductPreferences.Any(a => a.UserAccountId == accountId && a.ProductId == p.Id)
          || db.ShoppingListProducts.Any(i => i.ProductId == p.Id && i.ShoppingList.UserAccountId == accountId)));
@@ -126,7 +127,8 @@ public sealed class ProductLibraryService(MyShoppingListDbContext db, TimeProvid
 
     public static async Task SeedEssentialsAsync(MyShoppingListDbContext db, ShoppingList list, CancellationToken ct)
     {
-        var ids = await db.UserProductPreferences.Where(p => p.UserAccountId == list.UserAccountId && p.IsEssential && !p.Product.IsDeleted).Select(p => p.ProductId).ToArrayAsync(ct);
+        var ids = await db.UserProductPreferences.Where(p => p.UserAccountId == list.UserAccountId && p.IsEssential && !p.Product.IsDeleted
+            && (p.Product.UserAccountId == null || p.Product.UserAccountId == list.UserAccountId)).Select(p => p.ProductId).ToArrayAsync(ct);
         foreach (var id in ids)
         {
             var item = new ShoppingListProduct { ShoppingList = list, ProductId = id, Quantity = 1, AddedDate = list.CreatedDate, UpdatedDate = list.CreatedDate };
