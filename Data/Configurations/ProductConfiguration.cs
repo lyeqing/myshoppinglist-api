@@ -9,6 +9,7 @@ public class ProductConfiguration : IEntityTypeConfiguration<Product>
     public void Configure(EntityTypeBuilder<Product> builder)
     {
         builder.HasKey(x => x.Id);
+        builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.UserAccountId).OnDelete(DeleteBehavior.Restrict);
         builder.Property(x => x.Id).UseIdentityByDefaultColumn();
         builder.ToTable("Products", table =>
         {
@@ -30,6 +31,8 @@ public class ProductConfiguration : IEntityTypeConfiguration<Product>
         builder.Property(x => x.ImageUrl).HasMaxLength(2048);
         // Contradictory catalogue identities require resolution, not an irreversible GTIN uniqueness rule.
         builder.HasIndex(x => x.GTIN);
+        builder.HasIndex(x => new { x.UserAccountId, x.GTIN });
+        builder.HasIndex(x => new { x.UserAccountId, x.Brand, x.ManufacturerPartNumber, x.ModelNumber });
         builder.HasIndex(x => new { x.Brand, x.ManufacturerPartNumber, x.ModelNumber });
     }
 }

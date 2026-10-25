@@ -56,6 +56,8 @@ public class DatabaseModelTests
             typeof(PackDiscoveryJob), typeof(Product), typeof(ProductAlternativeRelationship), typeof(ProductImportJob),
             typeof(ProductImportRetailerResult), typeof(RetailerWorkloadState), typeof(Shop), typeof(ShopLocation),
             typeof(ShopLocationReview), typeof(ShopProduct), typeof(ShopProductPrice), typeof(ShopProductPriceHistory),
+            typeof(BrandDiscoveryJob), typeof(ProductBrandSuggestion), typeof(ShoppingListItemSubstitution),
+            typeof(UserProductActivity), typeof(UserProductPreference),
             typeof(ShoppingList), typeof(ShoppingListProduct), typeof(UserAccount), typeof(UserExtensionImportTask),
             typeof(UserPreferredShop), typeof(UserPreferredShopLocation), typeof(UserSession)];
         Assert.Equal(expected.Select(t => t.FullName).Order(), db.Model.GetEntityTypes().Select(e => e.ClrType.FullName).Order());
@@ -113,17 +115,40 @@ public class DatabaseModelTests
     }
 
     [Fact]
-    public void Catalogue_is_shared_and_list_entries_do_not_copy_product_metadata()
+    public void Product_ownership_preserves_legacy_rows_and_list_entries_do_not_copy_metadata()
     {
         using var db = ModelContext();
         var item = db.Model.FindEntityType(typeof(ShoppingListProduct))!;
         foreach (var name in new[] { "Name", "Brand", "GTIN", "ImageUrl", "Description" })
             Assert.Null(item.FindProperty(name));
         var product = db.Model.FindEntityType(typeof(Product))!;
-        Assert.Null(product.FindProperty("UserAccountId"));
+        Assert.True(product.FindProperty("UserAccountId")!.IsNullable);
         Assert.False(Assert.Single(product.GetIndexes(), i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "GTIN" })).IsUnique);
         Assert.All(item.GetForeignKeys().Where(f => f.PrincipalEntityType.ClrType == typeof(Product)),
             f => Assert.Equal(DeleteBehavior.Restrict, f.DeleteBehavior));
+    }
+
+    [Fact]
+    public void Personal_product_records_have_optional_restricted_owners_and_scoped_indexes()
+    {
+        using var db = ModelContext();
+        foreach (var type in new[] { typeof(Product), typeof(ShopProduct), typeof(ShopProductPrice), typeof(ShopProductPriceHistory) })
+        {
+            var entity = db.Model.FindEntityType(type)!;
+            Assert.True(entity.FindProperty("UserAccountId")!.IsNullable);
+            var owner = Assert.Single(entity.GetForeignKeys(), f => f.PrincipalEntityType.ClrType == typeof(UserAccount));
+            Assert.Equal(DeleteBehavior.Restrict, owner.DeleteBehavior);
+            Assert.Contains(entity.GetIndexes(), i => i.Properties[0].Name == "UserAccountId");
+        }
+        var mapping = db.Model.FindEntityType(typeof(ShopProduct))!;
+        var personal = Assert.Single(mapping.GetIndexes(), i => i.Properties.Select(p => p.Name)
+            .SequenceEqual(new[] { "UserAccountId", "ShopId", "ShopProductCode" }));
+        Assert.True(personal.IsUnique);
+        Assert.Contains("\"UserAccountId\" IS NOT NULL", personal.GetFilter());
+        var legacy = Assert.Single(mapping.GetIndexes(), i => i.Properties.Select(p => p.Name)
+            .SequenceEqual(new[] { "ShopId", "ShopProductCode" }));
+        Assert.True(legacy.IsUnique);
+        Assert.Contains("\"UserAccountId\" IS NULL", legacy.GetFilter());
     }
 
     [Fact]

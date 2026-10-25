@@ -440,6 +440,9 @@ namespace myshoppinglist_api.Data.Migrations
                     b.Property<DateTime>("UpdatedDate")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<long?>("UserAccountId")
+                        .HasColumnType("bigint");
+
                     b.Property<string>("Variant")
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
@@ -448,7 +451,11 @@ namespace myshoppinglist_api.Data.Migrations
 
                     b.HasIndex("GTIN");
 
+                    b.HasIndex("UserAccountId", "GTIN");
+
                     b.HasIndex("Brand", "ManufacturerPartNumber", "ModelNumber");
+
+                    b.HasIndex("UserAccountId", "Brand", "ManufacturerPartNumber", "ModelNumber");
 
                     b.ToTable("Products", null, t =>
                         {
@@ -1095,13 +1102,24 @@ namespace myshoppinglist_api.Data.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
+                    b.Property<long?>("UserAccountId")
+                        .HasColumnType("bigint");
+
                     b.HasKey("Id");
 
                     b.HasIndex("ProductId", "ShopId");
 
                     b.HasIndex("ShopId", "ShopProductCode")
                         .IsUnique()
-                        .HasFilter("\"ShopProductCode\" IS NOT NULL");
+                        .HasFilter("\"ShopProductCode\" IS NOT NULL AND \"UserAccountId\" IS NULL");
+
+                    b.HasIndex("UserAccountId", "ShopId", "ProductUrl")
+                        .IsUnique()
+                        .HasFilter("\"UserAccountId\" IS NOT NULL");
+
+                    b.HasIndex("UserAccountId", "ShopId", "ShopProductCode")
+                        .IsUnique()
+                        .HasFilter("\"ShopProductCode\" IS NOT NULL AND \"UserAccountId\" IS NOT NULL");
 
                     b.ToTable("ShopProducts", null, t =>
                         {
@@ -1184,11 +1202,16 @@ namespace myshoppinglist_api.Data.Migrations
                     b.Property<DateTime>("UpdatedDate")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<long?>("UserAccountId")
+                        .HasColumnType("bigint");
+
                     b.HasKey("Id");
 
                     b.HasIndex("ContributionObservationId");
 
                     b.HasIndex("ShopLocationId");
+
+                    b.HasIndex("UserAccountId", "ShopProductId");
 
                     b.HasIndex("ShopProductId", "PriceScope", "Currency")
                         .IsUnique()
@@ -1277,6 +1300,9 @@ namespace myshoppinglist_api.Data.Migrations
                         .HasPrecision(18, 4)
                         .HasColumnType("numeric(18,4)");
 
+                    b.Property<long?>("UserAccountId")
+                        .HasColumnType("bigint");
+
                     b.HasKey("Id");
 
                     b.HasIndex("ContributionObservationId");
@@ -1284,6 +1310,8 @@ namespace myshoppinglist_api.Data.Migrations
                     b.HasIndex("ShopLocationId");
 
                     b.HasIndex("ShopProductId", "CheckedDate");
+
+                    b.HasIndex("UserAccountId", "ShopProductId", "CheckedDate");
 
                     b.ToTable("ShopProductPriceHistory", null, t =>
                         {
@@ -1864,6 +1892,14 @@ namespace myshoppinglist_api.Data.Migrations
                     b.Navigation("UserAccount");
                 });
 
+            modelBuilder.Entity("myshoppinglist_api.Models.Product", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
             modelBuilder.Entity("myshoppinglist_api.Models.ProductAlternativeRelationship", b =>
                 {
                     b.HasOne("myshoppinglist_api.Models.Product", "AlternativeProduct")
@@ -2035,6 +2071,11 @@ namespace myshoppinglist_api.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.Navigation("Product");
 
                     b.Navigation("Shop");
@@ -2058,6 +2099,11 @@ namespace myshoppinglist_api.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.Navigation("ShopLocation");
 
                     b.Navigation("ShopProduct");
@@ -2080,6 +2126,11 @@ namespace myshoppinglist_api.Data.Migrations
                         .HasForeignKey("ShopProductId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("ShopLocation");
 

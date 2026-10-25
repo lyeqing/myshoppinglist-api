@@ -3,6 +3,7 @@ namespace myshoppinglist_api.Models;
 public class ShopProduct
 {
     public long Id { get; set; }
+    public long? UserAccountId { get; set; }
     public long ProductId { get; set; }
     public Product Product { get; set; } = null!;
     public long ShopId { get; set; }
