@@ -13,8 +13,21 @@ using myshoppinglist_api.Services.Models;
 
 namespace myshoppinglist_api.Tests;
 
+[Collection("Import worker database")]
 public class ProductPersistenceTests
 {
+    [PostgreSqlFact]
+    public async Task Existing_import_path_continues_to_write_only_legacy_records()
+    {
+        await using var scope = await PersistenceScope.CreateAsync();
+        var saved = await scope.SaveAsync();
+        Assert.Equal(ProductPersistenceStatus.Success, saved.Status);
+        Assert.Null((await scope.Db.Products.SingleAsync(p => p.Id == saved.ProductId)).UserAccountId);
+        Assert.Null((await scope.Db.ShopProducts.SingleAsync(p => p.Id == saved.ShopProductId)).UserAccountId);
+        Assert.All(await scope.Db.ShopProductPrices.Where(p => p.ShopProductId == saved.ShopProductId).ToArrayAsync(), p => Assert.Null(p.UserAccountId));
+        Assert.All(await scope.Db.ShopProductPriceHistory.Where(p => p.ShopProductId == saved.ShopProductId).ToArrayAsync(), p => Assert.Null(p.UserAccountId));
+    }
+
     [PostgreSqlFact]
     public async Task ProductLibrary_import_retries_record_a_single_activity_and_keep_its_identity()
     {

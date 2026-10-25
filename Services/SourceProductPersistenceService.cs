@@ -11,13 +11,23 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
     ShopProductService mappings, PriceService prices, ProductNormalisationService normalisation,
     ProductUrlValidator urls, TimeProvider clock, ILogger<SourceProductPersistenceService> logger)
 {
-    public async Task<ProductPersistenceResult> SaveAsync(long jobId, long userAccountId, Guid claimToken,
-        ExtractedShopProduct source, CancellationToken token, bool isFromCache = false, long? observation = null)
+    public Task<ProductPersistenceResult> SaveAsync(long jobId, long userAccountId, Guid claimToken,
+        ExtractedShopProduct source, CancellationToken token, bool isFromCache = false, long? observation = null) =>
+        SaveCoreAsync(jobId, userAccountId, claimToken, source, token, false, isFromCache, observation);
+
+    public Task<ProductPersistenceResult> SavePersonalAsync(long jobId, long userAccountId, Guid claimToken,
+        ExtractedShopProduct source, CancellationToken token, long? observation = null) =>
+        SaveCoreAsync(jobId, userAccountId, claimToken, source, token, true, false, observation);
+
+    private async Task<ProductPersistenceResult> SaveCoreAsync(long jobId, long userAccountId, Guid claimToken,
+        ExtractedShopProduct source, CancellationToken token, bool personal, bool isFromCache, long? observation)
     {
         token.ThrowIfCancellationRequested();
         if (db.ChangeTracker.Entries().Any())
             throw new InvalidOperationException("Source persistence requires a fresh or cleared DbContext with no unrelated tracked entities.");
         if (!ValidSource(source, urls, normalisation, clock)) return new(ProductPersistenceStatus.InvalidData, "invalid_source_product");
+        if (personal && source.SourceType != SourceType.BrowserExtension)
+            return new(ProductPersistenceStatus.InvalidData, "personal_capture_required");
         var ownsTransaction = db.Database.CurrentTransaction is null;
         var transaction = db.Database.CurrentTransaction ?? await db.Database.BeginTransactionAsync(token);
         var savepoint = "source_" + Guid.NewGuid().ToString("N");
@@ -33,7 +43,7 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
             var user = await db.UserAccounts.FromSqlInterpolated($"""SELECT * FROM "UserAccounts" WHERE "Id" = {userAccountId} FOR UPDATE""")
                 .SingleOrDefaultAsync(token);
             var listId = jobInfo.ShoppingListId;
-            if (observation != null && user?.ContributionBlocked == true) return new(ProductPersistenceStatus.AccessDenied, "contribution_blocked");
+            if (!personal && observation != null && user?.ContributionBlocked == true) return new(ProductPersistenceStatus.AccessDenied, "contribution_blocked");
             var list = await db.ShoppingLists.FromSqlInterpolated($"""SELECT * FROM "ShoppingLists" WHERE "Id" = {listId} FOR UPDATE""")
                 .SingleOrDefaultAsync(token);
             var job = await db.ProductImportJobs.FromSqlInterpolated($"""SELECT * FROM "ProductImportJobs" WHERE "Id" = {jobId} FOR UPDATE""")
@@ -41,7 +51,30 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
             if (job is null) return new(ProductPersistenceStatus.NotFound, "job_not_found");
             if (job.UserAccountId != userAccountId || job.ShoppingListId != listId || list?.UserAccountId != userAccountId)
                 return new(ProductPersistenceStatus.AccessDenied, "list_access_denied");
-            var eligibility = Eligibility(user, list, job, claimToken);
+            var eligibility = AccessEligibility(user, list);
+            if (eligibility is not null) return eligibility;
+            if (personal && (observation is null || !await db.ContributionObservations.AnyAsync(o => o.Id == observation
+                && o.UserAccountId == userAccountId && o.ImportJobId == jobId && o.Source == "PersonalAdd" && o.Url == job.SourceUrl, token)))
+                return new(ProductPersistenceStatus.InvalidData, "personal_observation_required");
+            if (personal && urls.Validate(job.SourceUrl).ProductUrl != urls.Validate(source.ProductUrl.AbsoluteUri).ProductUrl)
+                return new(ProductPersistenceStatus.InvalidData, "source_product_mismatch");
+            if (personal && job.Status == ProductImportJobStatus.Completed)
+            {
+                // Delivery retries only return the original saved item; they never
+                // refresh a price or restore a quantity the user has since edited.
+                var previous = await db.ProductImportRetailerResults.AsNoTracking().SingleOrDefaultAsync(r => r.ProductImportJobId == jobId
+                    && r.ShopId == job.SourceShopId && r.ShopProduct != null && r.ShopProduct.UserAccountId == userAccountId
+                    && r.ShopProduct.ProductId == job.ProductId && r.ShopProduct.Product.UserAccountId == userAccountId, token);
+                if (previous?.ShopProductId is null || job.ShoppingListProductId is null
+                    || !await db.ShoppingListProducts.AnyAsync(i => i.Id == job.ShoppingListProductId && i.ShoppingListId == listId
+                        && i.ProductId == job.ProductId && i.Product.UserAccountId == userAccountId, token))
+                    return new(ProductPersistenceStatus.ListUnavailable, "saved_item_unavailable");
+                return new(ProductPersistenceStatus.Success, ProductId: job.ProductId, ShopProductId: previous.ShopProductId,
+                    ShoppingListProductId: job.ShoppingListProductId, ExistingListItem: true,
+                    PriceSaved: await db.ShopProductPrices.AnyAsync(p => p.ShopProductId == previous.ShopProductId
+                        && p.UserAccountId == userAccountId && p.ContributionObservationId == observation, token));
+            }
+            eligibility = Eligibility(user, list, job, claimToken);
             if (eligibility is not null) return eligibility;
             var shopCode = source.ShopCode.ToLowerInvariant();
             var shop = await db.Shops.SingleOrDefaultAsync(s => s.Code == shopCode && s.IsActive, token);
@@ -50,12 +83,16 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
                 || job.SourceShopId.HasValue && job.SourceShopId != shop.Id)
                 return new(ProductPersistenceStatus.InvalidData, "source_retailer_mismatch");
 
-            var known = await mappings.FindAsync(shop.Id, source, token);
+            var known = personal
+                ? await mappings.FindPersonalAsync(userAccountId, shop.Id, source, token)
+                : await mappings.FindAsync(shop.Id, source, token);
             if (known.Count > 1) return new(ProductPersistenceStatus.IdentityConflict, "ambiguous_retailer_mapping");
             if (known.SingleOrDefault()?.ShopProductCode is { } knownCode && !string.IsNullOrWhiteSpace(source.ShopProductCode)
                 && knownCode != source.ShopProductCode.Trim())
                 return new(ProductPersistenceStatus.IdentityConflict, "retailer_product_code_changed");
-            var resolution = await products.ResolveAsync(source, known.SingleOrDefault(), clock.GetUtcNow().UtcDateTime, token);
+            var resolution = personal
+                ? await products.ResolvePersonalAsync(userAccountId, source, known.SingleOrDefault(), clock.GetUtcNow().UtcDateTime, token)
+                : await products.ResolveAsync(source, known.SingleOrDefault(), clock.GetUtcNow().UtcDateTime, token);
             if (resolution.Status != ProductPersistenceStatus.Success) return new(resolution.Status, resolution.ErrorCode);
             var product = resolution.Product!;
             if (job.ProductId.HasValue && job.ProductId != product.Id)
@@ -65,12 +102,17 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
             var priceSaved = false;
             if (source.Offer is ProviderResult<ShopProductOffer>.Success offer)
             {
-                var result = await prices.SaveAsync(mapping, offer.Value, token, observation);
+                var result = personal
+                    ? await prices.SavePersonalAsync(userAccountId, mapping, offer.Value, token, observation)
+                    : await prices.SaveAsync(mapping, offer.Value, token, observation);
                 if (result.Status == PriceUpdateStatus.InvalidOffer) return new(ProductPersistenceStatus.InvalidData, result.ErrorCode);
                 priceSaved = result.Status is PriceUpdateStatus.Saved or PriceUpdateStatus.Unchanged;
             }
 
             var now = clock.GetUtcNow().UtcDateTime;
+            if (personal && job.ShoppingListProductId is { } savedItem && !await db.ShoppingListProducts.AnyAsync(i => i.Id == savedItem
+                && i.ShoppingListId == listId && i.ProductId == product.Id && i.Product.UserAccountId == userAccountId, token))
+                return new(ProductPersistenceStatus.AccessDenied, "item_owner_mismatch");
             var item = await db.ShoppingListProducts.SingleOrDefaultAsync(i => i.ShoppingListId == listId && i.ProductId == product.Id, token);
             var existingItem = item is not null;
             if (item is null)
@@ -95,7 +137,8 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
             // Notes, purchased state and hidden state are preserved on every import.
             await ProductLibraryService.TrackActivityAsync(db, userAccountId, item, token);
             job.Product = product; job.ShoppingListProduct = item; job.SourceShopId = shop.Id;
-            job.LastActivityDate = now; job.ProgressStage = ProductImportProgressStage.CheckingRetailers;
+            job.LastActivityDate = now;
+            job.ProgressStage = personal ? ProductImportProgressStage.SavingSourceProduct : ProductImportProgressStage.CheckingRetailers;
             var retailerResult = await db.ProductImportRetailerResults.SingleOrDefaultAsync(r => r.ProductImportJobId == jobId && r.ShopId == shop.Id, token);
             if (retailerResult is null)
             {
@@ -121,11 +164,23 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
                 retailerResult.ErrorMessage = source.Offer is null ? "The product was identified, but a price was not checked." : null;
             }
             await db.SaveChangesAsync(token);
-            await BrandDiscoveryService.EnqueueAddedAsync(db, item, product, user!, now, token);
+            if (!personal) await BrandDiscoveryService.EnqueueAddedAsync(db, item, product, user!, now, token);
             await db.SaveChangesAsync(token);
             // Time may have elapsed while waiting for database locks. Never commit an expired lease or trial.
             eligibility = Eligibility(user, list, job, claimToken);
             if (eligibility is not null) return eligibility;
+            if (personal)
+            {
+                // Complete without scheduling any retailer checks or discovery.
+                var lease = job.LeaseExpiresDate;
+                job.Status = ProductImportJobStatus.Completed; job.ProgressStage = ProductImportProgressStage.Completed;
+                job.ClaimToken = null; job.LeaseExpiresDate = null; job.CompletedDate = now;
+                job.NextAttemptDate = null; job.ErrorCode = null; job.ErrorMessage = null;
+                await db.SaveChangesAsync(token);
+                eligibility = AccessEligibility(user, list);
+                if (eligibility is not null) return eligibility;
+                if (lease <= clock.GetUtcNow().UtcDateTime) return new(ProductPersistenceStatus.LostClaim, "job_claim_lost");
+            }
             if (ownsTransaction) await transaction.CommitAsync(token);
             else await transaction.ReleaseSavepointAsync(savepoint, token);
             accepted = true;
@@ -155,12 +210,20 @@ public sealed class SourceProductPersistenceService(MyShoppingListDbContext db, 
         }
     }
 
-    private ProductPersistenceResult? Eligibility(UserAccount? user, ShoppingList? list, ProductImportJob job, Guid token)
+    private ProductPersistenceResult? AccessEligibility(UserAccount? user, ShoppingList? list)
     {
         var now = clock.GetUtcNow().UtcDateTime;
         if (user is null || !user.IsActive) return new(ProductPersistenceStatus.AccessDenied, "inactive_account");
         if (user.IsTrial && (user.ExpiresDate is null || user.ExpiresDate <= now)) return new(ProductPersistenceStatus.ExpiredAccount, "trial_expired");
         if (list is null || list.IsArchived || list.ExpiresDate <= now) return new(ProductPersistenceStatus.ListUnavailable, "list_unavailable");
+        return null;
+    }
+
+    private ProductPersistenceResult? Eligibility(UserAccount? user, ShoppingList? list, ProductImportJob job, Guid token)
+    {
+        var access = AccessEligibility(user, list);
+        if (access is not null) return access;
+        var now = clock.GetUtcNow().UtcDateTime;
         if (job.Status != ProductImportJobStatus.Processing || token == Guid.Empty || job.ClaimToken != token || job.LeaseExpiresDate <= now
             || job.LeaseExpiresDate is null) return new(ProductPersistenceStatus.LostClaim, "job_claim_lost");
         return null;

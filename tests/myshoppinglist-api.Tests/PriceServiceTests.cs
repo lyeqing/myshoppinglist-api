@@ -10,8 +10,23 @@ using myshoppinglist_api.Services.Models;
 
 namespace myshoppinglist_api.Tests;
 
+[Collection("Import worker database")]
 public class PriceServiceTests
 {
+    [PostgreSqlFact]
+    public async Task Legacy_price_path_rejects_a_mapping_with_forged_ownership_or_identity()
+    {
+        await using var scope = await PersistenceScope.CreateAsync();
+        var saved = await scope.SaveAsync();
+        var mapping = await scope.Db.ShopProducts.AsNoTracking().SingleAsync(p => p.Id == saved.ShopProductId);
+        mapping.UserAccountId = scope.UserId;
+        Assert.Equal("mapping_owner_mismatch", (await Service(scope).SaveAsync(mapping, scope.Offer, default)).ErrorCode);
+        mapping.UserAccountId = null;
+        mapping.ProductId++;
+        Assert.Equal("mapping_owner_mismatch", (await Service(scope).SaveAsync(mapping, scope.Offer, default)).ErrorCode);
+        Assert.Equal(scope.Offer.Price, (await scope.Db.ShopProductPrices.SingleAsync(p => p.ShopProductId == saved.ShopProductId)).Price);
+    }
+
     [PostgreSqlFact]
     public async Task Replaying_customer_price_preserves_provenance_and_blocked_updates_are_rejected()
     {

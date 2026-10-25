@@ -17,24 +17,38 @@ public sealed class ProductService(MyShoppingListDbContext db, ProductNormalisat
         return db.Database.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(5067596, 1)", token);
     }
 
-    public async Task<ProductResolution> ResolveAsync(ExtractedShopProduct source, ShopProduct? knownMapping,
+    public Task<ProductResolution> ResolveAsync(ExtractedShopProduct source, ShopProduct? knownMapping,
+        DateTime now, CancellationToken token) => ResolveCoreAsync(null, source, knownMapping, now, token);
+
+    public Task<ProductResolution> ResolvePersonalAsync(long accountId, ExtractedShopProduct source, ShopProduct? knownMapping,
+        DateTime now, CancellationToken token)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(accountId);
+        return ResolveCoreAsync(accountId, source, knownMapping, now, token);
+    }
+
+    private async Task<ProductResolution> ResolveCoreAsync(long? accountId, ExtractedShopProduct source, ShopProduct? knownMapping,
         DateTime now, CancellationToken token)
     {
         await LockCatalogueAsync(db, token);
+        if (knownMapping is not null && knownMapping.UserAccountId != accountId)
+            return new(ProductPersistenceStatus.AccessDenied, ErrorCode: "mapping_owner_mismatch");
+        var owned = db.Products.Where(p => p.UserAccountId == accountId);
         var identity = normalisation.Normalise(source.Identity);
         var exact = new List<Product>();
         if (identity.GTIN is { } gtin)
         {
             var forms = new[] { 8, 12, 13, 14 }.Select(length => gtin[^length..])
                 .Where(value => normalisation.Gtin(value) == gtin).ToArray();
-            var candidates = await db.Products.Where(p => !p.IsDeleted && p.GTIN != null && forms.Contains(p.GTIN)).ToListAsync(token);
+            var candidates = await owned.Where(p => !p.IsDeleted && p.GTIN != null && forms.Contains(p.GTIN)).ToListAsync(token);
             if (candidates.Any(p => matching.Match(source.Identity, ProductMatchingService.Identity(p)).Contradiction))
                 return new(ProductPersistenceStatus.IdentityConflict, ErrorCode: "contradictory_gtin");
             exact.AddRange(candidates.Where(p => matching.Match(source.Identity, ProductMatchingService.Identity(p)).Type == MatchType.Exact));
         }
         if (knownMapping is not null)
         {
-            var mapped = await db.Products.SingleAsync(p => p.Id == knownMapping.ProductId, token);
+            var mapped = await owned.SingleOrDefaultAsync(p => p.Id == knownMapping.ProductId, token);
+            if (mapped is null) return new(ProductPersistenceStatus.AccessDenied, ErrorCode: "product_owner_mismatch");
             var match = matching.Match(source.Identity, ProductMatchingService.Identity(mapped));
             if (mapped.IsDeleted || match.Contradiction
                 || exact.Any(p => p.Id != mapped.Id))
@@ -51,7 +65,7 @@ public sealed class ProductService(MyShoppingListDbContext db, ProductNormalisat
         }
         if (exact.Count == 0)
         {
-            IQueryable<Product> candidates = db.Products.Where(p => !p.IsDeleted);
+            IQueryable<Product> candidates = owned.Where(p => !p.IsDeleted);
             if (identity.ManufacturerPartNumber is not null || identity.ModelNumber is not null)
                 candidates = candidates.Where(p => identity.ManufacturerPartNumber != null && p.ManufacturerPartNumber == identity.ManufacturerPartNumber
                     || identity.ModelNumber != null && p.ModelNumber == identity.ModelNumber);
@@ -73,7 +87,7 @@ public sealed class ProductService(MyShoppingListDbContext db, ProductNormalisat
             Enrich(exact[0], source, identity, now);
             return new(ProductPersistenceStatus.Success, exact[0], MatchConfidence: confidence);
         }
-        var product = new Product { Name = source.Identity.Name.Trim(), CreatedDate = now, UpdatedDate = now };
+        var product = new Product { UserAccountId = accountId, Name = source.Identity.Name.Trim(), CreatedDate = now, UpdatedDate = now };
         Enrich(product, source, identity, now);
         db.Products.Add(product);
         return new(ProductPersistenceStatus.Success, product);

@@ -10,16 +10,25 @@ namespace myshoppinglist_api.Services;
 
 public sealed class SourceProductCacheService(MyShoppingListDbContext db, CatalogueFreshnessService freshness, TimeProvider clock)
 {
-    public async Task<ExtractedShopProduct?> FindAsync(string shop, Uri url, CancellationToken token)
+    public Task<ExtractedShopProduct?> FindAsync(string shop, Uri url, CancellationToken token) => FindCoreAsync(null, shop, url, token);
+
+    public Task<ExtractedShopProduct?> FindPersonalAsync(long accountId, string shop, Uri url, CancellationToken token)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(accountId);
+        return FindCoreAsync(accountId, shop, url, token);
+    }
+
+    private async Task<ExtractedShopProduct?> FindCoreAsync(long? accountId, string shop, Uri url, CancellationToken token)
     {
         var code = shop == "coles" ? ColesProductParser.ProductCode(url) : shop == "woolworths" ? WoolworthsProductParser.ProductCode(url) : null;
         if (code is null) return null;
-        var matches = await db.ShopProducts.AsNoTracking().Include(p => p.Product).Where(p => p.Shop.Code == shop
+        var matches = await db.ShopProducts.AsNoTracking().Include(p => p.Product).Where(p => p.UserAccountId == accountId
+            && p.Product.UserAccountId == accountId && p.Shop.Code == shop
             && p.ShopProductCode == code && p.Shop.IsActive && p.IsActive && !p.Product.IsDeleted && p.MatchType == MatchType.Exact).ToListAsync(token);
         if (matches.Count != 1) return null;
         var mapping = matches[0]; var now = clock.GetUtcNow();
         if (!freshness.IsFresh(mapping.LastCheckedDate, now)) return null;
-        var prices = await db.ShopProductPrices.AsNoTracking().Where(p => p.ShopProductId == mapping.Id).ToListAsync(token);
+        var prices = await db.ShopProductPrices.AsNoTracking().Where(p => p.UserAccountId == accountId && p.ShopProductId == mapping.Id).ToListAsync(token);
         // Do not silently substitute a store-specific observation or a stale promotion.
         if (prices.Count == 0 || prices.Any(p => !freshness.IsFresh(p.CheckedDate, now) || p.Currency != "AUD"
             || p.ShopLocationId != null || p.PriceScope is not (PriceScope.Unknown or PriceScope.Online or PriceScope.National)
