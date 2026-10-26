@@ -84,6 +84,16 @@ Apply exits with `0` after a successful validated commit or a validated no-op, `
 
 ## Local setup
 
+### Local personal-mode activation
+
+The local `MyShoppingList.public` conversion has been completed: 39 account-owned products, 59 retailer mappings, 7 current prices and 7 history rows were copied, with 231 reference updates. Original legacy records were retained. The completed conversion reported no remaining candidates or conflicts, and independent row-hash and ownership checks passed. This describes the local rollout, not automatic deployment to other databases.
+
+The approved local configuration in ignored `appsettings.Local.json` enables `UserExtension:PersonalCapturesEnabled` and explicitly sets `ProductImport:Enabled` and `PriceRefresh:Enabled` to `false`, preserving the existing connection string and extension allowlist. Restart the API to load it. The committed defaults remain unchanged; other installations require their own migration and activation approval. Do not disable personal mode to roll back a converted database: legacy reads will not represent the new private catalogue. Keep collection workers disabled while investigating problems.
+
+The separate frontend `playwright.personal.config.ts` runs the unpacked Chromium extension, real API and website against an isolated `codex_activation_` PostgreSQL schema. It uses ports 5392 (test API) and 3001 (website), refuses occupied ports, never stops another server, and verifies that the application's `public` tables remain unchanged. Supply `MYSHOPPINGLIST_TEST_CONNECTION` plus matching `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` and `PGDATABASE` privately in the process environment; `PSQL_PATH` and `MYSHOPPINGLIST_API_PROJECT` optionally select the installed tools/project. Build the API first, then run `node node_modules/@playwright/test/cli.js test --config playwright.personal.config.ts` from the frontend directory. No credentials belong in Git or command arguments.
+
+The journey opens a fresh Chromium window to exercise native toolbar/side-panel focus. It uses controlled retailer HTML fixtures and disposable accounts, including different prices for two owners. It exercises actual extension toolbar intent, preview/cancel/save, website lists and comparisons, Favorites, Essentials, mobile list editing and account switching. This journey passed during local activation, including verification that no collection tasks were created and public data stayed unchanged. It does not establish that live supermarket pages currently extract correctly. Verify installed Chrome and real retailer pages separately before treating the local extension as a published release.
+
 Requires .NET SDK 10, EF CLI 10.0.11, and PostgreSQL. The database name is exactly `MyShoppingList` (case-sensitive). Supply `ConnectionStrings__MyShoppingList` through the environment or an ignored `appsettings.Local.json`:
 
 ```json
