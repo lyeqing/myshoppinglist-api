@@ -2,6 +2,31 @@
 
 Standalone ASP.NET Core 10 / EF Core / PostgreSQL backend following HandyTool conventions. Stages 1 and 2 provide the database and provider contracts. Stage 3A adds safe public-page fetching and Coles source extraction. Stage 3B adds transactional source-product persistence and deterministic matching. Stage 3C adds the durable source-import worker. Stage 4A adds trial accounts and secure sessions. Stage 4B adds authenticated import submission and status polling. Stage 5A adds paginated import discovery and the separate Next.js frontend. Registered-account login and other retailers will follow separately.
 
+## Personal-product migration audit
+
+The personal-product redesign retains PostgreSQL. Before proposing legacy-data conversion, run the read-only audit from the API project directory:
+
+```powershell
+dotnet run --project myshoppinglist-api.csproj --no-launch-profile -- --audit-personal-products
+```
+
+Alternatively, after building, run `dotnet bin/Debug/net10.0/myshoppinglist-api.dll --audit-personal-products` from this directory. The command uses the application's normal configuration, including ignored `appsettings.Local.json` and environment overrides. Check the database and schema names in the JSON report before using its findings. Credentials are not printed.
+
+The command exits without starting the web host, collection workers or retailer transports. It neither creates/migrates the schema nor enables personal mode. Its queries use a PostgreSQL **read-only, repeatable-read transaction**, which is rolled back after the report. It does not require stopping an existing API, although other processes can change the database after the snapshot. Read queries can briefly hold locks needed for a consistent snapshot; avoid concurrent schema maintenance.
+
+The JSON contains aggregate counts only, covering:
+
+- Legacy/private products, retailer mappings and prices, including legacy price history.
+- Existing links from lists, Favorites, Essentials, product activities, imports and chosen alternatives. Account-product pairs are potential private-copy candidates, not verified ownership of every attached catalogue value.
+- Strict current-price attribution candidates: accepted `PersonalAdd` evidence must agree on account, import/list ownership, product, URLs and original observation date. A `SharedCustomer` contributor ID does not establish personal capture intent. Missing, rejected or inconsistent evidence requires review. Separate counts identify missing account/import links, account/list/product disagreement, URL/date differences and shared-task links, so a failed check is not mistaken for proof that nobody owns the observation.
+- Existing private GTIN overlaps and retailer URL/code collisions, plus cross-owner references that require resolution before conversion.
+
+**Legacy price-history rows have no observation reference.** Matching prices or dates cannot establish ownership, so the audit does not classify any legacy history as attributable. It also does not approve copying shared alternative reviews or automatic brand suggestions.
+
+The report includes archived, expired and inactive-account references to avoid silently overlooking retained data. Categories may overlap; do not sum reference/conflict counts as distinct rows. The actual copy/retention policy, conflict handling and conversion still require a separate approved plan. No report result authorizes data deletion or feature activation.
+
+Exit code `0` means a report was produced, `1` means configuration/database/schema access failed, and `2` means cancellation through the audit method's cancellation token. Errors omit connection details. Tests in `LegacyProductMigrationAuditTests` use isolated PostgreSQL schemas, fingerprint all table rows before/after, verify database-enforced write rejection, and exercise the command with legacy workers configured on.
+
 ## Local setup
 
 Requires .NET SDK 10, EF CLI 10.0.11, and PostgreSQL. The database name is exactly `MyShoppingList` (case-sensitive). Supply `ConnectionStrings__MyShoppingList` through the environment or an ignored `appsettings.Local.json`:

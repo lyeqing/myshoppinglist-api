@@ -18,6 +18,13 @@ using Microsoft.Extensions.Options;
 using System.Threading.RateLimiting;
 using myshoppinglist_api.Endpoints;
 
+// Exit before constructing the application host, logger or collection services.
+if (args.Contains("--audit-personal-products", StringComparer.Ordinal))
+{
+    Environment.ExitCode = await Program.RunLegacyProductAuditAsync(args);
+    return;
+}
+
 Log.Logger = new LoggerConfiguration().MinimumLevel.Error().WriteTo.Console()
     .WriteTo.File("logs/myshoppinglist-.log", rollingInterval: RollingInterval.Day,
         fileSizeLimitBytes: 10485760, rollOnFileSizeLimit: true, retainedFileCountLimit: 14, shared: true,
@@ -244,6 +251,38 @@ finally { Log.CloseAndFlush(); }
 
 public partial class Program
 {
+    public static async Task<int> RunLegacyProductAuditAsync(string[] args, CancellationToken ct = default)
+    {
+        try
+        {
+            var builder = WebApplication.CreateBuilder(args.Where(arg => arg != "--audit-personal-products").ToArray());
+            builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true).AddEnvironmentVariables();
+            var connection = builder.Configuration.GetConnectionString("MyShoppingList");
+            if (string.IsNullOrWhiteSpace(connection))
+            {
+                await Console.Error.WriteLineAsync("Audit unavailable: configure ConnectionStrings:MyShoppingList. No database changes were requested.");
+                return 1;
+            }
+            await using var db = new MyShoppingListDbContext(new DbContextOptionsBuilder<MyShoppingListDbContext>()
+                .UseNpgsql(connection).Options);
+            var report = await new LegacyProductMigrationAuditService(db, TimeProvider.System).ReadAsync(ct);
+            await Console.Out.WriteLineAsync(System.Text.Json.JsonSerializer.Serialize(report,
+                new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web) { WriteIndented = true }));
+            return 0;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await Console.Error.WriteLineAsync("Audit cancelled. No database changes were requested.");
+            return 2;
+        }
+        catch (Exception)
+        {
+            // Connection errors can contain credentials or internal host details.
+            await Console.Error.WriteLineAsync("Audit unavailable: check database access and the existing schema. No migrations or database changes were requested.");
+            return 1;
+        }
+    }
+
     public static LogEventLevel RequestLogLevel(HttpContext context, double elapsed, Exception? exception) =>
         exception is not null || context.Response.StatusCode >= 500 ? LogEventLevel.Error : LogEventLevel.Debug;
 
