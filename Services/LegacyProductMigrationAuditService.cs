@@ -31,7 +31,8 @@ public sealed class LegacyProductMigrationAuditService(MyShoppingListDbContext d
                 "This is an aggregate snapshot, not an approved conversion or a guarantee that records are transferable.",
                 "Account-product candidates come only from existing account-owned lists, preferences, activities, import references and chosen substitutions. They include archived, expired and inactive-account records; retention policy is still required.",
                 "An attributable current-price candidate requires an accepted PersonalAdd observation, the same account's import and list, the same product, exact URL agreement and the original observation date. SharedCustomer, dedicated-worker and server observations are not personal captures.",
-                "Legacy price history has no observation reference. Matching a price or timestamp is not proof of its owner; none is classified as attributable history.",
+                "Legacy price history has an optional observation reference. PersonalAdd evidence is counted separately from shared, worker, server and unlinked history. Matching a price or timestamp without a reference is not proof of its owner.",
+                "Consistent personal-history links require an accepted PersonalAdd observation, an existing account, matching import/list/product ownership and URLs, no shared-task link, and legacy parents. Date agreement is reported separately; consistent links with differing timestamps require review, not automatic copying or exclusion.",
                 "Identity overlaps and retailer URL/code collisions require review. Existing private records must not be overwritten or silently merged.",
                 "Reference and conflict categories can overlap. Counts must not be summed as distinct records. No legacy alternative relationship is approved for automatic private copying.",
                 "The audit starts no collection workers, performs no extraction or migration, and changes no feature settings. Other processes may change the database after this snapshot."
@@ -92,6 +93,28 @@ public sealed class LegacyProductMigrationAuditService(MyShoppingListDbContext d
             LEFT JOIN "ProductImportJobs" j ON j."Id" = o."ImportJobId"
             LEFT JOIN "ShoppingLists" l ON l."Id" = j."ShoppingListId"
             WHERE p."UserAccountId" IS NULL
+        ), history_evidence AS (
+            SELECT h."ContributionObservationId" AS observation_reference, o."Id" AS observation_exists,
+                o."Source", o."Outcome", o."CollectedAt", h."CheckedDate", o."TaskId",
+                o."Url" AS observation_url, h."SourceUrl" AS price_url, m."ProductUrl" AS mapping_url,
+                a."Id" AS account_exists, j."Id" AS import_exists, o."UserAccountId" AS owner,
+                j."UserAccountId" AS import_owner, l."UserAccountId" AS list_owner,
+                j."ProductId" AS import_product, m."ProductId" AS mapping_product,
+                m."UserAccountId" AS mapping_owner, product."UserAccountId" AS product_owner,
+                CASE WHEN o."Source" = 'PersonalAdd' AND o."Outcome" = 'Accepted'
+                    AND o."TaskId" IS NULL AND a."Id" IS NOT NULL AND j."Id" IS NOT NULL
+                    AND o."UserAccountId" = j."UserAccountId" AND l."UserAccountId" = j."UserAccountId"
+                    AND j."ProductId" = m."ProductId" AND m."UserAccountId" IS NULL AND product."UserAccountId" IS NULL
+                    AND o."Url" = m."ProductUrl" AND h."SourceUrl" = m."ProductUrl"
+                    THEN TRUE ELSE FALSE END AS personal_links_consistent
+            FROM "ShopProductPriceHistory" h
+            JOIN "ShopProducts" m ON m."Id" = h."ShopProductId"
+            JOIN "Products" product ON product."Id" = m."ProductId"
+            LEFT JOIN "ContributionObservations" o ON o."Id" = h."ContributionObservationId"
+            LEFT JOIN "UserAccounts" a ON a."Id" = o."UserAccountId"
+            LEFT JOIN "ProductImportJobs" j ON j."Id" = o."ImportJobId"
+            LEFT JOIN "ShoppingLists" l ON l."Id" = j."ShoppingListId"
+            WHERE h."UserAccountId" IS NULL
         ), candidate_mappings AS (
             SELECT c.owner, m."Id", m."ShopId", m."ShopProductCode", m."ProductUrl"
             FROM candidates c JOIN "ShopProducts" m ON m."ProductId" = c.product AND m."UserAccountId" IS NULL
@@ -101,7 +124,27 @@ public sealed class LegacyProductMigrationAuditService(MyShoppingListDbContext d
         UNION ALL SELECT 'legacyRetailerMappings', count(*) FROM "ShopProducts" WHERE "UserAccountId" IS NULL
         UNION ALL SELECT 'legacyCurrentPrices', count(*) FROM "ShopProductPrices" WHERE "UserAccountId" IS NULL
         UNION ALL SELECT 'privateCurrentPrices', count(*) FROM "ShopProductPrices" WHERE "UserAccountId" IS NOT NULL
-        UNION ALL SELECT 'legacyPriceHistoryWithoutAttribution', count(*) FROM "ShopProductPriceHistory" WHERE "UserAccountId" IS NULL
+        UNION ALL SELECT 'legacyPriceHistoryRows', count(*) FROM history_evidence
+        UNION ALL SELECT 'legacyHistoryWithObservationReference', count(*) FROM history_evidence WHERE observation_reference IS NOT NULL
+        UNION ALL SELECT 'legacyHistoryWithoutObservationReference', count(*) FROM history_evidence WHERE observation_reference IS NULL
+        UNION ALL SELECT 'legacyHistoryWithDanglingObservationReference', count(*) FROM history_evidence WHERE observation_reference IS NOT NULL AND observation_exists IS NULL
+        UNION ALL SELECT 'legacyHistoryWithDedicatedWorkerObservations', count(*) FROM history_evidence WHERE "Source" = 'DedicatedWorker'
+        UNION ALL SELECT 'legacyHistoryWithSharedCustomerObservations', count(*) FROM history_evidence WHERE "Source" = 'SharedCustomer'
+        UNION ALL SELECT 'legacyHistoryWithServerObservations', count(*) FROM history_evidence WHERE "Source" = 'Server'
+        UNION ALL SELECT 'legacyHistoryWithOtherObservationSources', count(*) FROM history_evidence WHERE observation_exists IS NOT NULL AND "Source" NOT IN ('DedicatedWorker', 'SharedCustomer', 'Server', 'PersonalAdd')
+        UNION ALL SELECT 'legacyHistoryWithPersonalAddObservations', count(*) FROM history_evidence WHERE "Source" = 'PersonalAdd'
+        UNION ALL SELECT 'legacyHistoryWithAcceptedPersonalAddObservations', count(*) FROM history_evidence WHERE "Source" = 'PersonalAdd' AND "Outcome" = 'Accepted'
+        UNION ALL SELECT 'legacyHistoryWithConsistentPersonalOwnershipLinks', count(*) FROM history_evidence WHERE personal_links_consistent
+        UNION ALL SELECT 'legacyHistoryPersonalOwnershipWithMatchingDate', count(*) FROM history_evidence WHERE personal_links_consistent AND "CollectedAt" = "CheckedDate"
+        UNION ALL SELECT 'legacyHistoryPersonalOwnershipWithDateMismatch', count(*) FROM history_evidence WHERE personal_links_consistent AND "CollectedAt" IS DISTINCT FROM "CheckedDate"
+        UNION ALL SELECT 'legacyHistoryPersonalEvidenceNeedingLinkReview', count(*) FROM history_evidence WHERE "Source" = 'PersonalAdd' AND NOT personal_links_consistent
+        UNION ALL SELECT 'historyPersonalEvidenceNotAccepted', count(*) FROM history_evidence WHERE "Source" = 'PersonalAdd' AND "Outcome" <> 'Accepted'
+        UNION ALL SELECT 'historyPersonalEvidenceMissingAccountOrImport', count(*) FROM history_evidence WHERE "Source" = 'PersonalAdd' AND (account_exists IS NULL OR import_exists IS NULL)
+        UNION ALL SELECT 'historyPersonalEvidenceAccountListOrProductMismatch', count(*) FROM history_evidence WHERE "Source" = 'PersonalAdd' AND account_exists IS NOT NULL AND import_exists IS NOT NULL AND (owner IS DISTINCT FROM import_owner OR owner IS DISTINCT FROM list_owner OR import_product IS DISTINCT FROM mapping_product)
+        UNION ALL SELECT 'historyPersonalEvidenceUrlMismatch', count(*) FROM history_evidence WHERE "Source" = 'PersonalAdd' AND (observation_url IS DISTINCT FROM mapping_url OR price_url IS DISTINCT FROM mapping_url)
+        UNION ALL SELECT 'historyPersonalEvidenceObservationDateMismatch', count(*) FROM history_evidence WHERE "Source" = 'PersonalAdd' AND "CollectedAt" IS DISTINCT FROM "CheckedDate"
+        UNION ALL SELECT 'historyPersonalEvidenceLinkedToSharedTask', count(*) FROM history_evidence WHERE "Source" = 'PersonalAdd' AND "TaskId" IS NOT NULL
+        UNION ALL SELECT 'historyPersonalEvidenceParentOwnerMismatch', count(*) FROM history_evidence WHERE "Source" = 'PersonalAdd' AND (mapping_owner IS NOT NULL OR product_owner IS NOT NULL)
         UNION ALL SELECT 'legacyListItems', count(*) FROM "ShoppingListProducts" i JOIN "Products" p ON p."Id" = i."ProductId" WHERE p."UserAccountId" IS NULL
         UNION ALL SELECT 'legacyFavoritePreferences', count(*) FROM "UserProductPreferences" f JOIN "Products" p ON p."Id" = f."ProductId" WHERE p."UserAccountId" IS NULL AND f."IsFavorite"
         UNION ALL SELECT 'legacyEssentialPreferences', count(*) FROM "UserProductPreferences" f JOIN "Products" p ON p."Id" = f."ProductId" WHERE p."UserAccountId" IS NULL AND f."IsEssential"

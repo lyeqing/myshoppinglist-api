@@ -82,7 +82,7 @@ public sealed class LegacyProductMigrationAuditTests
     }
 
     [PostgreSqlFact]
-    public async Task Attribution_requires_personal_accepted_matching_evidence_and_never_infers_history_ownership()
+    public async Task Attribution_requires_personal_accepted_matching_evidence_and_does_not_infer_unlinked_history_ownership()
     {
         await using var f = await AuditScope.CreateAsync();
         var (a, b, listA, _) = await f.AccountsAsync();
@@ -133,9 +133,87 @@ public sealed class LegacyProductMigrationAuditTests
         Assert.Equal(1, report.Counts["personalEvidenceUrlMismatch"]);
         Assert.Equal(1, report.Counts["personalEvidenceObservationDateMismatch"]);
         Assert.Equal(1, report.Counts["personalEvidenceLinkedToSharedTask"]);
-        Assert.Equal(2, report.Counts["legacyPriceHistoryWithoutAttribution"]);
+        Assert.Equal(2, report.Counts["legacyPriceHistoryRows"]);
+        Assert.Equal(2, report.Counts["legacyHistoryWithoutObservationReference"]);
+        Assert.Equal(0, report.Counts["legacyHistoryWithObservationReference"]);
+        Assert.Equal(0, report.Counts["legacyHistoryWithConsistentPersonalOwnershipLinks"]);
+        Assert.False(report.Counts.ContainsKey("legacyPriceHistoryWithoutAttribution"));
         Assert.Equal(1, report.Counts["candidateAccountProductPairs"]);
         Assert.Contains(report.Limitations, text => text.Contains("not proof of its owner"));
+        Assert.Equal(before, await f.FingerprintAsync());
+    }
+
+    [PostgreSqlFact]
+    public async Task History_distinguishes_observation_sources_and_personal_ownership_links_from_dates()
+    {
+        await using var f = await AuditScope.CreateAsync();
+        var (a, b, listA, _) = await f.AccountsAsync();
+        var product = f.Product(null);
+        var otherProduct = f.Product(null);
+        var privateProduct = f.Product(a.Id);
+        f.Db.AddRange(product, otherProduct, privateProduct); await f.Db.SaveChangesAsync();
+        var job = f.Job(a.Id, listA.Id, product.Id);
+        var wrongProductJob = f.Job(a.Id, listA.Id, otherProduct.Id);
+        f.Db.AddRange(job, wrongProductJob); await f.Db.SaveChangesAsync();
+
+        foreach (var kind in new[] { "personal", "personal-date", "personal-account", "personal-product", "personal-url",
+            "personal-missing-account", "personal-missing-import", "personal-rejected", "personal-task",
+            "worker", "shared", "server", "other", "unlinked" })
+        {
+            var mapping = f.Mapping(product);
+            var observation = new ContributionObservation { UserAccountId = a.Id, ImportJobId = job.Id,
+                Source = "PersonalAdd", Outcome = "Accepted", Url = mapping.ProductUrl,
+                CollectedAt = f.Now, ReceivedAt = f.Now };
+            switch (kind)
+            {
+                case "personal-date": observation.CollectedAt = f.Now.AddSeconds(-10); break;
+                case "personal-account": observation.UserAccountId = b.Id; break;
+                case "personal-product": observation.ImportJobId = wrongProductJob.Id; break;
+                case "personal-url": observation.Url = "https://www.coles.com.au/product/99999999"; break;
+                case "personal-missing-account": observation.UserAccountId = 99999999; break;
+                case "personal-missing-import": observation.ImportJobId = null; break;
+                case "personal-rejected": observation.Outcome = "Rejected"; break;
+                case "personal-task": observation.TaskId = 99999999; break;
+                case "worker": observation.Source = "DedicatedWorker"; observation.UserAccountId = null; break;
+                case "shared": observation.Source = "SharedCustomer"; break;
+                case "server": observation.Source = "Server"; observation.UserAccountId = null; break;
+                case "other": observation.Source = "Other"; break;
+            }
+            if (kind != "unlinked") { f.Db.Add(observation); await f.Db.SaveChangesAsync(); }
+            f.Db.ShopProductPriceHistory.Add(new() { ShopProduct = mapping,
+                ContributionObservationId = kind == "unlinked" ? null : observation.Id,
+                Price = 4, SourceUrl = mapping.ProductUrl, CheckedDate = f.Now, CreatedDate = f.Now });
+            await f.Db.SaveChangesAsync();
+        }
+        // Private rows must not be included in legacy history totals or missing-reference counts.
+        f.Db.ShopProductPriceHistory.Add(new() { ShopProduct = f.Mapping(privateProduct), UserAccountId = a.Id,
+            Price = 4, CheckedDate = f.Now, CreatedDate = f.Now });
+        await f.Db.SaveChangesAsync(); f.Db.ChangeTracker.Clear();
+        var before = await f.FingerprintAsync();
+
+        var report = await f.Audit.ReadAsync();
+        Assert.Equal(14, report.Counts["legacyPriceHistoryRows"]);
+        Assert.Equal(13, report.Counts["legacyHistoryWithObservationReference"]);
+        Assert.Equal(1, report.Counts["legacyHistoryWithoutObservationReference"]);
+        Assert.Equal(0, report.Counts["legacyHistoryWithDanglingObservationReference"]);
+        foreach (var key in new[] { "legacyHistoryWithDedicatedWorkerObservations", "legacyHistoryWithSharedCustomerObservations",
+            "legacyHistoryWithServerObservations", "legacyHistoryWithOtherObservationSources" })
+            Assert.Equal(1, report.Counts[key]);
+        Assert.Equal(9, report.Counts["legacyHistoryWithPersonalAddObservations"]);
+        Assert.Equal(8, report.Counts["legacyHistoryWithAcceptedPersonalAddObservations"]);
+        Assert.Equal(2, report.Counts["legacyHistoryWithConsistentPersonalOwnershipLinks"]);
+        Assert.Equal(1, report.Counts["legacyHistoryPersonalOwnershipWithMatchingDate"]);
+        Assert.Equal(1, report.Counts["legacyHistoryPersonalOwnershipWithDateMismatch"]);
+        Assert.Equal(7, report.Counts["legacyHistoryPersonalEvidenceNeedingLinkReview"]);
+        Assert.Equal(1, report.Counts["historyPersonalEvidenceNotAccepted"]);
+        Assert.Equal(2, report.Counts["historyPersonalEvidenceMissingAccountOrImport"]);
+        Assert.Equal(2, report.Counts["historyPersonalEvidenceAccountListOrProductMismatch"]);
+        Assert.Equal(1, report.Counts["historyPersonalEvidenceUrlMismatch"]);
+        Assert.Equal(1, report.Counts["historyPersonalEvidenceObservationDateMismatch"]);
+        Assert.Equal(1, report.Counts["historyPersonalEvidenceLinkedToSharedTask"]);
+        Assert.Equal(0, report.Counts["historyPersonalEvidenceParentOwnerMismatch"]);
+        Assert.Equal(0, report.Counts["legacyCurrentPrices"]);
+        Assert.Contains(report.Limitations, text => text.Contains("differing timestamps require review"));
         Assert.Equal(before, await f.FingerprintAsync());
     }
 
