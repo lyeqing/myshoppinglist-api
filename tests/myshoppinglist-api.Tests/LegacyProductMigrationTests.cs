@@ -222,6 +222,8 @@ public sealed class LegacyProductMigrationTests
         Assert.Equal(3, json.RootElement.GetProperty("productCopies").GetInt32());
         var denied = await CommandAsync(f.ConnectionString, "--apply");
         Assert.Equal(1, denied.ExitCode); Assert.Empty(denied.Output);
+        var mixed = await CommandAsync(f.ConnectionString, "--apply-personal-product-migration");
+        Assert.Equal(1, mixed.ExitCode); Assert.Empty(mixed.Output);
         Assert.DoesNotContain("Now listening", report.Output); Assert.Equal(before, await f.FingerprintAsync());
     }
 

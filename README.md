@@ -31,7 +31,7 @@ The report includes archived, expired and inactive-account references to avoid s
 
 Exit code `0` means a report was produced, `1` means configuration/database/schema access failed, and `2` means cancellation through the audit method's cancellation token. Errors omit connection details. Tests in `LegacyProductMigrationAuditTests` use isolated PostgreSQL schemas, fingerprint all table rows before/after, verify database-enforced write rejection, and exercise the command with legacy workers configured on.
 
-## Private-copy conversion preparation — not applied to the application database
+## Private-copy conversion — implementation does not deploy itself
 
 The prepared migration is `20261026073219_AddLegacyProductMigrationMaps`. It adds two bookkeeping tables recording each account's original-to-private product and retailer mapping. Unique keys, foreign keys and triggers protect ownership and prevent changing or deleting receipts. Four existing list-item reference constraints become deferrable but remain immediate by default, so a conversion can update parent and child references together inside one transaction. An empty-schema rollback restores the original constraint behaviour; rollback refuses to erase populated receipts.
 
@@ -41,7 +41,7 @@ From the API project directory, preview the conversion without deploying that mi
 dotnet run --project myshoppinglist-api.csproj --no-launch-profile -- --plan-personal-product-migration
 ```
 
-This command is **read-only** and exits without starting the web host or workers. It works with the existing schema. `schemaReady: false` is expected before deployment; exit code `0` only means the preview found no conflicts. Exit code `3` reports conflicts, and `1` reports invalid arguments or database/schema access failure. There is no live apply command; adding `--apply` is rejected.
+This command is **read-only** and exits without starting the web host or workers. It works with the existing schema. `schemaReady: false` is expected before deployment; exit code `0` only means the preview found no conflicts. Exit code `3` reports conflicts, and `1` reports invalid arguments or database/schema access failure. Adding `--apply` or combining preview with the separate apply command is rejected.
 
 The preview gives aggregate copy/reference counts and a SHA-256 plan hash without displaying account identities, product details or credentials. The hash covers the source data and schema readiness. Data or schema changes require a fresh preview. The initial application-database preview found 39 account-product copies, 59 retailer copies, 7 current prices and 7 history rows; those numbers are a snapshot, not hard-coded migration targets.
 
@@ -55,9 +55,32 @@ The conversion rules are:
 - Chosen alternatives keep their saved identity and quantity, but need review before entering totals if qualifying private evidence is unavailable. Shared approval is not promoted to private approval. Users can still undo a saved choice. The initial application preview contained no chosen substitutions.
 - Commit copies, receipts and reference updates atomically. Reruns use the receipts to avoid duplicates or replaying old prices over later edits. Reintroduced legacy references require a fresh preview and can be relinked without recopying existing data.
 
-`LegacyProductMigrationService.RehearseAsync` is currently **rehearsal-only**. It refuses schemas outside the `codex_migration_` prefix and refuses search paths with fallbacks. The tests create unique, isolated schemas and apply the real migrations there; they never apply this migration or conversion to `public`. Rehearsal table locks are schema-local. A deliberately injected failure verifies rollback of all copied rows, receipts and reference changes. PostgreSQL sequences can advance after a rolled-back rehearsal, which is another reason never to rehearse against live data.
+`LegacyProductMigrationService.RehearseAsync` remains **rehearsal-only**. It refuses schemas outside the `codex_migration_` prefix and refuses search paths with fallbacks. The separate `ApplyAsync` method requires the connected database and schema to match the explicit target, an explicit single-schema search path, and the current reviewed preview hash. The tests create unique, isolated schemas and apply the real migrations there; they never apply this migration or conversion to `public`. Locks affect only the selected schema. Deliberately injected failures verify rollback of all copied rows, receipts and reference changes. PostgreSQL sequences can advance after a rolled-back transaction, which is another reason never to rehearse against live data.
 
 Live deployment, conversion and personal-mode activation still require a separate approved procedure: verified backup/recovery, a maintenance window with application writers stopped, schema deployment, a fresh preview and review, an explicitly approved executor, integrity checks, then controlled activation. The preparation does not change application settings or deploy itself. After conversion, do not remove the bookkeeping migration or its receipts to force a downgrade.
+
+### Apply command and live-operation procedure
+
+Implementing or committing this command does not authorize executing it against the application database. Follow these steps in order after approval for the live operation:
+
+1. Confirm the configured server, database and target schema. Take a complete PostgreSQL backup, verify it can be restored to a separate database, and retain the backup securely. Record its identity and the restore-check result outside the application. This command does not create or validate backups.
+2. Stop all application/extension writers and collection workers for the maintenance window. Ensure they cannot automatically restart. Do not depend on the command's table locks as a persistent maintenance mode.
+3. Deploy the approved EF bookkeeping migration to the confirmed target. Do not run conversion on an outdated or partially deployed schema. Deployment is a separate operation; the apply command never calls EF migration APIs.
+4. Run the read-only preview using the same connection and an explicit `Search Path` naming only the target schema. Confirm database/schema, `schemaReady: true`, empty conflicts, counts and retention policy; review the newly generated `planHash`. A preview from before schema deployment or later data changes is stale.
+5. After approving that preview, run the separate command below from the API directory with the actual reviewed values. The configured connection supplies the server and database; `--database` confirms the database name and cannot redirect the connection. `--schema` selects exactly one quoted schema, replacing any configured fallback search path. Both acknowledgements are required operator declarations, not automatic proof that the operational steps occurred.
+
+```powershell
+dotnet run --project myshoppinglist-api.csproj --no-launch-profile -- --apply-personal-product-migration --database '<reviewed database>' --schema '<reviewed schema>' --plan-hash '<fresh reviewed 64-character hash>' --backup-verified --writers-stopped
+```
+
+The command exits without starting the API, collection services or transports. It takes a serializable transaction and locks the reviewed tables against writers before recalculating the preview. Lock acquisition times out after five seconds instead of waiting indefinitely. Wrong targets, stale hashes, conflicts and missing schema guards stop conversion. No automatic retry runs.
+
+Before committing, conversion checks the planned reference-change count, absence of remaining candidate references/conflicts, every mapped scalar in original and copied rows, and fingerprints of untouched accounts, lists, observations, shared suggestions and archived queue payloads. Only the planned product/retailer references and new copies/receipts may differ. Unexpected database-side changes roll back the transaction. This validates stored data; it does not replace testing the user interface after activation.
+
+6. Inspect the aggregate JSON result and run another read-only preview plus integrity checks. A completed conversion should have no remaining candidate references or conflicts. Review retained inactive/expired records and private-price attribution. A rerun requires the **new current hash**, even when it will do nothing; receipts preserve later edits and prevent duplication. Keep writers stopped until validation and the separately approved activation are ready.
+7. Enable personal mode only through its separately approved configuration/deployment change, then validate authenticated extension capture, private reads, lists, Favorites, Essentials and comparisons before reopening normal access. Conversion itself never changes feature flags or account/list states.
+
+Apply exits with `0` after a successful validated commit or a validated no-op, `1` on failure, and `2` on cancellation through its method token. Errors omit database credentials and product/account details. A connection failure during commit or output can leave completion unconfirmed: inspect receipts and obtain a fresh preview before deciding whether to retry. Never assume an error proves that nothing committed. Recovery after a committed conversion requires an approved backup restore or explicit forward repair; do not delete receipts or force a downgrade.
 
 ## Local setup
 

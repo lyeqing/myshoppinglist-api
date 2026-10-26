@@ -9,8 +9,8 @@ using Npgsql;
 
 namespace myshoppinglist_api.Services;
 
-// No HTTP endpoint or live apply command exists. Writes are restricted to an
-// explicitly isolated rehearsal schema; preview works before schema deployment.
+// No HTTP endpoint exists. Preview is read-only; conversion requires a reviewed
+// hash and a single, explicit schema. The caller must arrange backup/maintenance.
 public sealed class LegacyProductMigrationService(MyShoppingListDbContext db, TimeProvider clock)
 {
     private static readonly string[] Tables = ["Products", "ShopProducts", "ShopProductPrices", "ShopProductPriceHistory",
@@ -30,31 +30,50 @@ public sealed class LegacyProductMigrationService(MyShoppingListDbContext db, Ti
         return plan;
     }
 
-    public async Task<LegacyProductMigrationResult> RehearseAsync(string expectedPlanHash, CancellationToken ct = default)
+    public Task<LegacyProductMigrationResult> RehearseAsync(string expectedPlanHash, CancellationToken ct = default)
+        => ConvertAsync(expectedPlanHash, null, null, ct);
+
+    public Task<LegacyProductMigrationResult> ApplyAsync(string expectedDatabase, string expectedSchema,
+        string expectedPlanHash, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(expectedDatabase) || string.IsNullOrWhiteSpace(expectedSchema))
+            throw new InvalidOperationException("Supply the reviewed database and schema.");
+        return ConvertAsync(expectedPlanHash, expectedDatabase, expectedSchema, ct);
+    }
+
+    private async Task<LegacyProductMigrationResult> ConvertAsync(string expectedPlanHash, string? expectedDatabase,
+        string? expectedSchema, CancellationToken ct)
     {
         EnsureOwnTransaction();
         var schema = await db.Database.SqlQueryRaw<string>("SELECT current_schema() AS \"Value\"").SingleAsync(ct);
         var connection = new NpgsqlConnectionStringBuilder(db.Database.GetConnectionString());
-        if (!schema.StartsWith("codex_migration_", StringComparison.Ordinal)
-            || connection.SearchPath?.Trim(' ', '"') != schema)
-            throw new InvalidOperationException("Conversion is rehearsal-only: use a codex_migration_ schema with no search-path fallback. Live conversion is not enabled.");
-        if (string.IsNullOrWhiteSpace(expectedPlanHash) || expectedPlanHash.Length != 64)
+        if (connection.SearchPath != Quote(schema) && connection.SearchPath != schema)
+            throw new InvalidOperationException("Conversion requires a single explicit schema without a search-path fallback.");
+        if (expectedDatabase is null && !schema.StartsWith("codex_migration_", StringComparison.Ordinal))
+            throw new InvalidOperationException("Rehearsal requires an isolated codex_migration_ schema.");
+        if (expectedDatabase is not null && (expectedDatabase != await db.Database.SqlQueryRaw<string>(
+                "SELECT current_database() AS \"Value\"").SingleAsync(ct) || expectedSchema != schema))
+            throw new InvalidOperationException("The connected database/schema differs from the reviewed target.");
+        if (string.IsNullOrWhiteSpace(expectedPlanHash) || expectedPlanHash.Length != 64 || !expectedPlanHash.All(Uri.IsHexDigit))
             throw new InvalidOperationException("Supply the reviewed preview hash.");
         var present = await PresentTablesAsync(ct);
         if (!present.Contains("LegacyProductMigrationMaps") || !present.Contains("LegacyShopProductMigrationMaps"))
-            throw new InvalidOperationException("Apply the prepared migration to the isolated rehearsal schema first.");
+            throw new InvalidOperationException("Deploy the prepared bookkeeping migration to the target schema first.");
 
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
         try
         {
-            // Schema-qualified search path was checked above. These locks affect
-            // only rehearsal tables, not the application's public catalogue.
+            // Bound lock acquisition rather than waiting indefinitely on a writer.
+            await db.Database.ExecuteSqlRawAsync("SET LOCAL lock_timeout = '5s'", ct);
             var lockSql = "LOCK TABLE " + string.Join(", ", Tables.Select(Quote)) + " IN SHARE ROW EXCLUSIVE MODE";
             await db.Database.ExecuteSqlRawAsync(lockSql, ct);
             var state = await ReadAsync(ct);
             var plan = await PlanAsync(state, ct);
-            if (!plan.SchemaReady) throw new InvalidOperationException("The rehearsal schema or deferred reference constraints are not ready.");
+            if (!plan.SchemaReady) throw new InvalidOperationException("The target schema or deferred reference constraints are not ready.");
             if (plan.Conflicts.Length != 0) throw new InvalidOperationException("Resolve migration conflicts before conversion: " + string.Join("; ", plan.Conflicts));
+            // Apply always requires the current preview, including a no-op rerun.
+            if (expectedDatabase is not null && !string.Equals(plan.PlanHash, expectedPlanHash, StringComparison.Ordinal))
+                throw new InvalidOperationException("The migration preview is stale. Read and review a new preview.");
             if (state.Pairs.Count == 0 && state.ProductMaps.Count > 0)
             {
                 await transaction.RollbackAsync(ct);
@@ -65,33 +84,41 @@ public sealed class LegacyProductMigrationService(MyShoppingListDbContext db, Ti
             await db.Database.ExecuteSqlRawAsync("SET CONSTRAINTS ALL DEFERRED", ct);
             var productMaps = state.ProductMaps.ToDictionary(m => new Pair(m.UserAccountId, m.LegacyProductId));
             var shopMaps = state.ShopMaps.ToDictionary(m => (m.UserAccountId, m.LegacyShopProductId));
+            var unchanged = await UnchangedFingerprintAsync(ct);
+            var copies = new List<(string Table, object Entity)>();
             foreach (var pair in state.Pairs.OrderBy(p => p.Owner).ThenBy(p => p.Product))
             {
                 if (productMaps.ContainsKey(pair)) continue; // Never overwrite a user's later edits or prices.
                 var product = Copy(state.Products[pair.Product]);
                 product.Id = 0; product.UserAccountId = pair.Owner;
                 db.Products.Add(product); await db.SaveChangesAsync(ct);
+                copies.Add(("Products", product));
                 var receipt = new LegacyProductMigrationMap { UserAccountId = pair.Owner, LegacyProductId = pair.Product,
                     PrivateProductId = product.Id, CreatedAt = clock.GetUtcNow().UtcDateTime };
                 db.Add(receipt); await db.SaveChangesAsync(ct); productMaps.Add(pair, receipt);
+                copies.Add(("LegacyProductMigrationMaps", receipt));
                 foreach (var source in state.Mappings.Values.Where(m => m.ProductId == pair.Product && m.UserAccountId is null))
                 {
                     var mapping = Copy(source); mapping.Id = 0; mapping.UserAccountId = pair.Owner; mapping.ProductId = product.Id;
                     db.ShopProducts.Add(mapping); await db.SaveChangesAsync(ct);
+                    copies.Add(("ShopProducts", mapping));
                     var mapped = new LegacyShopProductMigrationMap { UserAccountId = pair.Owner, LegacyProductId = pair.Product,
                         LegacyShopProductId = source.Id, PrivateShopProductId = mapping.Id, CreatedAt = receipt.CreatedAt };
                     db.Add(mapped); await db.SaveChangesAsync(ct); shopMaps.Add((pair.Owner, source.Id), mapped);
+                    copies.Add(("LegacyShopProductMigrationMaps", mapped));
                     foreach (var price in state.Prices.Where(p => p.ShopProductId == source.Id && p.UserAccountId is null
                         && PersonalOwner(state, source, p.ContributionObservationId, p.SourceUrl) == pair.Owner))
                     {
                         var copy = Copy(price); copy.Id = 0; copy.UserAccountId = pair.Owner; copy.ShopProductId = mapping.Id;
                         db.ShopProductPrices.Add(copy);
+                        copies.Add(("ShopProductPrices", copy));
                     }
                     foreach (var history in state.History.Where(p => p.ShopProductId == source.Id && p.UserAccountId is null
                         && PersonalOwner(state, source, p.ContributionObservationId, p.SourceUrl) == pair.Owner))
                     {
                         var copy = Copy(history); copy.Id = 0; copy.UserAccountId = pair.Owner; copy.ShopProductId = mapping.Id;
                         db.ShopProductPriceHistory.Add(copy);
+                        copies.Add(("ShopProductPriceHistory", copy));
                     }
                     await db.SaveChangesAsync(ct);
                 }
@@ -126,6 +153,16 @@ public sealed class LegacyProductMigrationService(MyShoppingListDbContext db, Ti
                         .ExecuteUpdateAsync(u => u.SetProperty(r => r.ShopProductId, target), ct);
                 }
             await db.Database.ExecuteSqlRawAsync("SET CONSTRAINTS ALL IMMEDIATE", ct);
+            var expected = Rows(state, productMaps, shopMaps);
+            foreach (var copy in copies) expected[copy.Table].Add(Row(copy.Entity));
+            var after = await ReadAsync(ct);
+            var actual = Rows(after);
+            if (changed != plan.ReferenceChanges.Values.Sum() || after.Pairs.Count != 0
+                || (await PlanAsync(after, ct)).Conflicts.Length != 0
+                || unchanged != await UnchangedFingerprintAsync(ct)
+                || expected.Any(table => !table.Value.Order(StringComparer.Ordinal)
+                    .SequenceEqual(actual[table.Key].Order(StringComparer.Ordinal))))
+                throw new InvalidOperationException("Post-conversion integrity validation failed; conversion will be rolled back.");
             await transaction.CommitAsync(ct);
             return new(changed == 0 && plan.ProductCopies == 0, plan.ProductCopies, plan.RetailerMappingCopies,
                 plan.CurrentPriceCopies, plan.HistoryRowCopies, changed);
@@ -140,6 +177,63 @@ public sealed class LegacyProductMigrationService(MyShoppingListDbContext db, Ti
     }
 
     private T Copy<T>(T source) where T : class => (T)db.Entry(source).CurrentValues.ToObject();
+
+    // Compare every mapped scalar, including dates, notes, offer scope and states.
+    // Navigation properties are deliberately excluded. New PostgreSQL timestamps
+    // have microsecond precision, so normalize only sub-microsecond CLR ticks.
+    private string Row(object entity, params (string Name, object? Value)[] overrides)
+    {
+        var values = db.Entry(entity).CurrentValues;
+        var row = new SortedDictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var property in values.Properties)
+        {
+            var value = values[property];
+            row[property.Name] = value is DateTime date ? new DateTime(date.Ticks / 10 * 10, date.Kind) : value;
+        }
+        foreach (var (name, value) in overrides) row[name] = value;
+        return System.Text.Json.JsonSerializer.Serialize(row);
+    }
+
+    private Dictionary<string, List<string>> Rows(Snapshot s,
+        Dictionary<Pair, LegacyProductMigrationMap>? products = null,
+        Dictionary<(long, long), LegacyShopProductMigrationMap>? shops = null)
+    {
+        long ProductId(long owner, long id) => products is not null && products.TryGetValue(new(owner, id), out var map) ? map.PrivateProductId : id;
+        long? ShopId(long owner, long? id) => id is { } key && shops is not null && shops.TryGetValue((owner, key), out var map) ? map.PrivateShopProductId : id;
+        return new(StringComparer.Ordinal)
+        {
+            ["Products"] = s.Products.Values.Select(p => Row(p)).ToList(),
+            ["ShopProducts"] = s.Mappings.Values.Select(p => Row(p)).ToList(),
+            ["ShopProductPrices"] = s.Prices.Select(p => Row(p)).ToList(),
+            ["ShopProductPriceHistory"] = s.History.Select(p => Row(p)).ToList(),
+            ["LegacyProductMigrationMaps"] = s.ProductMaps.Select(p => Row(p)).ToList(),
+            ["LegacyShopProductMigrationMaps"] = s.ShopMaps.Select(p => Row(p)).ToList(),
+            ["ShoppingListProducts"] = s.Items.Select(i => Row(i, ("ProductId", ProductId(s.Lists[i.ShoppingListId].UserAccountId, i.ProductId)))).ToList(),
+            ["UserProductPreferences"] = s.Preferences.Select(i => Row(i, ("ProductId", ProductId(i.UserAccountId, i.ProductId)))).ToList(),
+            ["UserProductActivities"] = s.Activities.Select(i => Row(i, ("ProductId", ProductId(i.UserAccountId, i.ProductId)))).ToList(),
+            ["ProductImportJobs"] = s.Jobs.Values.Select(i => Row(i, ("ProductId", i.ProductId is { } id ? ProductId(i.UserAccountId, id) : null))).ToList(),
+            ["PackDiscoveryJobs"] = s.PackJobs.Select(i => Row(i, ("ProductId", ProductId(i.UserAccountId, i.ProductId)))).ToList(),
+            ["BrandDiscoveryJobs"] = s.BrandJobs.Select(i => Row(i, ("ProductId", ProductId(i.UserAccountId, i.ProductId)))).ToList(),
+            ["ProductImportRetailerResults"] = s.Results.Select(i => Row(i, ("ShopProductId", ShopId(s.Jobs[i.ProductImportJobId].UserAccountId, i.ShopProductId)))).ToList(),
+            ["ShoppingListItemSubstitutions"] = s.Choices.Select(i => Row(i, ("ProductId", ProductId(i.UserAccountId, i.ProductId)), ("ShopProductId", ShopId(i.UserAccountId, i.ShopProductId)))).ToList()
+        };
+    }
+
+    private async Task<string> UnchangedFingerprintAsync(CancellationToken ct)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        // These tables are never changed by conversion, including accounts,
+        // lists, observations, shared suggestions and archived queue payloads.
+        foreach (var table in new[] { "ShoppingLists", "UserAccounts", "Shops", "ContributionObservations",
+            "ProductAlternativeRelationships", "ProductBrandSuggestions", "UserExtensionImportTasks", "ColesExtensionTasks" })
+        {
+            hash.AppendData(Encoding.UTF8.GetBytes(table + "\n"));
+            var sql = "SELECT to_jsonb(t)::text AS \"Value\" FROM " + Quote(table) + " t ORDER BY \"Value\"";
+            await foreach (var row in db.Database.SqlQueryRaw<string>(sql).AsAsyncEnumerable().WithCancellation(ct))
+                hash.AppendData(Encoding.UTF8.GetBytes(row + "\n"));
+        }
+        return Convert.ToHexString(hash.GetHashAndReset());
+    }
     private static string Quote(string name) => "\"" + name.Replace("\"", "\"\"") + "\"";
     private async Task<HashSet<string>> PresentTablesAsync(CancellationToken ct) => (await db.Database.SqlQueryRaw<string>(
         "SELECT tablename AS \"Value\" FROM pg_tables WHERE schemaname = current_schema()").ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
@@ -148,7 +242,7 @@ public sealed class LegacyProductMigrationService(MyShoppingListDbContext db, Ti
     {
         var tables = await PresentTablesAsync(ct);
         var state = new Snapshot { Tables = tables,
-            Database = db.Database.GetDbConnection().Database,
+            Database = await db.Database.SqlQueryRaw<string>("SELECT current_database() AS \"Value\"").SingleAsync(ct),
             Schema = await db.Database.SqlQueryRaw<string>("SELECT current_schema() AS \"Value\"").SingleAsync(ct),
             Accounts = (await db.UserAccounts.AsNoTracking().Select(a => a.Id).ToListAsync(ct)).ToHashSet(),
             Products = await db.Products.AsNoTracking().ToDictionaryAsync(p => p.Id, ct),
@@ -255,7 +349,7 @@ public sealed class LegacyProductMigrationService(MyShoppingListDbContext db, Ti
             s.Prices.Count(p => p.UserAccountId is null && PersonalOwner(s, s.Mappings[p.ShopProductId], p.ContributionObservationId, p.SourceUrl) is { } owner && newPairs.Contains(new(owner, s.Mappings[p.ShopProductId].ProductId))),
             s.History.Count(p => p.UserAccountId is null && PersonalOwner(s, s.Mappings[p.ShopProductId], p.ContributionObservationId, p.SourceUrl) is { } owner && newPairs.Contains(new(owner, s.Mappings[p.ShopProductId].ProductId))),
             changes, conflicts.ToArray(), [
-                "Read-only preview. No live apply command exists. Conversion rehearsals are restricted to isolated codex_migration_ schemas without a search-path fallback.",
+                "Read-only preview. Apply requires an explicit database/schema and the current preview hash. Rehearsals remain restricted to isolated codex_migration_ schemas without a search-path fallback.",
                 "Copy account-linked legacy snapshots, including retained inactive/expired records. Do not reactivate accounts or change list IDs, item IDs, notes, quantities, purchase states, preferences or activity dates.",
                 "Copy only accepted PersonalAdd evidence with consistent account/import/list/product/URL links. Preserve CheckedDate, CollectedAt, source type and store scope exactly, including differing timestamps. No price is refreshed or relabelled as current.",
                 "Keep all original legacy products, mappings, prices and history. Shared/unlinked/ambiguous observations, shared alternative reviews and automatic suggestions are not copied or resumed.",

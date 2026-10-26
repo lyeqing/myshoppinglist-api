@@ -19,6 +19,11 @@ using System.Threading.RateLimiting;
 using myshoppinglist_api.Endpoints;
 
 // Exit before constructing the application host, logger or collection services.
+if (args.Contains("--apply-personal-product-migration", StringComparer.Ordinal))
+{
+    Environment.ExitCode = await Program.RunLegacyProductMigrationApplyAsync(args);
+    return;
+}
 if (args.Contains("--audit-personal-products", StringComparer.Ordinal))
 {
     Environment.ExitCode = await Program.RunLegacyProductAuditAsync(args);
@@ -256,6 +261,60 @@ finally { Log.CloseAndFlush(); }
 
 public partial class Program
 {
+    public static async Task<int> RunLegacyProductMigrationApplyAsync(string[] args, CancellationToken ct = default)
+    {
+        try
+        {
+            // Reject missing, duplicate, mixed-mode and unknown arguments before
+            // loading configuration or opening a connection. Acknowledgements
+            // record operator responsibility; they do not verify a backup.
+            var values = new Dictionary<string, string>(StringComparer.Ordinal);
+            var flags = new HashSet<string>(StringComparer.Ordinal);
+            for (var index = 0; index < args.Length; index++)
+            {
+                var arg = args[index];
+                if (arg is "--database" or "--schema" or "--plan-hash")
+                {
+                    if (++index >= args.Length || string.IsNullOrWhiteSpace(args[index]) || args[index].StartsWith("--", StringComparison.Ordinal)
+                        || !values.TryAdd(arg, args[index])) throw new InvalidOperationException("Invalid apply arguments.");
+                }
+                else if (arg is "--apply-personal-product-migration" or "--backup-verified" or "--writers-stopped")
+                {
+                    if (!flags.Add(arg)) throw new InvalidOperationException("Duplicate apply flag.");
+                }
+                else throw new InvalidOperationException("Unknown apply argument.");
+            }
+            if (values.Count != 3 || flags.Count != 3 || values["--plan-hash"].Length != 64 || !values["--plan-hash"].All(Uri.IsHexDigit))
+                throw new InvalidOperationException("Supply the target, reviewed hash and backup/maintenance acknowledgements.");
+
+            var builder = WebApplication.CreateBuilder(Array.Empty<string>());
+            builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true).AddEnvironmentVariables();
+            var configured = builder.Configuration.GetConnectionString("MyShoppingList");
+            if (string.IsNullOrWhiteSpace(configured)) throw new InvalidOperationException("Missing database configuration.");
+            // Select only the explicitly named schema, quoting it as one PostgreSQL
+            // identifier; never replace the configured database with an argument.
+            var connection = new Npgsql.NpgsqlConnectionStringBuilder(configured)
+            { SearchPath = "\"" + values["--schema"].Replace("\"", "\"\"") + "\"" };
+            await using var db = new MyShoppingListDbContext(new DbContextOptionsBuilder<MyShoppingListDbContext>().UseNpgsql(connection.ConnectionString).Options);
+            var result = await new LegacyProductMigrationService(db, TimeProvider.System).ApplyAsync(
+                values["--database"], values["--schema"], values["--plan-hash"], ct);
+            await Console.Out.WriteLineAsync(System.Text.Json.JsonSerializer.Serialize(result,
+                new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web) { WriteIndented = true }));
+            return 0;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await Console.Error.WriteLineAsync("Conversion cancelled. Inspect migration receipts and obtain a fresh preview before retrying.");
+            return 2;
+        }
+        catch (Exception)
+        {
+            // A connection loss during commit can leave the outcome unknown.
+            await Console.Error.WriteLineAsync("Conversion failed or completion is unconfirmed. Check arguments, target, schema readiness, preview and maintenance conditions; inspect receipts before retrying. No schema deployment or feature activation was requested.");
+            return 1;
+        }
+    }
+
     public static async Task<int> RunLegacyProductMigrationPreviewAsync(string[] args, CancellationToken ct = default)
     {
         try
