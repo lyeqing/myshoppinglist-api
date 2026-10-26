@@ -24,6 +24,11 @@ if (args.Contains("--audit-personal-products", StringComparer.Ordinal))
     Environment.ExitCode = await Program.RunLegacyProductAuditAsync(args);
     return;
 }
+if (args.Contains("--plan-personal-product-migration", StringComparer.Ordinal))
+{
+    Environment.ExitCode = await Program.RunLegacyProductMigrationPreviewAsync(args);
+    return;
+}
 
 Log.Logger = new LoggerConfiguration().MinimumLevel.Error().WriteTo.Console()
     .WriteTo.File("logs/myshoppinglist-.log", rollingInterval: RollingInterval.Day,
@@ -251,6 +256,34 @@ finally { Log.CloseAndFlush(); }
 
 public partial class Program
 {
+    public static async Task<int> RunLegacyProductMigrationPreviewAsync(string[] args, CancellationToken ct = default)
+    {
+        try
+        {
+            if (args.Length != 1 || args[0] != "--plan-personal-product-migration")
+                throw new InvalidOperationException("The migration command accepts read-only preview only.");
+            var builder = WebApplication.CreateBuilder(Array.Empty<string>());
+            builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true).AddEnvironmentVariables();
+            var connection = builder.Configuration.GetConnectionString("MyShoppingList");
+            if (string.IsNullOrWhiteSpace(connection)) throw new InvalidOperationException("Missing database configuration.");
+            await using var db = new MyShoppingListDbContext(new DbContextOptionsBuilder<MyShoppingListDbContext>().UseNpgsql(connection).Options);
+            var report = await new LegacyProductMigrationService(db, TimeProvider.System).PreviewAsync(ct);
+            await Console.Out.WriteLineAsync(System.Text.Json.JsonSerializer.Serialize(report,
+                new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web) { WriteIndented = true }));
+            return report.Conflicts.Length == 0 ? 0 : 3;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await Console.Error.WriteLineAsync("Migration preview cancelled. No database changes were requested.");
+            return 2;
+        }
+        catch (Exception)
+        {
+            await Console.Error.WriteLineAsync("Migration preview unavailable: check the command, database access and existing schema. No migrations or database changes were requested.");
+            return 1;
+        }
+    }
+
     public static async Task<int> RunLegacyProductAuditAsync(string[] args, CancellationToken ct = default)
     {
         try

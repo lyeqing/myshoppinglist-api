@@ -31,6 +31,34 @@ The report includes archived, expired and inactive-account references to avoid s
 
 Exit code `0` means a report was produced, `1` means configuration/database/schema access failed, and `2` means cancellation through the audit method's cancellation token. Errors omit connection details. Tests in `LegacyProductMigrationAuditTests` use isolated PostgreSQL schemas, fingerprint all table rows before/after, verify database-enforced write rejection, and exercise the command with legacy workers configured on.
 
+## Private-copy conversion preparation — not applied to the application database
+
+The prepared migration is `20261026073219_AddLegacyProductMigrationMaps`. It adds two bookkeeping tables recording each account's original-to-private product and retailer mapping. Unique keys, foreign keys and triggers protect ownership and prevent changing or deleting receipts. Four existing list-item reference constraints become deferrable but remain immediate by default, so a conversion can update parent and child references together inside one transaction. An empty-schema rollback restores the original constraint behaviour; rollback refuses to erase populated receipts.
+
+From the API project directory, preview the conversion without deploying that migration:
+
+```powershell
+dotnet run --project myshoppinglist-api.csproj --no-launch-profile -- --plan-personal-product-migration
+```
+
+This command is **read-only** and exits without starting the web host or workers. It works with the existing schema. `schemaReady: false` is expected before deployment; exit code `0` only means the preview found no conflicts. Exit code `3` reports conflicts, and `1` reports invalid arguments or database/schema access failure. There is no live apply command; adding `--apply` is rejected.
+
+The preview gives aggregate copy/reference counts and a SHA-256 plan hash without displaying account identities, product details or credentials. The hash covers the source data and schema readiness. Data or schema changes require a fresh preview. The initial application-database preview found 39 account-product copies, 59 retailer copies, 7 current prices and 7 history rows; those numbers are a snapshot, not hard-coded migration targets.
+
+The conversion rules are:
+
+- Copy only products already linked to an account through retained lists, preferences, activities, valid import references or deliberately chosen alternatives. Retain inactive/expired-account data without reactivating accounts or changing list expiry/archive state.
+- Keep all original legacy products, mappings, prices and history. Remap account-owned references while preserving list/item IDs, quantities, notes, purchase/hidden states, preference selections, activity dates and existing job states. Retired queue payloads, shared alternative reviews and automatic suggestions stay archived; no collection work is started or resumed.
+- Copy a current price or history row only when accepted `PersonalAdd` evidence agrees on account, import/list, product and URLs, with no shared-task link. Shared-customer contributions, server/worker data and ambiguous or unlinked observations are not private price sources.
+- Preserve original `CheckedDate`, observation `CollectedAt`, source type, currency, price scope, location and other offer fields exactly. Differing timestamps remain different; copied prices are never refreshed or relabelled as today's price. Conversion receipts have their own preparation timestamp.
+- Fail on ownership conflicts, unknown product-reference tables, duplicate remapping targets, existing private identity/URL/code overlaps or incomplete receipts. Do not silently merge products or overwrite existing private captures.
+- Chosen alternatives keep their saved identity and quantity, but need review before entering totals if qualifying private evidence is unavailable. Shared approval is not promoted to private approval. Users can still undo a saved choice. The initial application preview contained no chosen substitutions.
+- Commit copies, receipts and reference updates atomically. Reruns use the receipts to avoid duplicates or replaying old prices over later edits. Reintroduced legacy references require a fresh preview and can be relinked without recopying existing data.
+
+`LegacyProductMigrationService.RehearseAsync` is currently **rehearsal-only**. It refuses schemas outside the `codex_migration_` prefix and refuses search paths with fallbacks. The tests create unique, isolated schemas and apply the real migrations there; they never apply this migration or conversion to `public`. Rehearsal table locks are schema-local. A deliberately injected failure verifies rollback of all copied rows, receipts and reference changes. PostgreSQL sequences can advance after a rolled-back rehearsal, which is another reason never to rehearse against live data.
+
+Live deployment, conversion and personal-mode activation still require a separate approved procedure: verified backup/recovery, a maintenance window with application writers stopped, schema deployment, a fresh preview and review, an explicitly approved executor, integrity checks, then controlled activation. The preparation does not change application settings or deploy itself. After conversion, do not remove the bookkeeping migration or its receipts to force a downgrade.
+
 ## Local setup
 
 Requires .NET SDK 10, EF CLI 10.0.11, and PostgreSQL. The database name is exactly `MyShoppingList` (case-sensitive). Supply `ConnectionStrings__MyShoppingList` through the environment or an ignored `appsettings.Local.json`:

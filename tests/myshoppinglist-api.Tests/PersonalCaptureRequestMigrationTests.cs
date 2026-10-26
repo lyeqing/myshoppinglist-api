@@ -63,7 +63,7 @@ public sealed class PersonalCaptureRequestMigrationTests
         Assert.Contains("Cannot remove capture receipts", error.MessageText);
         Assert.NotNull((await f.Db.ProductImportJobs.SingleAsync()).CaptureResponseJson);
         Assert.Single(await f.Db.Products.ToArrayAsync());
-        Assert.Empty(await f.Db.Database.GetPendingMigrationsAsync());
+        Assert.Contains("20261025101322_AddPersonalCaptureRequests", await f.Db.Database.GetAppliedMigrationsAsync());
     }
 
     private static ProductImportJob Job(CaptureApiScope f, bool second) => new()
