@@ -20,6 +20,24 @@ public static class UserExtensionEndpoints
             catch (UserImportException e) { return Results.Problem(statusCode: e.Status, title: e.Message); }
         });
         static long Account(HttpContext c) => long.Parse(c.User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var refresh = routes.MapGroup("/api/user-extension/price-refresh").RequireAuthorization();
+        refresh.AddEndpointFilter(async (context, next) =>
+        {
+            context.HttpContext.Response.Headers.CacheControl = "no-store";
+            var options = context.HttpContext.RequestServices.GetRequiredService<IOptions<UserExtensionOptions>>();
+            if (!options.Value.Allows(context.HttpContext.Request))
+                return Results.Problem(statusCode: 403, title: "This extension is not enabled on the server.");
+            try { return await next(context); }
+            catch (UserImportException e) { return Results.Problem(statusCode: e.Status, title: e.Message); }
+        });
+        refresh.MapGet("/{listId:long}", async (long listId, HttpContext context,
+            PersonalProductRefreshService service, CancellationToken ct) =>
+            Results.Ok(await service.TargetsAsync(Account(context), listId, ct)));
+        refresh.MapPost("/", async (PersonalPriceRefreshRequest request, HttpContext context,
+            PersonalProductRefreshService service, CancellationToken ct) =>
+            Results.Ok(await service.SaveAsync(Account(context), request, ct)))
+            .WithMetadata(new RequestSizeLimitAttribute(2500000))
+            .RequireRateLimiting(ProductImportEndpoints.SubmissionRatePolicy);
         routes.MapPost("/api/user-extension/captures/preview", async (PersonalProductPreviewRequest request, HttpContext context,
             IOptions<UserExtensionOptions> options, PersonalProductCaptureService service, CancellationToken ct) =>
         {

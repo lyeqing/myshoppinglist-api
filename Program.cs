@@ -141,6 +141,7 @@ try
     builder.Services.AddScoped<UserExtensionImportService>();
     builder.Services.AddScoped<ExtensionProductEvidenceParser>();
     builder.Services.AddScoped<PersonalProductCaptureService>();
+    builder.Services.AddScoped<PersonalProductRefreshService>();
     builder.Services.AddSingleton<ProductNormalisationService>();
     builder.Services.AddSingleton<ProductMatchingService>();
     builder.Services.AddScoped<ProductService>();

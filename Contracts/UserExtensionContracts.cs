@@ -1,5 +1,10 @@
 namespace myshoppinglist_api.Contracts;
 
+public sealed record PersonalRefreshTarget(long ItemId, long MappingId, string Name, string Url);
+public sealed record PersonalPriceRefreshRequest(long ListId, long ItemId, long MappingId,
+    ColesEvidence Evidence, DateTimeOffset ObservedAt);
+public sealed record PersonalPriceRefreshResponse(bool Updated, string Message);
+
 public sealed record PersonalProductCaptureRequest(long ListId, string Url, int Quantity, ColesEvidence Evidence,
     Guid RequestId, DateTimeOffset ObservedAt);
 public sealed record PersonalProductPreviewRequest(string Url, ColesEvidence Evidence, DateTimeOffset ObservedAt);
