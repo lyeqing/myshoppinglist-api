@@ -31,7 +31,7 @@ public class ShoppingPreferencesTests
     }
 
     [PostgreSqlFact]
-    public async Task Restricted_aldi_preferences_persist_without_enabling_collection_and_remain_private()
+    public async Task Extension_only_aldi_preferences_persist_without_enabling_collection_and_remain_private()
     {
         await using var isolated = await IsolatedDatabaseScope.CreateAsync();
         await using var f = await ListFixture.CreateAsync(); await using var other = await ListFixture.CreateAsync();
@@ -39,14 +39,16 @@ public class ShoppingPreferencesTests
             new TestShopProductProvider("coles"), new TestShopProductProvider("woolworths")]));
         var view = await service.ReadAsync(f.Scope.UserId, default);
         var aldi = Assert.Single(view.AvailableShops, s => s.Code == "aldi");
-        Assert.Equal("Restricted", aldi.CapabilityStatus); Assert.False(aldi.ComparisonSupported);
-        Assert.Contains("unavailable for ALDI", aldi.CapabilityMessage!);
+        Assert.Equal("ExtensionOnly", aldi.CapabilityStatus); Assert.False(aldi.ComparisonSupported);
+        Assert.Contains("using the extension", aldi.CapabilityMessage!);
+        Assert.Contains("Use Refresh items to update saved prices through your extension", aldi.CapabilityMessage!);
+        Assert.Contains("Automatic product searches are unavailable", aldi.CapabilityMessage!);
         Assert.All(view.AvailableShops.Where(s => s.Code is "coles" or "woolworths"), s => Assert.Equal("Supported", s.CapabilityStatus));
         Assert.All(view.AvailableShops.Where(s => s.Code is "iga" or "foodland"), s => Assert.Equal("NotImplemented", s.CapabilityStatus));
         await service.SaveAsync(f.Scope.UserId, new(f.Scope.UserId, true, true, false, [new(aldi.Id, true)], view.UpdatedDate), default);
         var saved = await service.ReadAsync(f.Scope.UserId, default);
         Assert.True(saved.CompareOnlyPreferredShops); Assert.Equal(aldi.Id, Assert.Single(saved.Shops).ShopId);
-        Assert.Equal("Restricted", saved.AvailableShops.Single(s => s.Id == aldi.Id).CapabilityStatus);
+        Assert.Equal("ExtensionOnly", saved.AvailableShops.Single(s => s.Id == aldi.Id).CapabilityStatus);
         Assert.Empty((await service.ReadAsync(other.Scope.UserId, default)).Shops);
     }
 
@@ -133,6 +135,7 @@ public class ShoppingPreferencesTests
         await using var other = await ListFixture.CreateAsync();
         await using var app = new ListApiFactory(f);
         using var client = await app.ClientAsync(); using var anonymous = app.CreateClient();
+        Assert.False(app.Services.GetRequiredService<IOptions<UserExtensionOptions>>().Value.PersonalCapturesEnabled);
         const string path = "/api/account/shopping-preferences";
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(path)).StatusCode);
         var response = await client.GetAsync(path); Assert.True(response.Headers.CacheControl!.NoStore);
@@ -275,6 +278,7 @@ public class ShoppingPreferencesTests
             builder.ConfigureServices(services =>
             {
                 services.RemoveAll<TimeProvider>(); services.AddSingleton<TimeProvider>(fixture.Scope.Clock);
+                services.PostConfigure<UserExtensionOptions>(o => o.PersonalCapturesEnabled = false);
                 services.PostConfigure<ProductImportOptions>(o => o.Enabled = false);
                 services.RemoveAll<DbContextOptions<MyShoppingListDbContext>>();
                 services.AddDbContext<MyShoppingListDbContext>(o => o.UseNpgsql(Environment.GetEnvironmentVariable("MYSHOPPINGLIST_TEST_CONNECTION")!));

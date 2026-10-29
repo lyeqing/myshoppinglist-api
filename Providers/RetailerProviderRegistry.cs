@@ -13,7 +13,7 @@ public sealed record RetailerRegistration(RetailerDefinition Retailer, IShopProd
     public bool IsImplemented => CapabilityStatus == "Supported";
     public string CapabilityMessage => CapabilityStatus switch
     {
-        "ExtensionOnly" => "Add ALDI products from an open product page using the extension. Automatic ALDI searches and price refreshes are unavailable.",
+        "ExtensionOnly" => "Add ALDI products from an open product page using the extension. Use Refresh items to update saved prices through your extension. Automatic product searches are unavailable.",
         "Supported" => "Product comparisons supported",
         _ => "Comparison not available yet. You can save this preference for later."
     };

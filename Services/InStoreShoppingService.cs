@@ -41,7 +41,10 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
     }
 
     private Task<InStoreRetailer[]> PreferredRetailers(long accountId, CancellationToken token) =>
-        ShoppingPreferencesService.AllowedShops(db, accountId).Where(s => s.Code == "coles" || s.Code == "woolworths")
+        ShoppingPreferencesService.AllowedShops(db, accountId).Where(s => s.Code == "coles" || s.Code == "woolworths"
+            || (s.Code == "aldi" && db.ShopProducts.Any(m => m.ShopId == s.Id && m.IsActive
+                && m.MatchType == MatchType.Exact && m.UserAccountId == accountId
+                && m.Product.UserAccountId == accountId && !m.Product.IsDeleted)))
             .OrderBy(s => s.Name).Select(s => new InStoreRetailer(s.Id, s.Name)).ToArrayAsync(token);
 
     private IQueryable<ShopProduct> Mappings(long[] ids, long accountId)
@@ -50,7 +53,8 @@ public sealed class InStoreShoppingService(MyShoppingListDbContext db, TimeProvi
         return db.ShopProducts.AsNoTracking().Include(m => m.Shop)
             .Where(m => ids.Contains(m.ProductId) && m.IsActive && m.Shop.IsActive && m.MatchType == MatchType.Exact
                 && m.UserAccountId == m.Product.UserAccountId && (m.UserAccountId == null || m.UserAccountId == accountId)
-                && allowed.Contains(m.ShopId) && (m.Shop.Code == "coles" || m.Shop.Code == "woolworths"));
+                && allowed.Contains(m.ShopId) && (m.Shop.Code == "coles" || m.Shop.Code == "woolworths"
+                    || (m.Shop.Code == "aldi" && m.UserAccountId == accountId)));
     }
     private static InStoreRetailer[] Retailers(IEnumerable<ShopProduct> mappings) => mappings
         .Select(m => new InStoreRetailer(m.ShopId, m.Shop.Name)).Distinct().OrderBy(s => s.Name).ToArray();

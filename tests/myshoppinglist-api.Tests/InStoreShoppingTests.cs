@@ -1,13 +1,125 @@
 using Microsoft.EntityFrameworkCore;
 using myshoppinglist_api.Contracts;
+using myshoppinglist_api.Data;
 using myshoppinglist_api.Models;
 using myshoppinglist_api.Services;
+using MatchType = myshoppinglist_api.Models.MatchType;
 
 namespace myshoppinglist_api.Tests;
 
 [Collection("Import worker database")]
 public class InStoreShoppingTests
 {
+    [PostgreSqlFact]
+    public async Task Private_aldi_observations_are_available_in_store_without_sharing_legacy_or_foreign_prices()
+    {
+        await using var isolated = await IsolatedDatabaseScope.CreateAsync();
+        await using var db = new MyShoppingListDbContext(new DbContextOptionsBuilder<MyShoppingListDbContext>()
+            .UseNpgsql(Environment.GetEnvironmentVariable("MYSHOPPINGLIST_TEST_CONNECTION")!).Options);
+        var clock = new PersistenceClock();
+        var now = clock.GetUtcNow().UtcDateTime;
+        var first = new UserAccount
+        {
+            DisplayName = "First",
+            Email = "first@example.test",
+            PasswordHash = "fixture",
+            PasswordSalt = "fixture",
+            CreatedDate = now,
+            UpdatedDate = now
+        };
+        var second = new UserAccount
+        {
+            DisplayName = "Second",
+            Email = "second@example.test",
+            PasswordHash = "fixture",
+            PasswordSalt = "fixture",
+            CreatedDate = now,
+            UpdatedDate = now
+        };
+        db.AddRange(first, second);
+        await db.SaveChangesAsync();
+        var firstList = new ShoppingList { UserAccountId = first.Id, Name = "First list", CreatedDate = now, UpdatedDate = now };
+        var secondList = new ShoppingList { UserAccountId = second.Id, Name = "Second list", CreatedDate = now, UpdatedDate = now };
+        db.AddRange(firstList, secondList);
+        await db.SaveChangesAsync();
+        var aldi = await db.Shops.SingleAsync(s => s.Code == "aldi");
+        async Task<ShopProductPrice> AddProduct(long? owner, ShoppingList list, string name, decimal amount)
+        {
+            var product = new Product { UserAccountId = owner, Name = name, CreatedDate = now, UpdatedDate = now };
+            var mapping = new ShopProduct
+            {
+                UserAccountId = owner,
+                Product = product,
+                ShopId = aldi.Id,
+                NameAtShop = name,
+                ProductUrl = "https://www.aldi.com.au/product/test-000000000000398949",
+                MatchType = MatchType.Exact,
+                FirstFoundDate = now,
+                LastFoundDate = now
+            };
+            var price = new ShopProductPrice
+            {
+                UserAccountId = owner,
+                ShopProduct = mapping,
+                Price = amount,
+                CheckedDate = now,
+                CreatedDate = now,
+                UpdatedDate = now,
+                SourceType = SourceType.BrowserExtension,
+                SourceUrl = mapping.ProductUrl,
+                PriceScope = PriceScope.Unknown
+            };
+            db.Add(price);
+            db.Add(new ShoppingListProduct { ShoppingListId = list.Id, Product = product, Quantity = 2, AddedDate = now, UpdatedDate = now });
+            await db.SaveChangesAsync();
+            return price;
+        }
+        var own = await AddProduct(first.Id, firstList, "Own milk", 7.29m);
+        var foreign = await AddProduct(second.Id, secondList, "Foreign milk", 1m);
+        await AddProduct(null, firstList, "Legacy milk", 3m);
+        db.Add(new ShoppingListProduct
+        {
+            ShoppingListId = firstList.Id,
+            ProductId = foreign.ShopProduct.ProductId,
+            Quantity = 1,
+            AddedDate = now,
+            UpdatedDate = now
+        });
+        db.Add(new UserPreferredShop { UserAccountId = first.Id, ShopId = aldi.Id, IsEnabled = true });
+        await db.SaveChangesAsync();
+        var service = new InStoreShoppingService(db, clock, new());
+        foreach (var preferredOnly in new[] { false, true })
+        {
+            first.CompareOnlyPreferredShops = preferredOnly;
+            await db.SaveChangesAsync();
+            Assert.Equal(aldi.Id, Assert.Single(Assert.Single(await service.ListsAsync(first.Id, default)).Retailers).Id);
+            var detail = (await service.DetailAsync(first.Id, firstList.Id, default))!;
+            Assert.Equal(2, detail.Items.Length);
+            Assert.DoesNotContain(detail.Items, i => i.Item.Product.Name == "Foreign milk");
+            var price = Assert.Single(detail.Items.Single(i => i.Item.Product.Name == "Own milk").Prices);
+            Assert.Equal(7.29m, price.Price);
+            Assert.Equal("Fresh", price.Status);
+            Assert.Null(price.RefreshStatus);
+            Assert.Equal(14.58m, Assert.Single(detail.Baskets).Subtotal);
+            Assert.All(detail.Items.Single(i => i.Item.Product.Name == "Legacy milk").Prices, p => Assert.Null(p.Price));
+        }
+        Assert.Null(await service.DetailAsync(second.Id, firstList.Id, default));
+        Assert.Equal(1m, Assert.Single(Assert.Single((await service.DetailAsync(second.Id, secondList.Id, default))!.Items).Prices).Price);
+        own.CheckedDate = now.AddDays(-8);
+        await db.SaveChangesAsync();
+        var stale = Assert.Single((await service.DetailAsync(first.Id, firstList.Id, default))!.Items.Single(i => i.Item.Product.Name == "Own milk").Prices);
+        Assert.Null(stale.Price);
+        Assert.Equal("Stale price", stale.Status);
+        Assert.Equal(7.29m, stale.PreviousPrice);
+        await db.UserPreferredShops.Where(p => p.UserAccountId == first.Id).ExecuteUpdateAsync(s => s.SetProperty(p => p.IsEnabled, false));
+        Assert.Empty(Assert.Single(await service.ListsAsync(first.Id, default)).Retailers);
+        Assert.All((await service.DetailAsync(first.Id, firstList.Id, default))!.Items, i => Assert.Empty(i.Prices));
+        await db.UserPreferredShops.Where(p => p.UserAccountId == first.Id).ExecuteUpdateAsync(s => s.SetProperty(p => p.IsEnabled, true));
+        own.ShopProduct.IsActive = false;
+        await db.SaveChangesAsync();
+        Assert.Empty(Assert.Single(await service.ListsAsync(first.Id, default)).Retailers);
+    }
+
     [Theory]
     [InlineData(1, 30, 0, 1)]
     [InlineData(2, 30, 1, 0)]
