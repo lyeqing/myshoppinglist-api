@@ -11,3 +11,4 @@ appsettings.Local.json
 .local-backups/
 .local-operations/
 __pycache__/
+.local-dotnet/

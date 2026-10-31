@@ -1,0 +1,36 @@
+name: Security regression
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: MyShoppingListSecurityTest
+          POSTGRES_USER: security_test
+          POSTGRES_PASSWORD: disposable-ci-only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    env:
+      MYSHOPPINGLIST_TEST_CONNECTION: Host=127.0.0.1;Database=MyShoppingListSecurityTest;Username=security_test;Password=disposable-ci-only
+      ConnectionStrings__MyShoppingList: Host=127.0.0.1;Database=MyShoppingListSecurityTest;Username=security_test;Password=disposable-ci-only
+      UserExtension__PersonalCapturesEnabled: 'true'
+      ProductImport__Enabled: 'true'
+      PriceRefresh__Enabled: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore -p:NuGetAudit=true -p:NuGetAuditMode=all -warnaserror:NU1903,NU1904
+      - run: dotnet build --no-restore
+      - run: dotnet tool install --global dotnet-ef --version 10.0.11
+      - run: dotnet ef database update --no-build
+      - run: dotnet test --no-build --no-restore --logger 'trx;LogFileName=security.trx'
+      - run: python3 -m unittest discover -s tools/operations -p 'test_*.py'

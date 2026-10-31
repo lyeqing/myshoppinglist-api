@@ -175,6 +175,7 @@ public sealed class ExtensionBridgeTests
         var search = await Search(); var claim = await Approve(search);
         var path = $"/api/extension-device/tasks/{search.Id}/search";
         var body = new ExtensionTaskSearch(claim.ClaimToken!, [new(Url, null)], false, app.Clock.Now);
+        Assert.Equal(HttpStatusCode.BadRequest, (await device.PostAsJsonAsync(path, body with { Candidates = [null!] })).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await device.PostAsJsonAsync(path, body with { Candidates = Enumerable.Range(0, 6).Select(i => new ExtensionSearchCandidate($"https://www.coles.com.au/product/{123456 + i}", null)).ToArray() })).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await device.PostAsJsonAsync(path, body with { Candidates = [new("https://evil.test/product/123456", "Rice")] })).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await device.PostAsJsonAsync(path, body with { Candidates = [], EmptyConfirmed = false })).StatusCode);

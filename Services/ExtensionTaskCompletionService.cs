@@ -71,6 +71,7 @@ public sealed partial class ExtensionTaskService
             }
             Active(task); await OriginAndTargetAsync(task, ct);
             if (task.Type != "search" || task.Status != "running" || request.Candidates is null || request.Candidates.Length > 5
+                || request.Candidates.Any(candidate => candidate is null)
                 || request.Candidates.Length == 0 && !request.EmptyConfirmed || request.ObservedAt == default
                 || request.ObservedAt > clock.GetUtcNow() || request.ObservedAt.UtcDateTime < task.StartedAt!.Value.AddSeconds(-5))
                 throw new UserImportException(400, "Send at most five reviewed results from this approved search page.");

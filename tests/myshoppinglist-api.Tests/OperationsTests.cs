@@ -136,6 +136,58 @@ public sealed class OperationsTests
         Assert.Equal("open", (await db.OperationalIncidents.SingleAsync()).Status);
     }
 
+    [PostgreSqlFact]
+    public async Task Security_failure_alerts_use_configured_threshold_deduplicate_and_recover()
+    {
+        await using var isolated = await IsolatedDatabaseScope.CreateAsync(); await using var app = new OperationsFactory();
+        await using var scope = app.Services.CreateAsyncScope(); var db = scope.ServiceProvider.GetRequiredService<MyShoppingListDbContext>();
+        var service = scope.ServiceProvider.GetRequiredService<IncidentService>();
+        app.Services.GetRequiredService<IOptions<OperationsOptions>>().Value.SecurityFailuresPerFiveMinutes = 10;
+        for (var i = 0; i < 9; i++) db.OperationalEvents.Add(new() { CreatedAt = app.Clock.Now.UtcDateTime,
+            Component = "api", Name = "sign_in", Outcome = "rejected", Release = "test", Fingerprint = "api:sign_in:rejected", StatusCode = 401 });
+        await db.SaveChangesAsync(); await service.EvaluateRatesAsync(default); Assert.Empty(await db.AlertDeliveries.ToArrayAsync());
+        db.OperationalEvents.Add(new() { CreatedAt = app.Clock.Now.UtcDateTime, Component = "api", Name = "sign_in",
+            Outcome = "rejected", Release = "test", Fingerprint = "api:sign_in:rejected", StatusCode = 401 });
+        await db.SaveChangesAsync(); await service.EvaluateRatesAsync(default); await service.EvaluateRatesAsync(default);
+        Assert.Single(await db.AlertDeliveries.ToArrayAsync());
+        Assert.Equal("authentication_failures", (await db.OperationalIncidents.SingleAsync()).Fingerprint);
+        app.Clock.Now += TimeSpan.FromMinutes(6);
+        db.OperationalEvents.Add(new() { CreatedAt = app.Clock.Now.UtcDateTime, Component = "api", Name = "api_request",
+            Outcome = "rejected", Release = "test", Fingerprint = "api:api_request:rejected", StatusCode = 403 });
+        await db.SaveChangesAsync(); await service.EvaluateRatesAsync(default);
+        Assert.Equal("open", (await db.OperationalIncidents.AsNoTracking().SingleAsync()).Status);
+        app.Clock.Now += TimeSpan.FromMinutes(6);
+        await service.EvaluateRatesAsync(default);
+        Assert.Equal("resolved", (await db.OperationalIncidents.AsNoTracking().SingleAsync()).Status);
+        Assert.Equal(2, await db.AlertDeliveries.CountAsync());
+    }
+
+    [PostgreSqlFact]
+    public async Task Operations_observes_both_authorization_and_early_ingress_rejections()
+    {
+        await using var isolated = await IsolatedDatabaseScope.CreateAsync(); await using var app = new OperationsFactory();
+        app.Services.GetRequiredService<IOptions<RequestSecurityOptions>>().Value.IngressRequestsPerMinute = 1;
+        using var client = app.Client();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/auth/me")).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await client.GetAsync("/api/auth/me")).StatusCode);
+        await using var scope = app.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MyShoppingListDbContext>();
+        Assert.Equal(new[] { 401, 429 }, await db.OperationalEvents.OrderBy(e => e.StatusCode).Select(e => e.StatusCode).ToArrayAsync());
+    }
+
+    [PostgreSqlFact]
+    public async Task Rejected_request_telemetry_is_bounded_to_prevent_log_write_amplification()
+    {
+        await using var isolated = await IsolatedDatabaseScope.CreateAsync(); await using var app = new OperationsFactory();
+        var events = app.Services.GetRequiredService<OperationalEvents>();
+        for (var i = 0; i < 125; i++) await events.RecordAsync("api", "api_request", "rejected", status: 429);
+        await using var scope = app.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<MyShoppingListDbContext>();
+        Assert.Equal(120, await db.OperationalEvents.CountAsync());
+        await events.RecordAsync("api", "api_request", "success", status: 200);
+        Assert.Equal(121, await db.OperationalEvents.CountAsync());
+    }
+
     private static async Task<CurrentSessionResponse> Register(HttpClient client)
     {
         var result = await client.PostAsJsonAsync("/api/auth/register", new RegisterRequest(Guid.NewGuid() + "@example.test", "Operations-test9!", "Support tester"));

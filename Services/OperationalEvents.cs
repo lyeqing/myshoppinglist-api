@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using System.Threading.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using myshoppinglist_api.Configuration;
@@ -8,14 +9,24 @@ using myshoppinglist_api.Models;
 
 namespace myshoppinglist_api.Services;
 
-public sealed class OperationalEvents(IServiceScopeFactory scopes, IOptions<OperationsOptions> options, TimeProvider clock, ILogger<OperationalEvents> logger)
+public sealed class OperationalEvents(IServiceScopeFactory scopes, IOptions<OperationsOptions> options, TimeProvider clock, ILogger<OperationalEvents> logger) : IDisposable
 {
+    // Bound rejected-request persistence so ingress protection cannot amplify database writes.
+    // These security counts are sampled lower bounds during a flood.
+    private readonly FixedWindowRateLimiter rejectionEvents = new(new FixedWindowRateLimiterOptions
+    { PermitLimit = 120, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true });
+    public void Dispose() => rejectionEvents.Dispose();
     public static readonly string[] Components = ["website", "api", "mcp", "extension", "database", "payment"];
     public static readonly string[] DiagnosticCodes = ["connection_failed", "request_timeout", "page_unreadable", "retailer_blocked", "permission_denied", "unexpected_error"];
     public async Task RecordAsync(string component, string name, string outcome, long? account = null, string? trace = null,
         int duration = 0, int status = 0, string? client = null, CancellationToken ct = default, string? release = null)
     {
         if (!options.Value.Enabled) return;
+        if (component == "api" && status is 401 or 403 or 429)
+        {
+            using var lease = rejectionEvents.AttemptAcquire();
+            if (!lease.IsAcquired) return;
+        }
         // Callers supply fixed names; never accept exception text, routes, URLs or page content.
         if (!Components.Contains(component) || !Regex.IsMatch(name, "^[a-z_]{1,64}$") || outcome is not ("success" or "failed" or "rejected" or "cancelled")) return;
         try

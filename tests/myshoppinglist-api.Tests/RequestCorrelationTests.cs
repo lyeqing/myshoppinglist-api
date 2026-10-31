@@ -27,6 +27,24 @@ namespace myshoppinglist_api.Tests;
 public sealed class RequestCorrelationTests
 {
     [Fact]
+    public async Task Unexpected_failures_have_safe_details_and_a_server_correlation_reference()
+    {
+        await using var app = new CorrelationFactory();
+        using var client = app.CreateClient(new WebApplicationFactoryClientOptions
+        { BaseAddress = new("https://localhost"), HandleCookies = false });
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", new string('a', 64));
+        using var response = await client.GetAsync("/api/auth/me");
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("The service could not complete this request.", body.RootElement.GetProperty("title").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(body.RootElement.GetProperty("traceId").GetString()));
+        var text = body.RootElement.ToString();
+        Assert.DoesNotContain("Correlation tests must not access a database", text);
+        Assert.DoesNotContain("InvalidOperationException", text);
+        Assert.DoesNotContain(new string('a', 64), text);
+    }
+
+    [Fact]
     public async Task Error_responses_match_rendered_logs_without_logging_private_request_contents()
     {
         var app = new CorrelationFactory();

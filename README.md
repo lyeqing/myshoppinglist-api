@@ -1,5 +1,7 @@
 # MyShoppingList API
 
+Security review and deployment requirements: [audit](docs/SECURITY_AUDIT.md), [architecture](docs/SECURITY_ARCHITECTURE.md), [MCP security](docs/MCP_SECURITY.md), [WebMCP evaluation](docs/WEBMCP_EVALUATION.md), and [test evidence](docs/SECURITY_TESTING.md).
+
 For the current local release, verification evidence and unactivated external prerequisites, start with [release readiness](docs/RELEASE_READINESS.md) and the [work plan](docs/MYSHOPPINGLIST_CODEX_WORK_PLAN.md). Test-only billing, simulated delivery and fixture-tested capture are not production payment, delivered-email or retailer-permission claims. Private `appsettings.Local.json` is excluded from published API packages.
 
 The current API requires the current database schema even when optional integrations are disabled. In particular, ordinary session restoration uses `UserCurrentLists`. A `42P01` missing-table error means the selected database/schema must be checked for pending migrations. Back up and verify the target before applying migrations; do not reset the database or create individual tables manually. `/health/ready` checks both connectivity and migration history. See [local schema troubleshooting](docs/RELEASE_READINESS.md#local-schema-troubleshooting).

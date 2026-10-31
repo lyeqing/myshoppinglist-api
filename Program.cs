@@ -102,6 +102,7 @@ try
     builder.Services.AddAuthorization(o => o.AddPolicy("ColesWorkerOnly", p => p
         .AddAuthenticationSchemes(ColesWorkerAuthenticationHandler.SchemeName).RequireAuthenticatedUser().RequireClaim("coles_worker", "true")));
     builder.Services.AddRateLimiter(_ => { });
+    builder.Services.AddRequestSecurity();
     builder.Services.Configure<RateLimiterOptions>(limits => limits.AddPolicy("Contribution", context => RateLimitPartition.GetFixedWindowLimiter(
         context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "anonymous",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true })));
@@ -221,11 +222,21 @@ try
     builder.Services.AddScoped<IShopProductProvider, WoolworthsProductProvider>();
     builder.Services.AddScoped(services => new RetailerProviderRegistry(services.GetRequiredService<RetailerCatalog>(),
         services.GetServices<IShopProductProvider>()));
-    builder.Services.AddProblemDetails();
+    builder.Services.AddProblemDetails(options => options.CustomizeProblemDetails = context =>
+    {
+        context.ProblemDetails.Extensions["traceId"] = RequestSecurity.Reference(context.HttpContext);
+        if (context.ProblemDetails.Status >= 500)
+        {
+            context.ProblemDetails.Title = "The service could not complete this request.";
+            context.ProblemDetails.Detail = null;
+            context.ProblemDetails.Extensions.Remove("exception");
+        }
+    });
     builder.Services.AddOpenApi();
     builder.Services.ConfigureHttpJsonOptions(options =>
         options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
     var app = builder.Build();
+    app.UseRouting();
     app.UseExceptionHandler(new ExceptionHandlerOptions
     {
         StatusCodeSelector = exception => exception is BadHttpRequestException badRequest
@@ -234,6 +245,7 @@ try
     app.UseSerilogRequestLogging(options => options.GetLevel = Program.RequestLogLevel);
     // Handle client disconnects before request logging or the exception handler sees them.
     app.Use(Program.HandleRequestCancellationAsync);
+    app.UseMiddleware<RequestSecurityMiddleware>();
     if (app.Environment.IsDevelopment())
     {
         app.MapOpenApi();
@@ -243,10 +255,11 @@ try
             options.DocumentTitle = "MyShoppingList API";
         });
     }
-    else app.UseHttpsRedirection();
-    if (app.Services.GetRequiredService<IOptions<AiIntegrationOptions>>().Value.Enabled) app.UseMiddleware<AiProtocolProtection>();
-    app.UseAuthentication();
+    else { app.UseHsts(); app.UseHttpsRedirection(); }
     if (app.Services.GetRequiredService<IOptions<OperationsOptions>>().Value.Enabled) app.UseMiddleware<OperationsMiddleware>();
+    if (app.Services.GetRequiredService<IOptions<AiIntegrationOptions>>().Value.Enabled) app.UseMiddleware<AiProtocolProtection>();
+    app.UseMiddleware<IngressRequestProtection>();
+    app.UseAuthentication();
     app.UseAiResourceValidation();
     app.UseAuthorization();
     app.UseMiddleware<CookieRequestProtection>();

@@ -68,6 +68,20 @@ public sealed class IncidentService(MyShoppingListDbContext db, IOptions<Operati
     public async Task EvaluateRatesAsync(CancellationToken ct)
     {
         var now = clock.GetUtcNow().UtcDateTime;
+        // Fixed categories group failures without retaining attacker-controlled URLs or credentials.
+        // A quiet window resolves the incident; intermediate activity preserves its state.
+        int[] codes = [401, 403, 429];
+        var rejectionCounts = await db.OperationalEvents.AsNoTracking().Where(e => e.Component == "api"
+            && codes.Contains(e.StatusCode) && e.CreatedAt > now.AddMinutes(-5) && e.CreatedAt <= now)
+            .GroupBy(e => e.StatusCode).Select(g => new { Code = g.Key, Count = g.Count() }).ToDictionaryAsync(g => g.Code, g => g.Count, ct);
+        foreach (var code in codes)
+        {
+            var rejected = rejectionCounts.GetValueOrDefault(code);
+            var fingerprint = code == 401 ? "authentication_failures" : code == 403 ? "permission_failures" : "request_throttling";
+            if (rejected >= options.Value.SecurityFailuresPerFiveMinutes || rejectionCounts.Count == 0
+                && await db.OperationalIncidents.AnyAsync(i => i.Fingerprint == fingerprint && i.Status == "open", ct))
+                await ObserveAsync(fingerprint, "api", "P1", rejected == 0, ct);
+        }
         var api = db.OperationalEvents.AsNoTracking().Where(e => e.Component == "api" && e.CreatedAt > now.AddMinutes(-5) && e.CreatedAt <= now
             && (e.StatusCode >= 200 && e.StatusCode < 400 || e.StatusCode >= 500));
         var total = await api.CountAsync(ct); var failed = await api.CountAsync(e => e.StatusCode >= 500, ct);

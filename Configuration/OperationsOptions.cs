@@ -8,4 +8,5 @@ public sealed class OperationsOptions
     public string Release { get; set; } = "local";
     public int RawRetentionDays { get; set; } = 30;
     public int AggregateRetentionMonths { get; set; } = 12;
+    public int SecurityFailuresPerFiveMinutes { get; set; } = 50;
 }

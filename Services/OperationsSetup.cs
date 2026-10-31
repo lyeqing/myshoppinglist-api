@@ -19,6 +19,7 @@ public static class OperationsSetup
         services.Configure<OperationsOptions>(configuration.GetSection("Operations"));
         if (!settings.Enabled) return;
         if (!settings.SimulateDelivery || settings.RawRetentionDays != 30 || settings.AggregateRetentionMonths != 12
+            || settings.SecurityFailuresPerFiveMinutes is < 10 or > 600
             || !Regex.IsMatch(settings.Release, "^[a-zA-Z0-9._-]{1,64}$") || settings.IncidentRecipients.Length > 5
             || settings.IncidentRecipients.Any(r => !System.Net.Mail.MailAddress.TryCreate(r, out _)))
             throw new InvalidOperationException("Operations requires simulated delivery, approved retention defaults, a safe release and valid configured recipients.");
@@ -39,6 +40,7 @@ public sealed class OperationsMiddleware(OperationalEvents events) : IMiddleware
         {
             var path = context.Request.Path;
             string? name = path == "/mcp" ? "mcp_request" : path == "/connect/token" ? "oauth_token"
+                : path == "/api/auth/login" || path == "/api/auth/mobile/login" || path == "/api/user-extension/login" ? "sign_in"
                 : path == "/api/auth/register" ? "registration" : path == "/api/shopping-lists" && context.Request.Method == "POST" ? "list_creation"
                 : path.StartsWithSegments("/api/user-extension/captures") ? "personal_capture"
                 : path.StartsWithSegments("/api/extension-device/tasks") && context.Request.Method == "POST" ? "extension_task_action"
