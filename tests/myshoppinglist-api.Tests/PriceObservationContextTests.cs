@@ -133,9 +133,13 @@ public class PriceObservationContextTests
             Assert.Equal(packOffer, Assert.Single(storeRow.PackAlternatives!));
             Assert.Equal(brandOffer, Assert.Single(storeRow.BrandAlternatives!));
             Assert.Equal(eligible ? expected : null, packOffer.Original?.Observation);
-            Assert.Equal(eligible ? expected : null, brandOffer.Original?.Observation);
+            // Brand alternatives retain descriptive provenance even when it cannot support savings.
+            Assert.Equal(expected, brandOffer.Original?.Observation);
+            Assert.Equal(price.Status, brandOffer.Original?.Status);
             Assert.Equal(eligible, packOffer.UnitPriceDifferencePercent.HasValue);
             Assert.Equal(eligible, brandOffer.UnitPriceDifferencePercent.HasValue);
+            Assert.Equal(eligible, packOffer.PackagePriceDifference.HasValue);
+            Assert.Equal(eligible, brandOffer.PackagePriceDifference.HasValue);
         }
 
         // A newer observation wins together with its metadata; an older eligible
@@ -152,7 +156,12 @@ public class PriceObservationContextTests
         Assert.Equal(new PriceObservationContext(SourceType.Manual, PriceScope.Catalogue,
             "https://www.coles.com.au/product/latest-catalogue"), latestPrice.Observation);
         Assert.Null(Assert.Single(latest.Items[0].PackAlternatives!).Original);
-        Assert.Null(Assert.Single(latest.Items[0].BrandAlternatives!).Original);
+        var latestBrand = Assert.Single(latest.Items[0].BrandAlternatives!);
+        Assert.Equal(latestPrice.Observation, latestBrand.Original?.Observation);
+        Assert.Equal(17, latestBrand.Original?.Price);
+        Assert.Equal("Not comparable", latestBrand.Original?.Status);
+        Assert.Null(latestBrand.UnitPriceDifferencePercent);
+        Assert.Null(latestBrand.PackagePriceDifference);
 
         var location = new ShopLocation { ShopId = 1, Name = "Branch", CreatedDate = now, UpdatedDate = now };
         db.ShopLocations.Add(location); await db.SaveChangesAsync();

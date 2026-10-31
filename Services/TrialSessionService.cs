@@ -25,7 +25,11 @@ public sealed class TrialSessionService(MyShoppingListDbContext db, IOptions<Aut
             .Select(s => new CurrentSessionResponse(new AccountResponse(s.UserAccountId, s.UserAccount.DisplayName,
                 s.UserAccount.IsTrial, s.UserAccount.ExpiresDate, s.UserAccount.IsPaid),
                 db.ShoppingLists.Where(l => l.UserAccountId == accountId && !l.IsArchived && (l.ExpiresDate == null || l.ExpiresDate > now))
-                    .OrderBy(l => l.Id).Select(l => (long?)l.Id).FirstOrDefault(), s.ExpiresDate))
+                    .OrderByDescending(l => db.UserCurrentLists.Any(c => c.UserAccountId == accountId && c.ShoppingListId == l.Id))
+                    .ThenBy(l => l.Id).Select(l => (long?)l.Id).FirstOrDefault(), s.ExpiresDate,
+                db.UserCurrentLists.Where(c => c.UserAccountId == accountId && !c.ShoppingList.IsArchived
+                    && (c.ShoppingList.ExpiresDate == null || c.ShoppingList.ExpiresDate > now))
+                    .Select(c => (long?)c.ShoppingListId).FirstOrDefault()))
             .SingleOrDefaultAsync(token);
     }
 

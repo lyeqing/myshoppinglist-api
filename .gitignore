@@ -9,3 +9,5 @@ appsettings.Local.json
 .env
 *.sql
 .local-backups/
+.local-operations/
+__pycache__/

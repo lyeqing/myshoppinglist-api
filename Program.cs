@@ -17,6 +17,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Options;
 using System.Threading.RateLimiting;
 using myshoppinglist_api.Endpoints;
+using myshoppinglist_api.Mcp;
 
 // Exit before constructing the application host, logger or collection services.
 if (args.Contains("--apply-personal-product-migration", StringComparer.Ordinal))
@@ -35,10 +36,11 @@ if (args.Contains("--plan-personal-product-migration", StringComparer.Ordinal))
     return;
 }
 
-Log.Logger = new LoggerConfiguration().MinimumLevel.Error().WriteTo.Console()
+Log.Logger = new LoggerConfiguration().MinimumLevel.Error()
+    .WriteTo.Console(outputTemplate: Program.BootstrapConsoleOutputTemplate)
     .WriteTo.File("logs/myshoppinglist-.log", rollingInterval: RollingInterval.Day,
         fileSizeLimitBytes: 10485760, rollOnFileSizeLimit: true, retainedFileCountLimit: 14, shared: true,
-        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}")
+        outputTemplate: Program.BootstrapFileOutputTemplate)
     .CreateBootstrapLogger();
 try
 {
@@ -49,6 +51,9 @@ try
         .ReadFrom.Configuration(builder.Configuration).ReadFrom.Services(services)
         .MinimumLevel.Override("myshoppinglist_api.Workers.PriceRefreshWorker", LogEventLevel.Information)
         .MinimumLevel.Override("myshoppinglist_api.Services.ColesExtensionTaskService", LogEventLevel.Information)
+        .MinimumLevel.Override(McpToolAudit.Source, LogEventLevel.Information)
+        .MinimumLevel.Override("myshoppinglist_api.Services.OperationalEvents", LogEventLevel.Warning)
+        .MinimumLevel.Override("myshoppinglist_api.Services.OperationsMaintenance", LogEventLevel.Warning)
         .Enrich.FromLogContext()
         .Filter.ByIncludingOnly(entry => entry.Level >= LogEventLevel.Error ||
             entry.Level == LogEventLevel.Information &&
@@ -57,7 +62,10 @@ try
                 "myshoppinglist_api.Workers.PriceRefreshWorker" or
                 "myshoppinglist_api.Services.ProductImportJobService" or
                 "myshoppinglist_api.Services.ProductImportSubmissionService" or
-                "myshoppinglist_api.Services.ColesExtensionTaskService"));
+                "myshoppinglist_api.Services.ColesExtensionTaskService" or McpToolAudit.Source ||
+            entry.Level == LogEventLevel.Warning && entry.Properties.TryGetValue("SourceContext", out var warningSource)
+                && warningSource is ScalarValue { Value: string warningName } && warningName is
+                    "myshoppinglist_api.Services.OperationalEvents" or "myshoppinglist_api.Services.OperationsMaintenance"));
     builder.Services.AddDbContext<MyShoppingListDbContext>(options =>
         options.UseNpgsql(builder.Configuration.GetConnectionString("MyShoppingList")));
     builder.Services.AddSingleton(new RetailerCatalog());
@@ -83,6 +91,8 @@ try
     builder.Services.AddScoped<BrandAlternativeService>();
     builder.Services.AddScoped<ShopLocationService>();
     builder.Services.AddScoped<AdminHealthService>();
+    builder.Services.AddOperations(builder.Configuration);
+    builder.Services.AddTestBilling(builder.Configuration, builder.Environment);
     builder.Services.AddScoped<ContributionService>();
     builder.Services.AddAuthorization(o => o.AddPolicy("Administrator", p => p.RequireAuthenticatedUser().RequireClaim("administrator", "true")));
     builder.Services.AddAuthentication(SessionTokenAuthenticationHandler.SchemeName)
@@ -134,6 +144,9 @@ try
     builder.Services.AddScoped<ProductImportSubmissionService>();
     builder.Services.AddScoped<ProductImportStatusService>();
     builder.Services.AddScoped<ShoppingListService>();
+    builder.Services.AddScoped<CurrentListService>();
+    builder.Services.AddExtensionBridge(builder.Configuration);
+    builder.Services.AddAiIntegration(builder.Configuration, builder.Environment);
     builder.Services.AddScoped<ProductLibraryService>();
     builder.Services.AddScoped<ShoppingPreferencesService>();
     builder.Services.Configure<UserExtensionOptions>(builder.Configuration.GetSection(UserExtensionOptions.SectionName));
@@ -231,7 +244,10 @@ try
         });
     }
     else app.UseHttpsRedirection();
+    if (app.Services.GetRequiredService<IOptions<AiIntegrationOptions>>().Value.Enabled) app.UseMiddleware<AiProtocolProtection>();
     app.UseAuthentication();
+    if (app.Services.GetRequiredService<IOptions<OperationsOptions>>().Value.Enabled) app.UseMiddleware<OperationsMiddleware>();
+    app.UseAiResourceValidation();
     app.UseAuthorization();
     app.UseMiddleware<CookieRequestProtection>();
     app.UseMiddleware<PersonalCaptureCollectionGuard>();
@@ -241,11 +257,16 @@ try
     app.MapAdminProductAlternativeEndpoints();
     app.MapShopLocationEndpoints();
     app.MapAdminHealthEndpoints();
+    app.MapOperationsEndpoints();
+    app.MapBillingEndpoints();
     app.MapContributionEndpoints();
     app.MapUserExtensionEndpoints();
     app.MapColesExtensionEndpoints();
     app.MapProductImportEndpoints();
     app.MapShoppingListEndpoints();
+    app.MapCurrentListEndpoints();
+    app.MapExtensionBridgeEndpoints();
+    app.MapAiIntegration();
     app.MapProductLibraryEndpoints();
     app.MapPackDiscoveryEndpoints();
     app.MapBrandDiscoveryEndpoints();
@@ -262,6 +283,9 @@ finally { Log.CloseAndFlush(); }
 
 public partial class Program
 {
+    public const string BootstrapConsoleOutputTemplate = "[{Timestamp:HH:mm:ss} {Level:u3}] [{SourceContext}] [TraceId:{TraceId}] [RequestId:{RequestId}] {Message:lj}{NewLine}{Exception}";
+    public const string BootstrapFileOutputTemplate = "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] [{SourceContext}] [TraceId:{TraceId}] [RequestId:{RequestId}] {Message:lj}{NewLine}{Exception}";
+
     public static async Task<int> RunLegacyProductMigrationApplyAsync(string[] args, CancellationToken ct = default)
     {
         try

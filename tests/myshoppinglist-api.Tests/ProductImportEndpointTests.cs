@@ -42,7 +42,11 @@ public class ProductImportEndpointTests
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync(route)).StatusCode);
     }
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
-    private static async Task<T> Read<T>(HttpResponseMessage response) => (await response.Content.ReadFromJsonAsync<T>(Json))!;
+    private static async Task<T> Read<T>(HttpResponseMessage response)
+    {
+        response.EnsureSuccessStatusCode();
+        return (await response.Content.ReadFromJsonAsync<T>(Json))!;
+    }
     private static string SubmitUrl(long listId) => $"/api/shopping-lists/{listId}/products/url";
 
     [PostgreSqlFact]
@@ -161,6 +165,7 @@ public class ProductImportEndpointTests
             builder.UseEnvironment("Development");
             builder.ConfigureServices(services =>
             {
+                services.PostConfigure<UserExtensionOptions>(o => o.PersonalCapturesEnabled = false);
                 services.RemoveAll<TimeProvider>(); services.AddSingleton<TimeProvider>(Clock);
                 services.PostConfigure<ProductImportOptions>(o => { o.Enabled = worker; o.SubmissionRequestsPerWindow = limit; });
                 services.RemoveAll<IShopProductProvider>(); services.AddSingleton<IShopProductProvider>(Provider);

@@ -5,6 +5,21 @@ namespace myshoppinglist_api.Data;
 
 public class MyShoppingListDbContext(DbContextOptions<MyShoppingListDbContext> options) : DbContext(options)
 {
+    public DbSet<BillingCustomer> BillingCustomers => Set<BillingCustomer>();
+    public DbSet<BillingWebhookEvent> BillingWebhookEvents => Set<BillingWebhookEvent>();
+    public DbSet<BillingCheckoutAttempt> BillingCheckoutAttempts => Set<BillingCheckoutAttempt>();
+    public DbSet<FeedbackTicket> FeedbackTickets => Set<FeedbackTicket>();
+    public DbSet<OperationalEvent> OperationalEvents => Set<OperationalEvent>();
+    public DbSet<DailyOperationalSummary> DailyOperationalSummaries => Set<DailyOperationalSummary>();
+    public DbSet<OperationalIncident> OperationalIncidents => Set<OperationalIncident>();
+    public DbSet<AlertDelivery> AlertDeliveries => Set<AlertDelivery>();
+    public DbSet<OperationsAdminAudit> OperationsAdminAudits => Set<OperationsAdminAudit>();
+    public DbSet<UserCurrentList> UserCurrentLists => Set<UserCurrentList>();
+    public DbSet<AiConnection> AiConnections => Set<AiConnection>();
+    public DbSet<McpMutationReceipt> McpMutationReceipts => Set<McpMutationReceipt>();
+    public DbSet<UserCurrentListRevision> UserCurrentListRevisions => Set<UserCurrentListRevision>();
+    public DbSet<ExtensionDevice> ExtensionDevices => Set<ExtensionDevice>();
+    public DbSet<ExtensionTask> ExtensionTasks => Set<ExtensionTask>();
     public DbSet<LegacyProductMigrationMap> LegacyProductMigrationMaps => Set<LegacyProductMigrationMap>();
     public DbSet<LegacyShopProductMigrationMap> LegacyShopProductMigrationMaps => Set<LegacyShopProductMigrationMap>();
     public DbSet<ShoppingListItemSubstitution> ShoppingListItemSubstitutions => Set<ShoppingListItemSubstitution>();
@@ -38,6 +53,7 @@ public class MyShoppingListDbContext(DbContextOptions<MyShoppingListDbContext> o
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
+        modelBuilder.UseOpenIddict();
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(MyShoppingListDbContext).Assembly);
     }
 }

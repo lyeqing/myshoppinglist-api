@@ -81,7 +81,10 @@ public sealed class LegacyProductMigrationSchemaTests
     [PostgreSqlFact]
     public async Task Rollback_after_conversion_refuses_to_erase_receipts_or_private_data()
     {
-        await using var f = await MigrationRehearsalScope.CreateAsync(); await f.SeedAsync();
+        // Exercise this migration's rollback guard, independent of later additive migrations.
+        await using var f = await MigrationRehearsalScope.CreateAsync(latest: false);
+        await f.Db.GetService<IMigrator>().MigrateAsync(MigrationRehearsalScope.CopyMigration);
+        await f.SeedAsync();
         await f.Service.RehearseAsync((await f.Service.PreviewAsync()).PlanHash);
         var before = await f.FingerprintAsync();
         var error = await Assert.ThrowsAsync<PostgresException>(() => f.Db.GetService<IMigrator>().MigrateAsync(MigrationRehearsalScope.PreviousMigration));

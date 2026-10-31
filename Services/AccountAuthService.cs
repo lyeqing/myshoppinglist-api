@@ -111,7 +111,8 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
                 return InvalidCredentials();
             var now = Now;
             var listId = await db.ShoppingLists.Where(l => l.UserAccountId == user.Id && !l.IsArchived && (l.ExpiresDate == null || l.ExpiresDate > now))
-                .OrderBy(l => l.Id).Select(l => (long?)l.Id).FirstOrDefaultAsync(token);
+                .OrderByDescending(l => db.UserCurrentLists.Any(c => c.UserAccountId == user.Id && c.ShoppingListId == l.Id))
+                .ThenBy(l => l.Id).Select(l => (long?)l.Id).FirstOrDefaultAsync(token);
             var (session, raw) = NewSession(user, now, device);
             db.UserSessions.Add(session); await db.SaveChangesAsync(token);
             if (!(session.ExpiresDate > Now)) return InvalidCredentials();

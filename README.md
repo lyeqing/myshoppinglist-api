@@ -1,5 +1,9 @@
 # MyShoppingList API
 
+For the current local release, verification evidence and unactivated external prerequisites, start with [release readiness](docs/RELEASE_READINESS.md) and the [work plan](docs/MYSHOPPINGLIST_CODEX_WORK_PLAN.md). Test-only billing, simulated delivery and fixture-tested capture are not production payment, delivered-email or retailer-permission claims. Private `appsettings.Local.json` is excluded from published API packages.
+
+The current API requires the current database schema even when optional integrations are disabled. In particular, ordinary session restoration uses `UserCurrentLists`. A `42P01` missing-table error means the selected database/schema must be checked for pending migrations. Back up and verify the target before applying migrations; do not reset the database or create individual tables manually. `/health/ready` checks both connectivity and migration history. See [local schema troubleshooting](docs/RELEASE_READINESS.md#local-schema-troubleshooting).
+
 Standalone ASP.NET Core 10 / EF Core / PostgreSQL backend following HandyTool conventions. Stages 1 and 2 provide the database and provider contracts. Stage 3A adds safe public-page fetching and Coles source extraction. Stage 3B adds transactional source-product persistence and deterministic matching. Stage 3C adds the durable source-import worker. Stage 4A adds trial accounts and secure sessions. Stage 4B adds authenticated import submission and status polling. Stage 5A adds paginated import discovery and the separate Next.js frontend. Registered-account login and other retailers will follow separately.
 
 ## Personal-product migration audit

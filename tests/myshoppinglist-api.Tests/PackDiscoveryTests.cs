@@ -232,6 +232,7 @@ public class PackDiscoveryTests
         {
             builder.UseEnvironment("Development"); builder.ConfigureServices(services =>
             {
+                services.PostConfigure<UserExtensionOptions>(o => o.PersonalCapturesEnabled = false);
                 services.RemoveAll<IHostedService>(); services.RemoveAll<TimeProvider>(); services.AddSingleton<TimeProvider>(f.Scope.Clock);
                 services.PostConfigure<ProductImportOptions>(o => o.Enabled = true);
                 services.RemoveAll<DbContextOptions<MyShoppingListDbContext>>();

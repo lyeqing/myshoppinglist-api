@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore.Metadata;
 using myshoppinglist_api.Data;
 using myshoppinglist_api.Models;
 using Npgsql;
+using OpenIddict.EntityFrameworkCore.Models;
 
 namespace myshoppinglist_api.Tests;
 
@@ -68,7 +69,12 @@ public class DatabaseModelTests
     public void Model_contains_only_the_expected_application_entities()
     {
         using var db = ModelContext();
-        Type[] expected = [typeof(AccountAdminAudit), typeof(ColesExtensionTask), typeof(ContributionObservation),
+        Type[] expected = [typeof(BillingCustomer), typeof(BillingWebhookEvent), typeof(BillingCheckoutAttempt), typeof(FeedbackTicket), typeof(OperationalEvent), typeof(DailyOperationalSummary), typeof(OperationalIncident), typeof(AlertDelivery), typeof(OperationsAdminAudit),
+            typeof(AiConnection), typeof(UserCurrentList), typeof(UserCurrentListRevision), typeof(McpMutationReceipt), typeof(ExtensionDevice), typeof(ExtensionTask),
+            typeof(OpenIddictEntityFrameworkCoreApplication), typeof(OpenIddictEntityFrameworkCoreAuthorization),
+            typeof(OpenIddictEntityFrameworkCoreScope), typeof(OpenIddictEntityFrameworkCoreToken),
+            typeof(AccountAdminAudit), typeof(ColesExtensionTask), typeof(ContributionObservation),
+            typeof(LegacyProductMigrationMap), typeof(LegacyShopProductMigrationMap),
             typeof(PackDiscoveryJob), typeof(Product), typeof(ProductAlternativeRelationship), typeof(ProductImportJob),
             typeof(ProductImportRetailerResult), typeof(RetailerWorkloadState), typeof(Shop), typeof(ShopLocation),
             typeof(ShopLocationReview), typeof(ShopProduct), typeof(ShopProductPrice), typeof(ShopProductPriceHistory),
@@ -78,7 +84,11 @@ public class DatabaseModelTests
             typeof(UserPreferredShop), typeof(UserPreferredShopLocation), typeof(UserSession)];
         Assert.Equal(expected.Select(t => t.FullName).Order(), db.Model.GetEntityTypes().Select(e => e.ClrType.FullName).Order());
         Assert.DoesNotContain(db.Model.GetEntityTypes(), e => e.Name.Contains("Company"));
-        Assert.All(db.Model.GetEntityTypes().SelectMany(e => e.GetProperties()), p => Assert.False(p.IsShadowProperty()));
+        Assert.All(db.Model.GetEntityTypes().Where(e => e.ClrType.Namespace == typeof(UserAccount).Namespace)
+            .SelectMany(e => e.GetProperties()), p => Assert.False(p.IsShadowProperty()));
+        var externalShadows = db.Model.GetEntityTypes().Where(e => e.ClrType.Namespace == typeof(OpenIddictEntityFrameworkCoreToken).Namespace)
+            .SelectMany(e => e.GetProperties()).Where(p => p.IsShadowProperty()).Select(p => p.Name).Order().ToArray();
+        Assert.Equal(new[] { "ApplicationId", "ApplicationId", "AuthorizationId" }, externalShadows);
     }
 
     [Fact]

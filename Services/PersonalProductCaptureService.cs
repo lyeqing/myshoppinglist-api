@@ -51,7 +51,7 @@ public sealed class PersonalProductCaptureService(MyShoppingListDbContext db, Ex
             request.ListId, Url = canonical, request.Quantity, request.Evidence, ObservedAt = date
         })));
 
-        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        await using var transaction = await WriteTransactionScope.BeginAsync(db, ct);
         try
         {
             // Keep the same lock order as persistence, avoiding account/catalogue inversion.

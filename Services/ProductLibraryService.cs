@@ -57,8 +57,17 @@ public sealed class ProductLibraryService(MyShoppingListDbContext db, TimeProvid
 
     public async Task<ProductLibraryPage> ReadAsync(long accountId, string view, string filter, string? search, int offset, int pageSize, CancellationToken ct)
     {
+        if (view is not ("history" or "favorites" or "essentials")) throw new UserImportException(400, "Invalid product view.");
+        return await ReadCoreAsync(accountId, view, filter, search, offset, pageSize, ct);
+    }
+
+    public Task<ProductLibraryPage> SearchAsync(long accountId, string? search, int offset, int pageSize, CancellationToken ct) =>
+        ReadCoreAsync(accountId, "all", "all", search, offset, pageSize, ct);
+
+    private async Task<ProductLibraryPage> ReadCoreAsync(long accountId, string view, string filter, string? search, int offset, int pageSize, CancellationToken ct)
+    {
         await RegisteredAsync(accountId, ct);
-        if (view is not ("history" or "favorites" or "essentials") || filter is not ("all" or "purchased" or "unpurchased")
+        if (filter is not ("all" or "purchased" or "unpurchased")
             || offset < 0 || offset > 100000 || pageSize is < 1 or > 50 || search?.Length > 100)
             throw new UserImportException(400, "Invalid product filters. Use a search of at most 100 characters.");
         var query = Known(accountId);
@@ -87,7 +96,7 @@ public sealed class ProductLibraryService(MyShoppingListDbContext db, TimeProvid
     public async Task<ProductLibraryAddResponse> AddAsync(long accountId, long productId, long listId, ProductLibraryAddRequest request, CancellationToken ct)
     {
         if (request.ExpectedAccountId != accountId) throw new UserImportException(409, "Your account changed. Reload before adding products.");
-        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        await using var transaction = await WriteTransactionScope.BeginAsync(db, ct);
         try
         {
             await db.UserAccounts.FromSqlInterpolated($"""SELECT * FROM "UserAccounts" WHERE "Id" = {accountId} FOR UPDATE""").SingleOrDefaultAsync(ct);
@@ -101,6 +110,47 @@ public sealed class ProductLibraryService(MyShoppingListDbContext db, TimeProvid
             if (item is null)
             {
                 item = new() { ShoppingListId = listId, ProductId = productId, Quantity = 1, AddedDate = now, UpdatedDate = now };
+                db.ShoppingListProducts.Add(item);
+                list.UpdatedDate = now > list.UpdatedDate ? now : list.UpdatedDate.AddTicks(10);
+                await TrackActivityAsync(db, accountId, item, ct);
+                await db.SaveChangesAsync(ct);
+            }
+            await transaction.CommitAsync(ct);
+            return new(item.Id, exists);
+        }
+        finally { db.ChangeTracker.Clear(); }
+    }
+
+    public async Task<ProductLibraryAddResponse> AddGenericAsync(long accountId, long listId, string name, int quantity, CancellationToken ct)
+    {
+        name = name.Trim();
+        if (name.Length is < 1 or > 200 || quantity <= 0) throw new UserImportException(400, "Use a product name of 1–200 characters and a positive quantity.");
+        await using var transaction = await WriteTransactionScope.BeginAsync(db, ct);
+        try
+        {
+            await db.UserAccounts.FromSqlInterpolated($"""SELECT * FROM "UserAccounts" WHERE "Id" = {accountId} FOR UPDATE""").SingleOrDefaultAsync(ct);
+            await RegisteredAsync(accountId, ct);
+            var now = new DateTime(clock.GetUtcNow().UtcTicks / 10 * 10, DateTimeKind.Utc);
+            var list = await db.ShoppingLists.FromSqlInterpolated($"""SELECT * FROM "ShoppingLists" WHERE "Id" = {listId} AND "UserAccountId" = {accountId} FOR UPDATE""").SingleOrDefaultAsync(ct);
+            if (list is null || list.IsArchived || list.ExpiresDate <= now) throw new UserImportException(404, "Choose an active shopping list.");
+            // A generic item has no invented brand, size, retailer identity or price.
+            var pattern = name.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+            var product = await db.Products.Where(p => p.UserAccountId == accountId && !p.IsDeleted && p.Brand == null && p.Variant == null
+                && p.ManufacturerPartNumber == null && p.ModelNumber == null
+                && p.GTIN == null && p.PackQuantity == null && p.PackSize == null && p.PackUnit == null
+                && !db.ShopProducts.Any(m => m.ProductId == p.Id) && EF.Functions.ILike(p.Name, pattern, "\\"))
+                .OrderBy(p => p.Id).FirstOrDefaultAsync(ct);
+            if (product is null)
+            {
+                product = new() { UserAccountId = accountId, Name = name, CreatedDate = now, UpdatedDate = now };
+                db.Products.Add(product);
+                await db.SaveChangesAsync(ct);
+            }
+            var item = await db.ShoppingListProducts.SingleOrDefaultAsync(i => i.ShoppingListId == listId && i.ProductId == product.Id, ct);
+            var exists = item is not null;
+            if (item is null)
+            {
+                item = new() { ShoppingListId = listId, ProductId = product.Id, Quantity = quantity, AddedDate = now, UpdatedDate = now };
                 db.ShoppingListProducts.Add(item);
                 list.UpdatedDate = now > list.UpdatedDate ? now : list.UpdatedDate.AddTicks(10);
                 await TrackActivityAsync(db, accountId, item, ct);

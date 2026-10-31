@@ -36,6 +36,8 @@ public class ColesExtensionEndpointTests
         {
             builder.UseEnvironment("Development");
             builder.ConfigureServices(services => {
+                // This fixture exercises legacy worker authorization, independent of local personal-mode rollout settings.
+                services.PostConfigure<UserExtensionOptions>(o => o.PersonalCapturesEnabled = false);
                 services.PostConfigure<ProductImportOptions>(o => o.Enabled = false);
                 services.PostConfigure<ColesExtensionOptions>(o => o.WorkerKey = Key);
             });

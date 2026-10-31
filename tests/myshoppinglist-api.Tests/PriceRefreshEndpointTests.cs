@@ -100,6 +100,7 @@ public class PriceRefreshEndpointTests
             builder.UseEnvironment("Development");
             builder.ConfigureServices(services =>
             {
+                services.PostConfigure<UserExtensionOptions>(o => o.PersonalCapturesEnabled = false);
                 services.RemoveAll<TimeProvider>(); services.AddSingleton<TimeProvider>(fixture.Scope.Clock);
                 services.PostConfigure<ProductImportOptions>(o => o.Enabled = false);
                 services.RemoveAll<DbContextOptions<MyShoppingListDbContext>>();

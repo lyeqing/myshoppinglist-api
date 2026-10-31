@@ -34,7 +34,7 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
     public async Task<ShoppingListSummary> CreateAsync(long accountId, ShoppingListCreateRequest request, string? timezone, CancellationToken token)
     {
         if (request.Name?.Trim().Length > 200) throw new UserImportException(400, "Use a list name of at most 200 characters.");
-        await using var transaction = await db.Database.BeginTransactionAsync(token);
+        await using var transaction = await WriteTransactionScope.BeginAsync(db, token);
         try
         {
             // All creators, including automatic default creation, serialize on this account.
@@ -217,7 +217,7 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
     {
         if (request.ExpectedUpdatedDate == default || request.ExpectedUpdatedDate.Kind != DateTimeKind.Utc)
             return new(400, "ExpectedUpdatedDate must be the UTC timestamp returned with the item.");
-        await using var transaction = await db.Database.BeginTransactionAsync(token);
+        await using var transaction = await WriteTransactionScope.BeginAsync(db, token);
         try
         {
             // Match the extension's advisory lock before taking account/list row locks.
@@ -320,7 +320,7 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
         if (request.ExpectedUpdatedDate == default || request.ExpectedUpdatedDate.Kind != DateTimeKind.Utc)
             return new(null, 400, "ExpectedUpdatedDate must be the UTC timestamp returned with the item.");
         if (db.ChangeTracker.Entries().Any()) throw new InvalidOperationException("List editing requires a clean context.");
-        await using var transaction = await db.Database.BeginTransactionAsync(token);
+        await using var transaction = await WriteTransactionScope.BeginAsync(db, token);
         try
         {
             // Shared relative lock order with source persistence; never acquire the catalogue lock afterwards.

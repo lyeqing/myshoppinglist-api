@@ -89,7 +89,7 @@ public class ShoppingComparisonWorkflowTests
         Assert.Equal(branch.Id, Assert.Single(directory.Items).Id);
         var preferences = await ReadAsync<ShoppingPreferencesResponse>(client, "/api/account/shopping-preferences");
         var aldi = Assert.Single(preferences.AvailableShops, s => s.Code == "aldi");
-        Assert.False(aldi.ComparisonSupported); Assert.Equal("Restricted", aldi.CapabilityStatus);
+        Assert.False(aldi.ComparisonSupported); Assert.Equal("ExtensionOnly", aldi.CapabilityStatus);
 
         async Task SaveAsync(bool sizes, bool brands, PreferredShopSelection[] shops)
         {
@@ -210,6 +210,7 @@ public class ShoppingComparisonWorkflowTests
             builder.UseEnvironment("Development");
             builder.ConfigureServices(services =>
             {
+                services.PostConfigure<UserExtensionOptions>(o => o.PersonalCapturesEnabled = false);
                 services.RemoveAll<TimeProvider>(); services.AddSingleton<TimeProvider>(clock);
                 services.PostConfigure<AdminOptions>(o => o.AccountIds = [admin]);
                 services.RemoveAll<DbContextOptions<MyShoppingListDbContext>>();

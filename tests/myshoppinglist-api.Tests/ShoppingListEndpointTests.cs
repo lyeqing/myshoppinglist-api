@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -15,6 +17,11 @@ namespace myshoppinglist_api.Tests;
 [Collection("Import worker database")]
 public class ShoppingListEndpointTests
 {
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
+
     [PostgreSqlFact]
     public async Task List_management_routes_enforce_tier_ownership_versions_and_request_protection()
     {
@@ -58,7 +65,7 @@ public class ShoppingListEndpointTests
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/shopping-lists/{other.Scope.ListId}/plan")).StatusCode);
         var response = await client.GetAsync(path);
         Assert.True(response.Headers.CacheControl!.NoStore);
-        Assert.Single((await response.Content.ReadFromJsonAsync<ShoppingListPlan>())!.Items);
+        Assert.Single((await response.Content.ReadFromJsonAsync<ShoppingListPlan>(Json))!.Items);
         var refresh = $"/api/shopping-lists/{f.Scope.ListId}/refresh-prices";
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync(refresh, new { })).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsJsonAsync($"/api/shopping-lists/{other.Scope.ListId}/refresh-prices", new { })).StatusCode);
@@ -155,6 +162,7 @@ public class ShoppingListEndpointTests
             builder.UseEnvironment("Development");
             builder.ConfigureServices(services =>
             {
+                services.PostConfigure<UserExtensionOptions>(o => o.PersonalCapturesEnabled = false);
                 services.RemoveAll<TimeProvider>(); services.AddSingleton<TimeProvider>(fixture.Scope.Clock);
                 services.PostConfigure<ProductImportOptions>(o => o.Enabled = false);
                 services.RemoveAll<DbContextOptions<MyShoppingListDbContext>>();

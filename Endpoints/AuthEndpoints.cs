@@ -8,6 +8,7 @@ namespace myshoppinglist_api.Endpoints;
 
 public static class AuthEndpoints
 {
+    public const string ResultAccountItem = "myshoppinglist:auth-result-account";
     public const string TrialRatePolicy = "trial-start";
     public const string RegistrationRatePolicy = "account-register";
     public const string SignInRatePolicy = "account-sign-in";
@@ -76,6 +77,7 @@ public static class AuthEndpoints
     private static IResult AccountResult(HttpContext context, AccountAuthResult result, IWebHostEnvironment environment)
     {
         if (result.Response is null) return Results.Problem(statusCode: result.StatusCode, title: result.Message);
+        context.Items[ResultAccountItem] = result.Response.Account.Id;
         SessionCookie.Write(context, result.Token!, result.Response.SessionExpiresDate, !environment.IsDevelopment() || context.Request.IsHttps);
         return result.StatusCode == 201 ? Results.Created("/api/auth/me", result.Response) : Results.Ok(result.Response);
     }

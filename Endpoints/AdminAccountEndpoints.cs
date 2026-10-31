@@ -15,11 +15,19 @@ public static class AdminAccountEndpoints
             try { return await next(context); }
             catch (UserImportException e) { return Results.Problem(statusCode: e.Status, title: e.Message); }
         });
-        group.MapGet("", async (string? search, MyShoppingListDbContext db, CancellationToken ct) => {
+        group.MapGet("", async (string? search, string? state, MyShoppingListDbContext db, CancellationToken ct) => {
             var query = db.UserAccounts.AsNoTracking();
+            if (state is not (null or "" or "trial" or "free" or "paid" or "suspended")) throw new UserImportException(400, "Choose a valid account filter.");
+            if (state == "trial") query = query.Where(a => a.IsTrial);
+            if (state == "free") query = query.Where(a => !a.IsTrial && !a.IsPaid);
+            if (state == "paid") query = query.Where(a => !a.IsTrial && a.IsPaid);
+            if (state == "suspended") query = query.Where(a => !a.IsActive);
             if (!string.IsNullOrWhiteSpace(search)) query = query.Where(a => a.Email != null && a.Email.Contains(search));
             return Results.Ok(await query.OrderBy(a => a.Id).Take(100).Select(a => new { a.Id, a.Email, a.DisplayName,
-                a.IsPaid, a.IsActive, a.ContributionBlocked, a.ContributionEnabled, a.RestrictionReason, a.UpdatedDate }).ToListAsync(ct));
+                a.IsPaid, a.IsTrial, a.IsActive, a.ContributionBlocked, a.ContributionEnabled, a.RestrictionReason, a.CreatedDate, a.ExpiresDate, a.UpdatedDate,
+                LastSessionContact = db.UserSessions.Where(s => s.UserAccountId == a.Id).Max(s => (DateTime?)(s.LastSeenDate ?? s.CreatedDate)),
+                LastItemSave = db.UserProductActivities.Where(p => p.UserAccountId == a.Id).Max(p => (DateTime?)p.AddedDate)
+            }).ToListAsync(ct));
         });
         group.MapGet("/{id:long}/review", async (long id, MyShoppingListDbContext db, CancellationToken ct) => Results.Ok(new {
             observations = await db.ContributionObservations.AsNoTracking().Where(o => o.UserAccountId == id && o.Source != "PersonalAdd")
