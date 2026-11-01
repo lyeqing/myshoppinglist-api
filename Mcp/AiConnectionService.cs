@@ -38,14 +38,17 @@ public sealed class AiConnectionService(MyShoppingListDbContext db, IOpenIddictA
         }
     }
 
-    public async Task<ClaimsPrincipal> ApproveAsync(long accountId, string clientId, string[] scopes, CancellationToken ct)
+    public async Task<ClaimsPrincipal> ApproveAsync(long accountId, string clientId, string[] scopes, CancellationToken ct, long? sourceSession = null)
     {
         if (!settings.Clients.Any(c => c.ClientId == clientId) || scopes.Length == 0
             || scopes.Distinct(StringComparer.Ordinal).Count() != scopes.Length || scopes.All(s => s == Scopes.OfflineAccess)
             || scopes.Any(s => s != Scopes.OfflineAccess && !settings.AllowedScopes.Contains(s, StringComparer.Ordinal)))
             throw new myshoppinglist_api.Services.UserImportException(400, "Invalid connection permissions.");
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
-        if (!await db.UserAccounts.AnyAsync(a => a.Id == accountId && a.IsActive && !a.IsTrial, ct))
+        var account = await db.UserAccounts.FromSqlInterpolated($"""SELECT * FROM "UserAccounts" WHERE "Id"={accountId} FOR UPDATE""").SingleOrDefaultAsync(ct);
+        if (account is null || !account.IsActive || account.IsTrial
+            || sourceSession is { } session && !await db.UserSessions.AnyAsync(s => s.Id == session && s.UserAccountId == accountId
+                && s.RevokedDate == null && s.ExpiresDate > clock.GetUtcNow().UtcDateTime, ct))
             throw new myshoppinglist_api.Services.UserImportException(403, "A registered active account is required for AI connections.");
         var client = await applications.FindByClientIdAsync(clientId, ct) ?? throw new InvalidOperationException("Validated AI client was not found.");
         var identity = new ClaimsIdentity("MyShoppingListDelegatedToken", Claims.Name, Claims.Role);

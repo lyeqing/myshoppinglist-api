@@ -1,5 +1,7 @@
 # Release handoff and acceptance gates
 
+1 November 2026 follow-up: password change/recovery, encrypted SMTP delivery and independent outage email are now implemented locally and disabled by default. See [account security](ACCOUNT_SECURITY.md) for the additive migration, protected-key/provider settings and exact activation boundary, and [security testing](SECURITY_TESTING.md) for current evidence. The 31 October record below describes the earlier handoff; its simulation-only implementation limitation has been superseded, while deployment/provider verification remains open. No application database or production service was changed.
+
 31 October 2026. The owner requested completing remaining work and then confirmed that no Stripe sandbox/public domain is available yet. The existing private incident-recipient address was reconfirmed; this is a destination, not an email transport/provider. No credentials, legal identity, deployment destination or spending budget were inferred. Direct chat authorisation covers safe local completion; it does not replace the original exclusions on production activation, spending, mass scraping or cross-user execution.
 
 ## Current release scope

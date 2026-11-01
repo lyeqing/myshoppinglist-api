@@ -267,6 +267,19 @@ namespace myshoppinglist_api.Data.Migrations
                     b.ToTable("AccountAdminAudits");
                 });
 
+            modelBuilder.Entity("myshoppinglist_api.Models.AccountCredentialChange", b =>
+                {
+                    b.Property<long>("UserAccountId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime>("ChangedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("UserAccountId");
+
+                    b.ToTable("AccountCredentialChanges");
+                });
+
             modelBuilder.Entity("myshoppinglist_api.Models.AiConnection", b =>
                 {
                     b.Property<Guid>("Id")
@@ -716,6 +729,65 @@ namespace myshoppinglist_api.Data.Migrations
                     b.HasKey("Day", "Component", "Name", "Outcome");
 
                     b.ToTable("DailyOperationalSummaries");
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.EmailOutboxMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid?>("ClaimToken")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<DateTime?>("LeaseExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ProtectedPayload")
+                        .HasMaxLength(24000)
+                        .HasColumnType("character varying(24000)");
+
+                    b.Property<string>("RecipientHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RecipientHash", "CreatedAt");
+
+                    b.HasIndex("Status", "NextAttemptAt");
+
+                    b.ToTable("EmailOutboxMessages", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_EmailOutbox_Kind", "\"Kind\" IN ('account_recovery','password_changed','security_alert')");
+
+                            t.HasCheckConstraint("CK_EmailOutbox_Status", "\"Status\" IN ('queued','sending','sent','failed','expired','suppressed','cancelled')");
+                        });
                 });
 
             modelBuilder.Entity("myshoppinglist_api.Models.ExtensionDevice", b =>
@@ -2831,6 +2903,17 @@ namespace myshoppinglist_api.Data.Migrations
                     b.Navigation("Application");
 
                     b.Navigation("Authorization");
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.AccountCredentialChange", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", "UserAccount")
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("UserAccount");
                 });
 
             modelBuilder.Entity("myshoppinglist_api.Models.AiConnection", b =>

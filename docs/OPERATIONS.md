@@ -22,7 +22,7 @@ Example placeholders (private recipients belong in ignored local settings/enviro
 }
 ```
 
-The owner supplied a recipient privately. No email/monitoring provider, spending budget or live delivery credentials have been selected. This implementation contains **no live email transport** and rejects `SimulateDelivery=false`. Simulation results are labelled `simulated`, `suppressed` or `not_configured`, never `sent`. A configured address is not evidence of delivered email. Public/private settings do not enable Stripe or production payments.
+The owner supplied a recipient privately. No email/monitoring provider, spending budget or live delivery credentials have been selected. The optional SMTP transport and encrypted shared outbox are implemented but disabled by default. `SimulateDelivery=false` requires explicitly enabled, valid email delivery; see [account security and delivery](ACCOUNT_SECURITY.md). Simulation results are labelled `simulated`, `suppressed` or `not_configured`, never `sent`. A configured address is not evidence of delivered email. Public/private settings do not enable Stripe or production payments.
 
 Before deployment: review persistent OAuth keys, exact client/extension allowlists, HTTPS, known reverse proxies/forwarded addresses, database privileges, rate limits, backups, monitoring placement, storage encryption and provider configuration. Do not trust arbitrary forwarded headers. With a gateway/proxy, per-IP limits need deployment validation so unrelated anonymous customers do not share the proxy's partition. Default-off features are not a production rollout.
 
@@ -78,7 +78,7 @@ python tools/operations/uptime_probe.py --base-url http://localhost:5392 --allow
 python -m unittest discover -s tools/operations -p 'test_*.py'
 ```
 
-Schedule a bounded invocation (for example once per minute) on an independently managed host after its configuration is reviewed. No scheduler/service is created by this implementation. Keep state storage protected and durable. `MYSHOPPINGLIST_INCIDENT_RECIPIENTS` supplies private simulation recipient configuration, but there is no SMTP/provider send. Connecting a provider later requires separate credentials, test delivery/retry verification, budget and explicit live activation. Do not describe the current local simulations as delivered production alerts.
+Schedule a bounded invocation (for example once per minute) on an independently managed host after its configuration is reviewed. No scheduler/service is created by this implementation. Keep state storage protected and durable. `MYSHOPPINGLIST_INCIDENT_RECIPIENTS` supplies private simulation recipient configuration, and the default mode sends no email. Optional independent SMTP delivery requires the explicit live-mode configuration in [account security and delivery](ACCOUNT_SECURITY.md). Activating a provider requires separate credentials, test delivery/retry verification, budget and explicit live activation. Do not describe the current local simulations as delivered production alerts.
 
 ## Rollback
 

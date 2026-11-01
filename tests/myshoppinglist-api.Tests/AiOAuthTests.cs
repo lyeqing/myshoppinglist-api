@@ -26,6 +26,22 @@ namespace myshoppinglist_api.Tests;
 public sealed class AiOAuthTests
 {
     [PostgreSqlFact]
+    public async Task Consent_rechecks_the_source_session_after_credentials_are_revoked()
+    {
+        await using var isolated = await IsolatedDatabaseScope.CreateAsync(); await using var app = new OAuthFactory();
+        using var browser = app.Client(true);
+        var response = await browser.PostAsJsonAsync("/api/auth/register", new RegisterRequest("revoked-consent@example.test", "Consent-password9!", "Consent tester"));
+        response.EnsureSuccessStatusCode(); var account = (await response.Content.ReadFromJsonAsync<CurrentSessionResponse>())!;
+        using var scope = app.Services.CreateScope(); var db = scope.ServiceProvider.GetRequiredService<MyShoppingListDbContext>();
+        var session = await db.UserSessions.SingleAsync(s => s.UserAccountId == account.Account.Id);
+        await db.UserSessions.Where(s => s.Id == session.Id).ExecuteUpdateAsync(s => s.SetProperty(x => x.RevokedDate, app.Clock.Now.UtcDateTime));
+        var service = scope.ServiceProvider.GetRequiredService<AiConnectionService>();
+        var error = await Assert.ThrowsAsync<myshoppinglist_api.Services.UserImportException>(() =>
+            service.ApproveAsync(account.Account.Id, "test-ai", ["lists.read"], default, session.Id));
+        Assert.Equal(403, error.Status); Assert.Empty(await db.AiConnections.ToArrayAsync());
+    }
+
+    [PostgreSqlFact]
     public async Task Code_pkce_consent_mcp_read_and_immediate_revocation_use_real_protocol_and_sdk()
     {
         var measurements = new ConcurrentQueue<KeyValuePair<string, object?>[]>();

@@ -6,7 +6,8 @@ using myshoppinglist_api.Models;
 
 namespace myshoppinglist_api.Services;
 
-public sealed class IncidentService(MyShoppingListDbContext db, IOptions<OperationsOptions> options, TimeProvider clock, IOptions<AdminOptions> admins)
+public sealed class IncidentService(MyShoppingListDbContext db, IOptions<OperationsOptions> options, TimeProvider clock, IOptions<AdminOptions> admins,
+    EmailOutboxService emails)
 {
     public async Task<OperationalIncident> ObserveAsync(string fingerprint, string component, string severity, bool healthy, CancellationToken ct,
         long? administrator = null, string? reason = null)
@@ -39,11 +40,14 @@ public sealed class IncidentService(MyShoppingListDbContext db, IOptions<Operati
         }
         if (transition && severity != "P2")
         {
+            var simulation = options.Value.SimulateDelivery || fingerprint.StartsWith("simulation:", StringComparison.Ordinal);
             var kind = healthy ? "recovery" : "open";
             var cooldown = !healthy && await db.AlertDeliveries.AnyAsync(d => d.Incident.Fingerprint == fingerprint && d.Kind == "open"
-                && d.Status != "suppressed" && d.CreatedAt > now.AddMinutes(-30), ct);
+                && (d.Status == "sent" || d.Status == "queued" || d.Status == "pending" || simulation && d.Status == "simulated")
+                && d.CreatedAt > now.AddMinutes(-30), ct);
             var opened = !healthy || await db.AlertDeliveries.AnyAsync(d => d.IncidentId == incident.Id && d.IncidentVersion == incident.Version
-                && d.Kind == "open" && d.Status != "suppressed", ct);
+                && d.Kind == "open" && (d.Status == "sent" || d.Status == "queued" || d.Status == "pending"
+                    || simulation && d.Status == "simulated"), ct);
             db.AlertDeliveries.Add(new() { Incident = incident, IncidentVersion = incident.Version, Kind = kind,
                 Status = cooldown || !opened ? "suppressed" : "queued", CreatedAt = now });
         }
@@ -53,14 +57,42 @@ public sealed class IncidentService(MyShoppingListDbContext db, IOptions<Operati
     public async Task DeliverSimulatedAsync(CancellationToken ct)
     {
         if (!options.Value.SimulateDelivery) throw new InvalidOperationException("No live email provider has been approved or configured.");
+        await DispatchAsync(ct);
+    }
+
+    public async Task DispatchAsync(CancellationToken ct)
+    {
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         await db.Database.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(hashtext('operations-alert-delivery'))", ct);
-        var deliveries = await db.AlertDeliveries.Where(d => d.Status == "queued").OrderBy(d => d.CreatedAt).Take(20).ToArrayAsync(ct);
+        var deliveries = await db.AlertDeliveries.Include(d => d.Incident).Where(d => d.Status == "queued").OrderBy(d => d.CreatedAt).Take(20).ToArrayAsync(ct);
         foreach (var delivery in deliveries)
         {
-            delivery.Attempts++; delivery.RecipientCount = options.Value.IncidentRecipients.Length;
-            delivery.Status = delivery.RecipientCount == 0 ? "not_configured" : "simulated";
-            delivery.DeliveredAt = clock.GetUtcNow().UtcDateTime;
+            if (!options.Value.SimulateDelivery && delivery.Kind == "recovery" && !delivery.Incident.Fingerprint.StartsWith("simulation:", StringComparison.Ordinal))
+            {
+                var opening = await db.AlertDeliveries.Where(d => d.IncidentId == delivery.IncidentId && d.IncidentVersion == delivery.IncidentVersion && d.Kind == "open")
+                    .Select(d => d.Status).SingleOrDefaultAsync(ct);
+                if (opening is "queued" or "pending") continue;
+                if (opening != "sent") { delivery.Status = "suppressed"; continue; }
+            }
+            delivery.RecipientCount = options.Value.IncidentRecipients.Length;
+            if (options.Value.SimulateDelivery || delivery.Incident.Fingerprint.StartsWith("simulation:", StringComparison.Ordinal))
+            {
+                delivery.Attempts++;
+                delivery.Status = delivery.RecipientCount == 0 ? "not_configured" : "simulated";
+                delivery.DeliveredAt = clock.GetUtcNow().UtcDateTime;
+            }
+            else if (delivery.RecipientCount == 0) { delivery.Status = "not_configured"; }
+            else
+            {
+                var incident = delivery.Incident;
+                emails.Add("security_alert", new(options.Value.IncidentRecipients,
+                    $"MyShoppingList {incident.Severity}: {delivery.Kind}",
+                    $"Incident reference: {incident.Id}\nComponent: {incident.Component}\nSignal: {incident.Fingerprint}\n"
+                    + $"Severity: {incident.Severity}\nState: {incident.Status}\nObserved UTC: {incident.LastObservedAt:O}\n"
+                    + "Investigate using the protected operations dashboard. No customer data is included in this message."),
+                    clock.GetUtcNow().UtcDateTime.AddDays(1), delivery.Id);
+                delivery.Status = "pending";
+            }
         }
         await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
     }

@@ -92,7 +92,8 @@ public static class AiOAuthEndpoints
         if (selected.Length == 0 || selected.Distinct(StringComparer.Ordinal).Count() != selected.Length
             || selected.Any(s => !request.HasScope(s)) || selected.All(s => s == Scopes.OfflineAccess))
             return Results.Problem(statusCode: 400, title: "Choose permissions from this connection request.");
-        try { return Results.SignIn(await service.ApproveAsync(Account(c.User), request.ClientId!, selected, ct), authenticationScheme: Server); }
+        try { return Results.SignIn(await service.ApproveAsync(Account(c.User), request.ClientId!, selected, ct,
+            long.Parse(c.User.FindFirstValue(SessionTokenAuthenticationHandler.SessionIdClaim)!, CultureInfo.InvariantCulture)), authenticationScheme: Server); }
         catch (UserImportException error) { return Results.Problem(statusCode: error.Status, title: error.Message); }
     }
 

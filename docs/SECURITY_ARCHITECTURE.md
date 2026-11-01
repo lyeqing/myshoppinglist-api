@@ -36,7 +36,7 @@ Existing operations are enabled explicitly with `Operations:Enabled=true`; deliv
 
 Security-rejection persistence is capped at 120 events per minute across each process, including ingress rejections. Those counts are sampled lower bounds during an attack, not exact request volumes. This prevents telemetry from bypassing ingress protection with unlimited database writes. Ordinary success/failure events keep existing recording behavior. Thresholds above the sample budget require multi-minute sustained observations; use independent ingress metrics for exact attack volume.
 
-Existing [operations runbook](OPERATIONS.md) describes retention, independent uptime placement, safe exports and backup/restore. Live notification credentials/provider are absent. Do not label `simulated` deliveries as sent. Database outages require the independent probe outside the application/database failure domain.
+Existing [operations runbook](OPERATIONS.md) describes retention, independent uptime placement, safe exports and backup/restore. Optional SMTP/outbox and independent-probe delivery are implemented; live credentials/provider remain absent. See [account security](ACCOUNT_SECURITY.md) for recovery, migration, key protection and delivery configuration. Do not label `simulated` deliveries as sent. Database outages require the independent probe outside the application/database failure domain.
 
 ## Deployment settings still required
 

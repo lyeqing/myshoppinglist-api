@@ -40,7 +40,7 @@ Port 3000 belongs to the user. Browser configs own port 3001 and refuse to reuse
 
 Neither repository had an existing workflow in the inspected checkout. Added read-only-permission GitHub Actions workflows under `.github/workflows/security.yml`: API restore/advisories/build/migrations/tests against a disposable PostgreSQL service plus Python operations tests; frontend lockfile install, production advisory gate, regressions, type check, lint, production build and Chromium desktop/mobile public-page/CSP tests. Credentials in the ephemeral CI database are fixture values, never deployment secrets. The workflows have not been executed on a remote GitHub runner. Live-retailer and opt-in browser groups remain separately gated.
 
-## Results and remaining checks
+## Initial hardening evidence
 
 - Baseline: API 2682 passed, 383 skipped without relational/browser conditions; website/extension Node regressions 154 passed.
 - Final website production build: passed on Next.js 16.4.3. TypeScript passed. Lint: zero errors, four pre-existing unused-variable warnings in unrelated tests. Final Node regression: 157 passed.
@@ -57,3 +57,19 @@ Initial local API attempts encountered sandbox denial of the Windows Event Log a
 After verification, the owned disposable PostgreSQL cluster and its plaintext temporary password were removed. Backup rehearsal artifacts remain in ignored `.local-backups`; test reports/logs remain ignored. Ports 3001 and 55432 were verified free; the user's port 3000 was untouched. No application database/schema or production infrastructure was changed by this work.
 
 Production email/recovery delivery, external AI-client connectivity, production TLS/proxy/client-IP limits, actual database grants/firewall, deployed backups/restore and Cloudflare WAF are not verified here. See the audit and architecture documents for the exact remaining configuration. Do not describe the project as production-secure or fully complete until those are resolved.
+
+## Account recovery and delivery follow-up
+
+Implemented locally after the initial hardening commits: current-password change, asynchronous recovery, atomic session/OAuth/device revocation, encrypted leased SMTP outbox, truthful incident/recovery delivery ordering, production key protection, and independent SQLite/SMTP outage delivery. Default external sending/recovery remain off. The additive migration and exact settings are documented in [account security](ACCOUNT_SECURITY.md).
+
+- Full API regression with the two new tables: **3088 passed, 5 skipped**, 3093 total, zero failures, 19.4 minutes. Report: `account-security-full.trx` in the ignored test result directory. The explicit schema allowlist was updated to include only the two reviewed entities; ownership/shadow-property assertions remain enabled.
+- Final focused API regression after key-protection and notification-ordering changes: **54 passed**, zero skipped/failed, 2.3 minutes. Includes recovery, concurrent/expired/tampered proofs, whole-account revocation, typed validation, SMTP refusal to downgrade, blind recipients, retries/claims/expiry, production key persistence/certificate encryption, OAuth consent revocation fence, migration preservation and rollback refusal, operations, and model checks. Report: `account-security-final.trx`.
+- Real production-build browser journey: **2 passed**, desktop and mobile, using a real API, isolated PostgreSQL schemas and local SMTP receiver. Verified the complete email-link reset/password-change journey, old-password rejection, old-session revocation and list preservation. The journey caught and fixed same-tab fragment navigation. Reset proof never appears in HTTP URLs or browser persistent storage.
+- Focused production UI checks: **8 passed**, desktop/mobile disabled service, availability retry, invalid-link feedback, password confirmation, account-switch draft clearing and stale-account refresh. Earlier broader account/session/shopping regression: **138 passed**.
+- Final public/private page, CSP and metadata checks: **12 passed**, including noindex on both new account routes. Node extension/API-client regressions: **157 passed**. Production builds and TypeScript pass; lint has zero errors and four existing unused-variable warnings in unrelated tests.
+- Python operations checks: **11 passed**, including an actual loopback SMTP notification for database readiness failure without PostgreSQL delivery dependency, durable retries, suppression and explicit simulation/live-mode separation. No external email was sent.
+- Repeated backup/restore rehearsal with the new tables: **passed**, all table fingerprints equal, export ownership/redaction preserved. MailKit 4.18.2 added; the refreshed NuGet advisory query returns no vulnerable package entries. Final full npm advisory query has zero critical/high and 16 moderate development lint-tool findings; production dependencies are unchanged from the clean production audit.
+
+The migration generator could not traverse an unrelated private backup directory. Generation used a temporary copy containing only source and public configuration; private settings/backups were excluded and the copy was removed. No backup permissions were changed. Tooling interruptions and initial fixture/selector failures are not counted as passes. No security control was disabled to obtain a green result.
+
+The application database was not migrated and no production activation occurred. Deployment still needs the reviewed migration, runtime grants, SMTP/sender configuration, protected persistent keys, actual origins/proxies and independently placed scheduling. Registration email verification remains unimplemented and is not represented as verified account ownership.

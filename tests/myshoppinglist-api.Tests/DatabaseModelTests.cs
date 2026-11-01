@@ -69,7 +69,7 @@ public class DatabaseModelTests
     public void Model_contains_only_the_expected_application_entities()
     {
         using var db = ModelContext();
-        Type[] expected = [typeof(BillingCustomer), typeof(BillingWebhookEvent), typeof(BillingCheckoutAttempt), typeof(FeedbackTicket), typeof(OperationalEvent), typeof(DailyOperationalSummary), typeof(OperationalIncident), typeof(AlertDelivery), typeof(OperationsAdminAudit),
+        Type[] expected = [typeof(AccountCredentialChange), typeof(EmailOutboxMessage), typeof(BillingCustomer), typeof(BillingWebhookEvent), typeof(BillingCheckoutAttempt), typeof(FeedbackTicket), typeof(OperationalEvent), typeof(DailyOperationalSummary), typeof(OperationalIncident), typeof(AlertDelivery), typeof(OperationsAdminAudit),
             typeof(AiConnection), typeof(UserCurrentList), typeof(UserCurrentListRevision), typeof(McpMutationReceipt), typeof(ExtensionDevice), typeof(ExtensionTask),
             typeof(OpenIddictEntityFrameworkCoreApplication), typeof(OpenIddictEntityFrameworkCoreAuthorization),
             typeof(OpenIddictEntityFrameworkCoreScope), typeof(OpenIddictEntityFrameworkCoreToken),

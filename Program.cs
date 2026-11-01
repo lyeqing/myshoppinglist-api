@@ -85,6 +85,7 @@ try
     builder.Services.AddOptions<AuthOptions>().BindConfiguration(AuthOptions.SectionName).ValidateDataAnnotations().ValidateOnStart();
     builder.Services.AddScoped<TrialSessionService>();
     builder.Services.AddScoped<AccountAuthService>();
+    builder.Services.AddAccountSecurity(builder.Configuration, builder.Environment);
     builder.Services.AddHttpContextAccessor();
     builder.Services.Configure<AdminOptions>(builder.Configuration.GetSection("Admin"));
     builder.Services.AddScoped<AdminAccountService>();
@@ -266,6 +267,7 @@ try
     app.UseMiddleware<PersonalCaptureCollectionGuard>();
     app.UseRateLimiter();
     app.MapAuthEndpoints();
+    app.MapAccountSecurityEndpoints();
     app.MapAdminAccountEndpoints();
     app.MapAdminProductAlternativeEndpoints();
     app.MapShopLocationEndpoints();

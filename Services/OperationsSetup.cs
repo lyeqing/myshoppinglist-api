@@ -18,11 +18,12 @@ public static class OperationsSetup
         var settings = configuration.GetSection("Operations").Get<OperationsOptions>() ?? new();
         services.Configure<OperationsOptions>(configuration.GetSection("Operations"));
         if (!settings.Enabled) return;
-        if (!settings.SimulateDelivery || settings.RawRetentionDays != 30 || settings.AggregateRetentionMonths != 12
+        if (!settings.SimulateDelivery && !configuration.GetValue<bool>("EmailDelivery:Enabled")
+            || settings.RawRetentionDays != 30 || settings.AggregateRetentionMonths != 12
             || settings.SecurityFailuresPerFiveMinutes is < 10 or > 600
             || !Regex.IsMatch(settings.Release, "^[a-zA-Z0-9._-]{1,64}$") || settings.IncidentRecipients.Length > 5
             || settings.IncidentRecipients.Any(r => !System.Net.Mail.MailAddress.TryCreate(r, out _)))
-            throw new InvalidOperationException("Operations requires simulated delivery, approved retention defaults, a safe release and valid configured recipients.");
+            throw new InvalidOperationException("Operations requires simulated or configured email delivery, approved retention defaults, a safe release and valid configured recipients.");
         services.AddScoped<FeedbackService>(); services.AddScoped<VisitorAnalyticsService>(); services.AddScoped<IncidentService>();
         services.AddSingleton<OperationalEvents>(); services.AddTransient<OperationsMiddleware>(); services.AddHostedService<OperationsMaintenance>();
     }
@@ -69,7 +70,7 @@ public sealed class OperationsMaintenance(IServiceScopeFactory scopes, ILogger<O
             {
                 await using var scope = scopes.CreateAsyncScope();
                 var incident = scope.ServiceProvider.GetRequiredService<IncidentService>();
-                await incident.EvaluateRatesAsync(stoppingToken); await incident.DeliverSimulatedAsync(stoppingToken);
+                await incident.EvaluateRatesAsync(stoppingToken); await incident.DispatchAsync(stoppingToken);
                 if (DateTimeOffset.UtcNow >= nextRetention)
                 {
                     await scope.ServiceProvider.GetRequiredService<VisitorAnalyticsService>().RetainAsync(stoppingToken);
