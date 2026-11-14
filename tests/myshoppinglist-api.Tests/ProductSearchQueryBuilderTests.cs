@@ -6,6 +6,41 @@ namespace myshoppinglist_api.Tests;
 public class ProductSearchQueryBuilderTests
 {
     [Theory]
+    [InlineData("Cheezels Cheese Box 125g", "Cheezels", "cheezels cheese box 125g", "cheezels cheese")]
+    [InlineData("Zooper Dooper Cosmic Ice Blocks Mix 70mL x 24 pack", "Zooper Dooper",
+        "zooper dooper cosmic ice blocks mix 70ml x 24 pack", "zooper dooper cosmic")]
+    public void Comparison_searches_keep_a_branded_fallback_for_different_retailer_titles(string name, string brand, string full, string fallback)
+    {
+        var identity = new myshoppinglist_api.Providers.Models.ProductIdentity { Name = name, Brand = brand };
+        var original = identity with { };
+        Assert.Equal(new[] { full, fallback }, ProductSearchQueryBuilder.BuildComparisonSearches(identity));
+        Assert.Equal(original, identity);
+    }
+
+    [Fact]
+    public void Comparison_fallback_keeps_flavours_claims_formats_and_formulation_numbers()
+    {
+        var identity = new myshoppinglist_api.Providers.Models.ProductIdentity
+        { Name = "Acme Cosmic Ice Blocks No Sugar Raspberry 70mL x 24 pack", Brand = "Acme", Variant = "Raspberry" };
+        Assert.Equal("acme cosmic no sugar raspberry", ProductSearchQueryBuilder.BuildComparisonSearches(identity)[1]);
+        Assert.Equal("acme spf 50 sunscreen", ProductSearchQueryBuilder.BuildComparisonSearches(new()
+        { Name = "Acme SPF 50 Sunscreen Box 125g", Brand = "Acme" })[1]);
+        Assert.Equal("acme mango yoghurt pouch", ProductSearchQueryBuilder.BuildComparisonSearches(new()
+        { Name = "Acme Mango Yoghurt Pouch 150g", Brand = "Acme" })[1]);
+    }
+
+    [Fact]
+    public void Comparison_searches_never_use_missing_identity_or_a_brand_only_fallback()
+    {
+        Assert.Empty(ProductSearchQueryBuilder.BuildComparisonSearches(new() { Name = " " }));
+        Assert.Single(ProductSearchQueryBuilder.BuildComparisonSearches(new() { Name = "Acme Box 125g", Brand = "Acme" }));
+        Assert.Single(ProductSearchQueryBuilder.BuildComparisonSearches(new() { Name = "Cheese Box 125g" }));
+        Assert.Empty(ProductSearchQueryBuilder.BuildComparisonSearches(new() { Name = new string('a', 501), Brand = "Acme" }));
+        var longName = string.Join(' ', Enumerable.Range(0, 70).Select(n => "word" + n));
+        Assert.All(ProductSearchQueryBuilder.BuildComparisonSearches(new() { Name = longName, Brand = "Acme" }),
+            query => Assert.InRange(query.Length, 1, 160));
+    }
+    [Theory]
     [InlineData("Mango", "150g")]
     [InlineData("Vanilla", "500g")]
     [InlineData("Strawberry", "1kg")]

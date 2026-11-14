@@ -7,6 +7,50 @@ namespace myshoppinglist_api.Providers;
 
 public static class ProductSearchQueryBuilder
 {
+    private static readonly TimeSpan ComparisonTimeout = TimeSpan.FromMilliseconds(100);
+    private static readonly HashSet<string> PackagingWords = ["box", "boxed", "share", "pack", "snack", "snacks", "x"];
+    private static readonly HashSet<string> IceBlockWords = ["ice", "water", "block", "blocks", "mix", "flavour", "flavours", "flavor", "flavors", "tube", "tubes"];
+    private const string FlavourCountPattern = @"\b(?<count>\d+)\s+(?=(?:[\p{L}]+\s+){0,2}flavou?rs?\b)";
+
+    public static IReadOnlyList<string> BuildComparisonSearches(ProductIdentity product)
+    {
+        var full = Build(product);
+        if (full is null) return [];
+        var brand = Build(new ProductIdentity { Name = product.Brand ?? "" });
+        if (brand is null) return [full];
+        var terms = ComparisonTerms(product);
+        var brandWords = brand.Split(' ').ToHashSet(StringComparer.Ordinal);
+        var concise = string.Join(' ', terms);
+        // Search broadly, but never reduce a comparison to a brand-only query.
+        // The original barcode, variety and pack still decide candidate identity.
+        return concise.Length is > 0 and <= 160 && concise != full
+            && terms.Any(t => !brandWords.Contains(t)) ? [full, concise] : [full];
+    }
+
+    internal static IReadOnlyList<string> ComparisonTerms(ProductIdentity product)
+    {
+        if (string.IsNullOrWhiteSpace(product.Name) || product.Name.Length > 500
+            || product.Brand?.Length > 200 || product.Variant?.Length > 200) return [];
+        var text = string.Join(' ', new[] { product.Brand, product.Name, product.Variant }.OfType<string>())
+            .Normalize(NormalizationForm.FormKC).ToLowerInvariant();
+        // Remove stated pack measurements/counts, preserving formulation numbers and claims.
+        text = Regex.Replace(text, @"\b\d+(?:\.\d+)?\s*(?:ml|kg|g|l)\b", " ", RegexOptions.CultureInvariant, ComparisonTimeout);
+        text = Regex.Replace(text, @"\b\d+\s*(?:pack\b|[x×])|[x×]\s*\d+\b", " ", RegexOptions.CultureInvariant, ComparisonTimeout);
+        text = Regex.Replace(text, FlavourCountPattern, "", RegexOptions.CultureInvariant, ComparisonTimeout);
+        var words = Regex.Matches(text, @"[\p{L}\p{N}]+(?:[.'’-][\p{L}\p{N}]+)*", RegexOptions.CultureInvariant, ComparisonTimeout)
+            .Select(m => m.Value).ToArray();
+        var protectedWords = Regex.Matches(string.Join(' ', product.Brand, product.Variant).ToLowerInvariant(),
+            @"[\p{L}\p{N}]+(?:[.'’-][\p{L}\p{N}]+)*", RegexOptions.CultureInvariant, ComparisonTimeout)
+            .Select(m => m.Value).ToHashSet(StringComparer.Ordinal);
+        var ice = words.Contains("ice");
+        return words.Where(w => protectedWords.Contains(w) || !PackagingWords.Contains(w) && !(ice && IceBlockWords.Contains(w)))
+            .Distinct(StringComparer.Ordinal).ToArray();
+    }
+
+    internal static string? FlavourCount(ProductIdentity product) => product.Name.Length <= 500
+        && Regex.Match(product.Name, FlavourCountPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, ComparisonTimeout)
+            is { Success: true } match ? match.Groups["count"].Value : null;
+
     public static IReadOnlyList<string> BuildSearches(ProductIdentity product)
     {
         var full = Build(product);
@@ -71,6 +115,7 @@ public static class ProductSearchQueryBuilder
     {
         "coles" => new("https://www.coles.com.au/search/products?q=" + Uri.EscapeDataString(query)),
         "woolworths" => new("https://www.woolworths.com.au/shop/search/products?searchTerm=" + Uri.EscapeDataString(query)),
+        "aldi" => new("https://www.aldi.com.au/results?q=" + Uri.EscapeDataString(query)),
         _ => throw new ArgumentOutOfRangeException(nameof(shopCode))
     };
 }

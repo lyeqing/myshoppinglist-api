@@ -11,7 +11,7 @@ public sealed record PersonalProductPreviewRequest(string Url, ColesEvidence Evi
 public sealed record PersonalProductPreviewResponse(string Url, string Name, string? Brand, int? PackQuantity,
     decimal? PackSize, string? PackUnit, decimal? Price, string? Currency, DateTimeOffset ObservedAt, string? PriceNotice);
 public sealed record PersonalProductCaptureResponse(long JobId, long ProductId, long ShoppingListProductId,
-    int Quantity, bool PriceSaved, bool AlreadyOnList, bool Reused, DateTimeOffset ObservedAt)
+    int Quantity, bool PriceSaved, bool AlreadyOnList, bool Reused, DateTimeOffset ObservedAt, bool ComparisonAvailable = false)
 {
     public string Status => "Completed";
 }

@@ -58,6 +58,30 @@ public static class UserExtensionEndpoints
             catch (UserImportException e) { return Results.Problem(statusCode: e.Status, title: e.Message); }
         }).RequireAuthorization().RequireRateLimiting(ProductImportEndpoints.SubmissionRatePolicy)
             .WithMetadata(new RequestSizeLimitAttribute(2500000)).WithTags("User extension");
+        var comparisons = routes.MapGroup("/api/user-extension/comparisons").RequireAuthorization();
+        comparisons.AddEndpointFilter(async (context, next) =>
+        {
+            context.HttpContext.Response.Headers.CacheControl = "no-store";
+            if (!context.HttpContext.RequestServices.GetRequiredService<IOptions<UserExtensionOptions>>().Value.Allows(context.HttpContext.Request))
+                return Results.Problem(statusCode: 403, title: "This extension is not enabled on the server.");
+            try { return await next(context); }
+            catch (UserImportException e) { return Results.Problem(statusCode: e.Status, title: e.Message); }
+        });
+        comparisons.MapPost("/", async (PersonalComparisonStart request, HttpContext c, PersonalRetailerComparisonService service, CancellationToken ct) =>
+            Results.Ok(await service.StartAsync(Account(c), request.CaptureJobId, ct)));
+        comparisons.MapGet("/pending", async (HttpContext c, PersonalRetailerComparisonService service, CancellationToken ct) =>
+            Results.Ok(await service.PendingAsync(Account(c), ct)));
+        comparisons.MapGet("/{id:long}", async (long id, HttpContext c, PersonalRetailerComparisonService service, CancellationToken ct) =>
+            Results.Ok(await service.ReadAsync(Account(c), id, ct)));
+        comparisons.MapPost("/{id:long}/result", async (long id, PersonalComparisonResult request, HttpContext c, PersonalRetailerComparisonService service, CancellationToken ct) =>
+            Results.Ok(await service.UpdateAsync(Account(c), id, "result", request, ct)))
+            .WithMetadata(new RequestSizeLimitAttribute(2500000)).RequireRateLimiting(ProductImportEndpoints.SubmissionRatePolicy);
+        foreach (var operation in new[] { "cancel", "retry" })
+        {
+            var action = operation;
+            comparisons.MapPost("/{id:long}/" + action, async (long id, HttpContext c, PersonalRetailerComparisonService service, CancellationToken ct) =>
+                Results.Ok(await service.UpdateAsync(Account(c), id, action, null, ct)));
+        }
         imports.MapPost("/", async (UserExtensionStart request, HttpContext context, UserExtensionImportService service, CancellationToken ct) =>
             Results.Ok(await service.StartAsync(Account(context), request, ct)))
             .WithMetadata(new RequestSizeLimitAttribute(2500000)).RequireRateLimiting(ProductImportEndpoints.SubmissionRatePolicy);

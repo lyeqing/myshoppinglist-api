@@ -34,6 +34,7 @@ public sealed class PersonalProductCaptureApiTests
             Assert.True(response.Headers.CacheControl!.NoStore);
             var saved = (await response.Content.ReadFromJsonAsync<PersonalProductCaptureResponse>())!;
             Assert.Equal("Completed", saved.Status); Assert.True(saved.PriceSaved); Assert.False(saved.Reused);
+            Assert.True(saved.ComparisonAvailable);
             Assert.Equal(request.ObservedAt, saved.ObservedAt);
             Assert.Equal(f.First.Id, (await f.Db.Products.SingleAsync(p => p.Id == saved.ProductId)).UserAccountId);
             var mapping = await f.Db.ShopProducts.SingleAsync(m => m.ProductId == saved.ProductId && m.ProductUrl == request.Url);

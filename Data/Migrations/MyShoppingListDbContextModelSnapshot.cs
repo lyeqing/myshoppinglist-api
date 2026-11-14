@@ -1573,6 +1573,21 @@ namespace myshoppinglist_api.Data.Migrations
                     b.ToTable("ProductBrandSuggestions");
                 });
 
+            modelBuilder.Entity("myshoppinglist_api.Models.PersonalRetailerComparison", b =>
+                {
+                    b.Property<long>("Id").ValueGeneratedOnAdd().HasColumnType("bigint");
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+                    b.Property<long>("CaptureJobId").HasColumnType("bigint");
+                    b.Property<long>("UserAccountId").HasColumnType("bigint");
+                    b.Property<string>("StateJson").IsRequired().HasColumnType("text");
+                    b.Property<DateTime>("CreatedDate").HasColumnType("timestamp with time zone");
+                    b.Property<DateTime>("UpdatedDate").HasColumnType("timestamp with time zone");
+                    b.HasKey("Id");
+                    b.HasIndex("CaptureJobId").IsUnique();
+                    b.HasIndex("UserAccountId");
+                    b.ToTable("PersonalRetailerComparisons");
+                });
+
             modelBuilder.Entity("myshoppinglist_api.Models.ProductImportJob", b =>
                 {
                     b.Property<long>("Id")
@@ -3639,6 +3654,15 @@ namespace myshoppinglist_api.Data.Migrations
                 {
                     b.Navigation("Tokens");
                 });
+            modelBuilder.Entity("myshoppinglist_api.Models.PersonalRetailerComparison", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.ProductImportJob", "CaptureJob").WithMany()
+                        .HasForeignKey("CaptureJobId").OnDelete(DeleteBehavior.Cascade).IsRequired();
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", null).WithMany()
+                        .HasForeignKey("UserAccountId").OnDelete(DeleteBehavior.Restrict).IsRequired();
+                    b.Navigation("CaptureJob");
+                });
+
 #pragma warning restore 612, 618
         }
     }

@@ -112,7 +112,7 @@ public sealed class PersonalProductCaptureService(MyShoppingListDbContext db, Ex
             if (result.Status != ProductPersistenceStatus.Success)
                 throw CaptureError(result);
             var response = new PersonalProductCaptureResponse(job.Id, result.ProductId!.Value,
-                result.ShoppingListProductId!.Value, request.Quantity, result.PriceSaved, result.ExistingListItem, false, date);
+                result.ShoppingListProductId!.Value, request.Quantity, result.PriceSaved, result.ExistingListItem, false, date, source.ShopCode is "coles" or "woolworths" or "aldi");
             await db.ProductImportJobs.Where(j => j.Id == job.Id && j.UserAccountId == accountId)
                 .ExecuteUpdateAsync(s => s.SetProperty(j => j.CaptureResponseJson, JsonSerializer.Serialize(response)), ct);
             await db.ContributionObservations.Where(o => o.Id == observation.Id && o.UserAccountId == accountId)

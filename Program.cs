@@ -51,21 +51,12 @@ try
         .ReadFrom.Configuration(builder.Configuration).ReadFrom.Services(services)
         .MinimumLevel.Override("myshoppinglist_api.Workers.PriceRefreshWorker", LogEventLevel.Information)
         .MinimumLevel.Override("myshoppinglist_api.Services.ColesExtensionTaskService", LogEventLevel.Information)
+        .MinimumLevel.Override(PersonalRetailerComparisonService.LogSource, LogEventLevel.Information)
         .MinimumLevel.Override(McpToolAudit.Source, LogEventLevel.Information)
         .MinimumLevel.Override("myshoppinglist_api.Services.OperationalEvents", LogEventLevel.Warning)
         .MinimumLevel.Override("myshoppinglist_api.Services.OperationsMaintenance", LogEventLevel.Warning)
         .Enrich.FromLogContext()
-        .Filter.ByIncludingOnly(entry => entry.Level >= LogEventLevel.Error ||
-            entry.Level == LogEventLevel.Information &&
-            entry.Properties.TryGetValue("SourceContext", out var source) && source is ScalarValue { Value: string name } &&
-            name is "myshoppinglist_api.Workers.ProductImportWorker" or
-                "myshoppinglist_api.Workers.PriceRefreshWorker" or
-                "myshoppinglist_api.Services.ProductImportJobService" or
-                "myshoppinglist_api.Services.ProductImportSubmissionService" or
-                "myshoppinglist_api.Services.ColesExtensionTaskService" or McpToolAudit.Source ||
-            entry.Level == LogEventLevel.Warning && entry.Properties.TryGetValue("SourceContext", out var warningSource)
-                && warningSource is ScalarValue { Value: string warningName } && warningName is
-                    "myshoppinglist_api.Services.OperationalEvents" or "myshoppinglist_api.Services.OperationsMaintenance"));
+        .Filter.ByIncludingOnly(Program.IncludeLogEvent));
     builder.Services.AddDbContext<MyShoppingListDbContext>(options =>
         options.UseNpgsql(builder.Configuration.GetConnectionString("MyShoppingList")));
     builder.Services.AddSingleton(new RetailerCatalog());
@@ -156,6 +147,7 @@ try
     builder.Services.AddScoped<UserExtensionImportService>();
     builder.Services.AddScoped<ExtensionProductEvidenceParser>();
     builder.Services.AddScoped<PersonalProductCaptureService>();
+    builder.Services.AddScoped<PersonalRetailerComparisonService>();
     builder.Services.AddScoped<PersonalProductRefreshService>();
     builder.Services.AddSingleton<ProductNormalisationService>();
     builder.Services.AddSingleton<ProductMatchingService>();
@@ -414,6 +406,18 @@ public partial class Program
             return 1;
         }
     }
+
+    internal static bool IncludeLogEvent(LogEvent entry) => entry.Level >= LogEventLevel.Error ||
+        entry.Level == LogEventLevel.Information &&
+        entry.Properties.TryGetValue("SourceContext", out var source) && source is ScalarValue { Value: string name } &&
+        name is "myshoppinglist_api.Workers.ProductImportWorker" or
+            "myshoppinglist_api.Workers.PriceRefreshWorker" or
+            "myshoppinglist_api.Services.ProductImportJobService" or
+            "myshoppinglist_api.Services.ProductImportSubmissionService" or
+            "myshoppinglist_api.Services.ColesExtensionTaskService" or PersonalRetailerComparisonService.LogSource or McpToolAudit.Source ||
+        entry.Level == LogEventLevel.Warning && entry.Properties.TryGetValue("SourceContext", out var warningSource)
+            && warningSource is ScalarValue { Value: string warningName } && warningName is
+                "myshoppinglist_api.Services.OperationalEvents" or "myshoppinglist_api.Services.OperationsMaintenance";
 
     public static LogEventLevel RequestLogLevel(HttpContext context, double elapsed, Exception? exception) =>
         exception is not null || context.Response.StatusCode >= 500 ? LogEventLevel.Error : LogEventLevel.Debug;

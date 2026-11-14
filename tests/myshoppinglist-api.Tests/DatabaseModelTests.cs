@@ -75,7 +75,7 @@ public class DatabaseModelTests
             typeof(OpenIddictEntityFrameworkCoreScope), typeof(OpenIddictEntityFrameworkCoreToken),
             typeof(AccountAdminAudit), typeof(ColesExtensionTask), typeof(ContributionObservation),
             typeof(LegacyProductMigrationMap), typeof(LegacyShopProductMigrationMap),
-            typeof(PackDiscoveryJob), typeof(Product), typeof(ProductAlternativeRelationship), typeof(ProductImportJob),
+            typeof(PersonalRetailerComparison), typeof(PackDiscoveryJob), typeof(Product), typeof(ProductAlternativeRelationship), typeof(ProductImportJob),
             typeof(ProductImportRetailerResult), typeof(RetailerWorkloadState), typeof(Shop), typeof(ShopLocation),
             typeof(ShopLocationReview), typeof(ShopProduct), typeof(ShopProductPrice), typeof(ShopProductPriceHistory),
             typeof(BrandDiscoveryJob), typeof(ProductBrandSuggestion), typeof(ShoppingListItemSubstitution),

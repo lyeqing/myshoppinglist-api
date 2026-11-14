@@ -49,6 +49,7 @@ public class MyShoppingListDbContext(DbContextOptions<MyShoppingListDbContext> o
     public DbSet<ShopProduct> ShopProducts => Set<ShopProduct>();
     public DbSet<ShopProductPrice> ShopProductPrices => Set<ShopProductPrice>();
     public DbSet<ShopProductPriceHistory> ShopProductPriceHistory => Set<ShopProductPriceHistory>();
+    public DbSet<PersonalRetailerComparison> PersonalRetailerComparisons => Set<PersonalRetailerComparison>();
     public DbSet<ProductImportJob> ProductImportJobs => Set<ProductImportJob>();
     public DbSet<ProductImportRetailerResult> ProductImportRetailerResults => Set<ProductImportRetailerResult>();
 

@@ -148,6 +148,7 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
         var freshness = new CatalogueFreshnessService();
         var refreshStatuses = await PriceRefreshService.ReadStatusesAsync(db, mappings, now.UtcDateTime, token);
         var comparisons = await new ShoppingListComparisonRetryService(db, clock).ReadAsync(accountId, listId, token);
+        var personalComparisons = await PersonalRetailerComparisonService.ReadForListAsync(db, accountId, listId, token);
         var alternatives = await new PackAlternativeService(db, clock).ReadAsync(accountId, items.Select(i => i.Product).ToArray(), token);
         var brandAlternatives = await BrandAlternativeService.ReadForProductsAsync(db, clock, accountId, items.Select(i => i.Product).ToArray(), token);
         var rows = items.Select(item => new ShoppingListPlanningItem(Response(item),
@@ -169,7 +170,7 @@ public sealed class ShoppingListService(MyShoppingListDbContext db, TimeProvider
                     offer, status == "Fresh" ? PromotionCalculationService.Calculate(price!.Price, item.Quantity, offer) : null,
                     PriceObservationContextService.From(price, mapping.Shop.Code));
             }).OrderBy(p => p.ShopName).ToArray(), item.Product.UserAccountId is null ? comparisons.GetValueOrDefault(item.Id) : null,
-                alternatives.GetValueOrDefault(item.ProductId, []), brandAlternatives.GetValueOrDefault(item.ProductId, []))).ToArray();
+                alternatives.GetValueOrDefault(item.ProductId, []), brandAlternatives.GetValueOrDefault(item.ProductId, []), PersonalComparison: personalComparisons.GetValueOrDefault(item.Id))).ToArray();
         var substitutions = await new ShoppingListSubstitutionService(db, clock).ReadAsync(accountId, listId, items, brandAlternatives, token);
         rows = rows.Select(row => ShoppingListSubstitutionService.Apply(row, substitutions.GetValueOrDefault(row.Item.Id, []))).ToArray();
         if (!Accessible(list?.UserAccount, list, accountId)) return null;
