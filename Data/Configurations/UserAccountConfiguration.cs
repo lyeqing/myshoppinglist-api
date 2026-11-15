@@ -17,7 +17,7 @@ public class UserAccountConfiguration : IEntityTypeConfiguration<UserAccount>
         builder.Property(x => x.Id).UseIdentityByDefaultColumn();
         builder.ToTable("UserAccounts", table =>
         {
-            table.HasCheckConstraint("CK_UserAccounts_Credentials", """("IsTrial" AND "ExpiresDate" IS NOT NULL AND "Email" IS NULL AND "PasswordHash" IS NULL AND "PasswordSalt" IS NULL) OR (NOT "IsTrial" AND "Email" IS NOT NULL AND "PasswordHash" IS NOT NULL AND "PasswordSalt" IS NOT NULL)""");
+            table.HasCheckConstraint("CK_UserAccounts_Credentials", """("IsTrial" AND "ExpiresDate" IS NOT NULL AND "Email" IS NULL AND "PasswordHash" IS NULL AND "PasswordSalt" IS NULL) OR (NOT "IsTrial" AND (("PasswordHash" IS NULL AND "PasswordSalt" IS NULL) OR ("Email" IS NOT NULL AND "PasswordHash" IS NOT NULL AND "PasswordSalt" IS NOT NULL)))""");
         });
         builder.Property(x => x.Email).HasMaxLength(320);
         builder.Property(x => x.PasswordHash).HasMaxLength(200);
@@ -27,4 +27,3 @@ public class UserAccountConfiguration : IEntityTypeConfiguration<UserAccount>
         builder.HasIndex(x => new { x.IsTrial, x.ExpiresDate });
     }
 }
-

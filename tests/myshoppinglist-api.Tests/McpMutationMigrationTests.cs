@@ -43,7 +43,11 @@ public sealed class McpMutationMigrationTests
         Assert.Equal(before, await f.FingerprintAsync(legacyOnly: true));
         await f.Db.GetService<IMigrator>().MigrateAsync(BridgeMigration);
         var session = new myshoppinglist_api.Models.UserSession { UserAccountId = f.A.Id, TokenHash = new string('C', 64), CreatedDate = f.Past, ExpiresDate = f.Past.AddDays(7) };
-        f.Db.UserSessions.Add(session); await f.Db.SaveChangesAsync();
+        // This historical schema predates nullable social reauthentication columns.
+        session.Id = (await f.Db.Database.SqlQuery<long>($"""
+            INSERT INTO "UserSessions" ("UserAccountId","TokenHash","CreatedDate","ExpiresDate")
+            VALUES ({session.UserAccountId},{session.TokenHash},{session.CreatedDate},{session.ExpiresDate}) RETURNING "Id" AS "Value"
+            """).ToArrayAsync()).Single();
         f.Db.ExtensionDevices.Add(new() { UserAccountId = f.A.Id, UserSessionId = session.Id, InstallationId = Guid.NewGuid(), TokenHash = new string('A', 64),
             ExtensionId = new string('a', 32), ExtensionVersion = "0.9.0", LinkedAt = f.Past });
         await f.Db.SaveChangesAsync();

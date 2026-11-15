@@ -53,6 +53,7 @@ try
         .MinimumLevel.Override("myshoppinglist_api.Workers.PriceRefreshWorker", LogEventLevel.Information)
         .MinimumLevel.Override("myshoppinglist_api.Services.ColesExtensionTaskService", LogEventLevel.Information)
         .MinimumLevel.Override(PersonalRetailerComparisonService.LogSource, LogEventLevel.Information)
+        .MinimumLevel.Override("myshoppinglist_api.Services.SocialAuthenticationService", LogEventLevel.Information)
         .MinimumLevel.Override(McpToolAudit.Source, LogEventLevel.Information)
         .MinimumLevel.Override("myshoppinglist_api.Services.OperationalEvents", LogEventLevel.Warning)
         .MinimumLevel.Override("myshoppinglist_api.Services.OperationsMaintenance", LogEventLevel.Warning)
@@ -91,6 +92,7 @@ try
     builder.Services.AddAuthentication(SessionTokenAuthenticationHandler.SchemeName)
         .AddScheme<AuthenticationSchemeOptions, SessionTokenAuthenticationHandler>(SessionTokenAuthenticationHandler.SchemeName, _ => { })
         .AddScheme<AuthenticationSchemeOptions, ColesWorkerAuthenticationHandler>(ColesWorkerAuthenticationHandler.SchemeName, _ => { });
+    builder.Services.AddSocialAuthentication(builder.Configuration, builder.Environment);
     builder.Services.AddAuthorization();
     builder.Services.AddAuthorization(o => o.AddPolicy("ColesWorkerOnly", p => p
         .AddAuthenticationSchemes(ColesWorkerAuthenticationHandler.SchemeName).RequireAuthenticatedUser().RequireClaim("coles_worker", "true")));
@@ -249,6 +251,7 @@ try
         });
     var app = builder.Build();
     if (developmentLoopbackProxy) app.UseForwardedHeaders();
+    app.UseSocialAuthenticationOrigin();
     app.UseRouting();
     app.UseExceptionHandler(new ExceptionHandlerOptions
     {
@@ -279,6 +282,7 @@ try
     app.UseMiddleware<PersonalCaptureCollectionGuard>();
     app.UseRateLimiter();
     app.MapAuthEndpoints();
+    app.MapSocialAuthenticationEndpoints();
     app.MapAccountSecurityEndpoints();
     app.MapAdminAccountEndpoints();
     app.MapAdminProductAlternativeEndpoints();
@@ -435,7 +439,7 @@ public partial class Program
             "myshoppinglist_api.Workers.PriceRefreshWorker" or
             "myshoppinglist_api.Services.ProductImportJobService" or
             "myshoppinglist_api.Services.ProductImportSubmissionService" or
-            "myshoppinglist_api.Services.ColesExtensionTaskService" or PersonalRetailerComparisonService.LogSource or McpToolAudit.Source ||
+            "myshoppinglist_api.Services.ColesExtensionTaskService" or "myshoppinglist_api.Services.SocialAuthenticationService" or PersonalRetailerComparisonService.LogSource or McpToolAudit.Source ||
         entry.Level == LogEventLevel.Warning && entry.Properties.TryGetValue("SourceContext", out var warningSource)
             && warningSource is ScalarValue { Value: string warningName } && warningName is
                 "myshoppinglist_api.Services.OperationalEvents" or "myshoppinglist_api.Services.OperationsMaintenance";

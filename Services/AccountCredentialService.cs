@@ -66,10 +66,17 @@ public sealed class AccountCredentialService(MyShoppingListDbContext db, IOption
     }
     private static UserImportException InvalidLink() => new(400, "This reset link is invalid, expired or already used. Request a new link.");
 
-    private async Task ApplyAsync(UserAccount user, (string Hash, string Salt) credential, CancellationToken ct)
+    internal async Task ApplyAsync(UserAccount user, (string Hash, string Salt) credential, CancellationToken ct)
+    {
+        user.PasswordHash = credential.Hash; user.PasswordSalt = credential.Salt; user.UpdatedDate = clock.GetUtcNow().UtcDateTime;
+        await RevokeAccessAsync(user, ct);
+        if (user.Email is { } email) emails.AddPasswordNotice(email);
+        await db.SaveChangesAsync(ct);
+    }
+
+    internal async Task RevokeAccessAsync(UserAccount user, CancellationToken ct)
     {
         var now = clock.GetUtcNow().UtcDateTime; var account = user.Id;
-        user.PasswordHash = credential.Hash; user.PasswordSalt = credential.Salt; user.UpdatedDate = now;
         await db.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO "AccountCredentialChanges" ("UserAccountId", "ChangedAt") VALUES ({account}, {now})
             ON CONFLICT ("UserAccountId") DO UPDATE SET "ChangedAt"=EXCLUDED."ChangedAt"
@@ -84,11 +91,12 @@ public sealed class AccountCredentialService(MyShoppingListDbContext db, IOption
             .ExecuteUpdateAsync(s => s.SetProperty(t => t.Status, "revoked"), ct);
         await db.ExtensionTasks.Where(t => t.UserAccountId == account && (t.Status == "queued" || t.Status == "awaiting_user" || t.Status == "acknowledged" || t.Status == "running"))
             .ExecuteUpdateAsync(s => s.SetProperty(t => t.Status, "cancelled").SetProperty(t => t.CompletedAt, now).SetProperty(t => t.ErrorCode, "origin_revoked"), ct);
-        var hash = EmailOutboxService.AddressHash(user.Email!);
+        var hash = user.Email is { } address ? EmailOutboxService.AddressHash(address) : "";
         await db.EmailOutboxMessages.Where(e => e.Kind == "account_recovery" && e.RecipientHash == hash && (e.Status == "queued" || e.Status == "sending"))
             .ExecuteUpdateAsync(s => s.SetProperty(e => e.Status, "cancelled").SetProperty(e => e.CompletedAt, now)
                 .SetProperty(e => e.ProtectedPayload, (string?)null).SetProperty(e => e.ClaimToken, (Guid?)null).SetProperty(e => e.LeaseExpiresAt, (DateTime?)null), ct);
-        emails.AddPasswordNotice(user.Email!);
+        await db.ExternalAuthFlows.Where(f => f.UserAccountId == account && f.ConsumedAt == null)
+            .ExecuteUpdateAsync(s => s.SetProperty(f => f.ConsumedAt, now), ct);
         await db.SaveChangesAsync(ct);
     }
 }

@@ -1,5 +1,7 @@
 # Password recovery and notification delivery
 
+Social sign-in follow-up (15 November 2026): [Google/Facebook/Microsoft setup](SOCIAL_AUTHENTICATION.md) describes shared sessions, explicit linking, last-method protection and verified password enrollment for social-only accounts. Existing password/recovery behavior remains available. Provider credentials and social schema activation remain separate.
+
 Local implementation, 1 November 2026. This adds working recovery/password-change workflows and optional email transports. It does **not** configure a provider, send external email, change the application database or activate production services. All browser and transport verification uses disposable accounts and a loopback SMTP receiver.
 
 ## Schema and compatibility

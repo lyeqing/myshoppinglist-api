@@ -20,5 +20,5 @@ public class UserSession
     public decimal? LocationAccuracy { get; set; }
     public DateTime? LocationCapturedDate { get; set; }
     public DateTime? RevokedDate { get; set; }
+    public DateTime? ReauthenticatedAt { get; set; }
 }
-

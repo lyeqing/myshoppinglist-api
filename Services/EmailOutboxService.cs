@@ -21,7 +21,7 @@ public sealed class EmailOutboxService(MyShoppingListDbContext db, IDataProtecti
 
     public EmailOutboxMessage Add(string kind, OutboundEmail message, DateTime expires, Guid? id = null)
     {
-        if (kind is not ("account_recovery" or "password_changed" or "security_alert") || message.Recipients.Length is < 1 or > 5
+        if (kind is not ("account_recovery" or "password_changed" or "security_alert" or "signin_email") || message.Recipients.Length is < 1 or > 5
             || message.Recipients.Any(r => AccountAuthService.NormaliseEmail(r) is null)
             || message.Subject.Length > 200 || message.Subject.Any(char.IsControl) || message.Body.Length > 12000)
             throw new InvalidOperationException("Invalid fixed email contract.");
@@ -88,7 +88,7 @@ public sealed class EmailOutboxService(MyShoppingListDbContext db, IDataProtecti
                 if (!recovery.Value.Enabled) { await FinishAsync(row, "cancelled", ct); return true; }
                 var email = message.Recipients.Single();
                 var user = await db.UserAccounts.AsNoTracking().SingleOrDefaultAsync(u => u.Email == email && u.IsActive && !u.IsTrial, ct);
-                if (user is null || await db.AccountCredentialChanges.AnyAsync(c => c.UserAccountId == user.Id && c.ChangedAt > row.CreatedAt, ct))
+                if (user is null || user.PasswordHash is null || await db.AccountCredentialChanges.AnyAsync(c => c.UserAccountId == user.Id && c.ChangedAt > row.CreatedAt, ct))
                 { await FinishAsync(row, "suppressed", ct); return true; }
                 var token = tokens.Create(user, row.ExpiresAt);
                 var link = new Uri(new Uri(recovery.Value.WebsiteOrigin), "/account/recovery").AbsoluteUri + "#token=" + Uri.EscapeDataString(token);

@@ -6,6 +6,7 @@ public class UserAccount
     public string? Email { get; set; }
     public string? PasswordHash { get; set; }
     public string? PasswordSalt { get; set; }
+    public DateTime? EmailVerifiedAt { get; set; }
     public string DisplayName { get; set; } = string.Empty;
     public bool IsTrial { get; set; }
     public DateTime? ExpiresDate { get; set; }
@@ -20,4 +21,3 @@ public class UserAccount
     public DateTime CreatedDate { get; set; }
     public DateTime UpdatedDate { get; set; }
 }
-

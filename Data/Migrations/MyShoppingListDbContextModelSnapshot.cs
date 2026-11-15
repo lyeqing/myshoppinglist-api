@@ -784,7 +784,7 @@ namespace myshoppinglist_api.Data.Migrations
 
                     b.ToTable("EmailOutboxMessages", null, t =>
                         {
-                            t.HasCheckConstraint("CK_EmailOutbox_Kind", "\"Kind\" IN ('account_recovery','password_changed','security_alert')");
+                            t.HasCheckConstraint("CK_EmailOutbox_Kind", "\"Kind\" IN ('account_recovery','password_changed','security_alert','signin_email')");
 
                             t.HasCheckConstraint("CK_EmailOutbox_Status", "\"Status\" IN ('queued','sending','sent','failed','expired','suppressed','cancelled')");
                         });
@@ -962,6 +962,102 @@ namespace myshoppinglist_api.Data.Migrations
                             t.HasCheckConstraint("CK_ExtensionTasks_Target", "(\"Type\"='capture' AND \"ShoppingListId\" IS NOT NULL AND \"ShoppingListId\">0 AND \"Quantity\">0) OR (\"Type\"='search' AND \"ShoppingListId\" IS NULL)");
 
                             t.HasCheckConstraint("CK_ExtensionTasks_Type", "\"Type\" IN ('capture','search')");
+                        });
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.ExternalAuthFlow", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("ConsumedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Email")
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("Purpose")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("TokenHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<long?>("UserAccountId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("UserSessionId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAt");
+
+                    b.HasIndex("UserSessionId", "UserAccountId");
+
+                    b.HasIndex("UserAccountId", "ExpiresAt");
+
+                    b.ToTable("ExternalAuthFlows", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ExternalAuthFlow_Purpose", "\"Purpose\" IN ('signin','link','reauthenticate','email') AND \"ExpiresAt\">\"CreatedAt\" AND ((\"UserAccountId\" IS NULL) = (\"UserSessionId\" IS NULL))");
+                        });
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.ExternalIdentity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("ProviderEmail")
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)");
+
+                    b.Property<string>("Subject")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .UseCollation("C");
+
+                    b.Property<long>("UserAccountId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProviderEmail");
+
+                    b.HasIndex("Provider", "Subject")
+                        .IsUnique();
+
+                    b.HasIndex("UserAccountId", "Provider")
+                        .IsUnique();
+
+                    b.ToTable("ExternalIdentities", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ExternalIdentity_Provider", "\"Provider\" IN ('google','facebook','microsoft') AND length(\"Subject\") BETWEEN 1 AND 512");
                         });
                 });
 
@@ -2698,6 +2794,9 @@ namespace myshoppinglist_api.Data.Migrations
                         .HasMaxLength(320)
                         .HasColumnType("character varying(320)");
 
+                    b.Property<DateTime?>("EmailVerifiedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime?>("ExpiresDate")
                         .HasColumnType("timestamp with time zone");
 
@@ -2745,7 +2844,7 @@ namespace myshoppinglist_api.Data.Migrations
 
                     b.ToTable("UserAccounts", null, t =>
                         {
-                            t.HasCheckConstraint("CK_UserAccounts_Credentials", "(\"IsTrial\" AND \"ExpiresDate\" IS NOT NULL AND \"Email\" IS NULL AND \"PasswordHash\" IS NULL AND \"PasswordSalt\" IS NULL) OR (NOT \"IsTrial\" AND \"Email\" IS NOT NULL AND \"PasswordHash\" IS NOT NULL AND \"PasswordSalt\" IS NOT NULL)");
+                            t.HasCheckConstraint("CK_UserAccounts_Credentials", "(\"IsTrial\" AND \"ExpiresDate\" IS NOT NULL AND \"Email\" IS NULL AND \"PasswordHash\" IS NULL AND \"PasswordSalt\" IS NULL) OR (NOT \"IsTrial\" AND ((\"PasswordHash\" IS NULL AND \"PasswordSalt\" IS NULL) OR (\"Email\" IS NOT NULL AND \"PasswordHash\" IS NOT NULL AND \"PasswordSalt\" IS NOT NULL)))");
                         });
                 });
 
@@ -3021,6 +3120,9 @@ namespace myshoppinglist_api.Data.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)");
 
+                    b.Property<DateTime?>("ReauthenticatedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime?>("RevokedDate")
                         .HasColumnType("timestamp with time zone");
 
@@ -3219,6 +3321,32 @@ namespace myshoppinglist_api.Data.Migrations
                     b.Navigation("AiConnection");
 
                     b.Navigation("Device");
+
+                    b.Navigation("UserAccount");
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.ExternalAuthFlow", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.HasOne("myshoppinglist_api.Models.UserSession", null)
+                        .WithMany()
+                        .HasForeignKey("UserSessionId", "UserAccountId")
+                        .HasPrincipalKey("Id", "UserAccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("FK_ExternalAuthFlows_UserSessions_Owner");
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.ExternalIdentity", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", "UserAccount")
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
                     b.Navigation("UserAccount");
                 });

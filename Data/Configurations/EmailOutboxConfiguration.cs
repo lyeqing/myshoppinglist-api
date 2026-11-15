@@ -26,7 +26,7 @@ public sealed class EmailOutboxConfiguration : IEntityTypeConfiguration<EmailOut
         b.HasIndex(e => new { e.RecipientHash, e.CreatedAt });
         b.ToTable("EmailOutboxMessages", t =>
         {
-            t.HasCheckConstraint("CK_EmailOutbox_Kind", "\"Kind\" IN ('account_recovery','password_changed','security_alert')");
+            t.HasCheckConstraint("CK_EmailOutbox_Kind", "\"Kind\" IN ('account_recovery','password_changed','security_alert','signin_email')");
             t.HasCheckConstraint("CK_EmailOutbox_Status", "\"Status\" IN ('queued','sending','sent','failed','expired','suppressed','cancelled')");
         });
     }

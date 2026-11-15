@@ -5,6 +5,8 @@ namespace myshoppinglist_api.Data;
 
 public class MyShoppingListDbContext(DbContextOptions<MyShoppingListDbContext> options) : DbContext(options)
 {
+    public DbSet<ExternalIdentity> ExternalIdentities => Set<ExternalIdentity>();
+    public DbSet<ExternalAuthFlow> ExternalAuthFlows => Set<ExternalAuthFlow>();
     public DbSet<ResearchJob> ResearchJobs => Set<ResearchJob>();
     public DbSet<ResearchCandidate> ResearchCandidates => Set<ResearchCandidate>();
     public DbSet<ResearchIssue> ResearchIssues => Set<ResearchIssue>();

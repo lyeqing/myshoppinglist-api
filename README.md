@@ -1,5 +1,7 @@
 # MyShoppingList API
 
+Google, Facebook and Microsoft sign-in, explicit account linking and verified email/password enrollment for social-only accounts: [social authentication setup](docs/SOCIAL_AUTHENTICATION.md). Providers default off; developer credentials, callback registration and the reviewed social migration are required before activation.
+
 Security review and deployment requirements: [audit](docs/SECURITY_AUDIT.md), [architecture](docs/SECURITY_ARCHITECTURE.md), [MCP security](docs/MCP_SECURITY.md), [WebMCP evaluation](docs/WEBMCP_EVALUATION.md), and [test evidence](docs/SECURITY_TESTING.md).
 
 Password changes, recovery, encrypted email delivery and independent outage notifications: [account security setup](docs/ACCOUNT_SECURITY.md). Delivery/recovery are disabled by default; the additive migration is required before enabling these workflows.

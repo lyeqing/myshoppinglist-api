@@ -17,25 +17,36 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
     private static readonly (string Hash, string Salt) Dummy = PasswordHasher.Hash("Unknown account credential");
     private DateTime Now => new(clock.GetUtcNow().UtcTicks / 10 * 10, DateTimeKind.Utc);
 
-    public async Task<AccountAuthResult> RegisterAsync(RegisterRequest request, long? accountId, long? sessionId, CancellationToken token, SessionDevice? device = null, string? timezone = null)
+    public Task<AccountAuthResult> RegisterAsync(RegisterRequest request, long? accountId, long? sessionId, CancellationToken token, SessionDevice? device = null, string? timezone = null)
+        => RegisterCoreAsync(request, accountId, sessionId, token, device, timezone, null);
+
+    internal Task<AccountAuthResult> RegisterExternalAsync(string name, ExternalIdentity identity, long? accountId, long? sessionId, CancellationToken ct, string? timezone = null)
+        => RegisterCoreAsync(new(null, null, name), accountId, sessionId, ct, null, timezone, identity);
+
+    private async Task<AccountAuthResult> RegisterCoreAsync(RegisterRequest request, long? accountId, long? sessionId, CancellationToken token, SessionDevice? device, string? timezone, ExternalIdentity? external)
     {
-        var email = NormaliseEmail(request.Email);
-        if (email is null) return Fail(400, "Enter a valid email address.");
+        var email = external is null ? NormaliseEmail(request.Email) : null;
+        if (email is null && external is null) return Fail(400, "Enter a valid email address.");
         if (string.IsNullOrWhiteSpace(request.DisplayName) || request.DisplayName.Trim().Length > 200)
             return Fail(400, "Enter a display name of at most 200 characters.");
-        if (PasswordPolicy.Error(request.Password, options.Value.MinimumPasswordLength) is { } passwordError)
+        if (external is null && PasswordPolicy.Error(request.Password, options.Value.MinimumPasswordLength) is { } passwordError)
             return Fail(400, passwordError);
         if (accountId.HasValue != sessionId.HasValue) return Fail(401, "A valid session is required.");
-        CleanContext();
+        if (external is null) CleanContext();
         // Expensive hashing is outside database locks. Eligibility is checked again after acquiring them.
-        var credential = PasswordHasher.Hash(request.Password!);
+        var credential = external is null ? PasswordHasher.Hash(request.Password!) : ((string Hash, string Salt)?)null;
         token.ThrowIfCancellationRequested();
-        await using var transaction = await db.Database.BeginTransactionAsync(token);
+        await using var transaction = db.Database.CurrentTransaction is null ? await db.Database.BeginTransactionAsync(token) : null;
         try
         {
             // A namespaced email lock serialises duplicate registrations across application instances.
-            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({"account-register:" + email}, 0))", token);
-            if (await db.UserAccounts.AnyAsync(u => u.Email == email, token)) return Fail(409, "Registration could not be completed with this email.");
+            if (email is not null)
+            {
+                await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({"account-register:" + email}, 0))", token);
+                if (await db.UserAccounts.AnyAsync(u => u.Email == email, token)
+                    || await db.ExternalIdentities.AnyAsync(u => u.ProviderEmail == email, token))
+                    return Fail(409, "Registration could not be completed with this email. If you already use a social sign-in, sign in with it and manage sign-in methods.");
+            }
             UserAccount user;
             ShoppingList? list;
             UserSession? trialSession = null;
@@ -70,8 +81,9 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
                 db.AddRange(user, list);
             }
             user.Email = email; user.DisplayName = request.DisplayName.Trim();
-            user.PasswordHash = credential.Hash; user.PasswordSalt = credential.Salt;
+            user.PasswordHash = credential?.Hash; user.PasswordSalt = credential?.Salt;
             user.IsTrial = false; user.ExpiresDate = null; user.UpdatedDate = now;
+            if (external is not null) { external.UserAccount = user; db.ExternalIdentities.Add(external); }
             var (session, raw) = NewSession(user, now, device);
             db.UserSessions.Add(session);
             await db.SaveChangesAsync(token);
@@ -81,7 +93,7 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
                 || originalListExpiries.Any(expiry => expiry <= now)))
                 return Fail(401, "The trial expired before registration finished.");
             if (!(session.ExpiresDate > now)) return Fail(401, "The new session expired before registration finished.");
-            await transaction.CommitAsync(token);
+            if (transaction is not null) await transaction.CommitAsync(token);
             return new(Response(user, list?.Id, session), raw, 201);
         }
         catch (DbUpdateException exception) when (exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
@@ -96,7 +108,7 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
         if (request.Password is null || request.Password.Length is < 1 or > 1024) return InvalidCredentials();
         var candidate = email is null ? null : await db.UserAccounts.AsNoTracking().SingleOrDefaultAsync(u => u.Email == email && !u.IsTrial, token);
         var valid = PasswordHasher.Verify(request.Password, candidate?.PasswordHash ?? Dummy.Hash, candidate?.PasswordSalt ?? Dummy.Salt);
-        if (!valid || candidate is null || !candidate.IsActive) return InvalidCredentials();
+        if (!valid || candidate is null || candidate.PasswordHash is null || candidate.PasswordSalt is null || !candidate.IsActive) return InvalidCredentials();
         token.ThrowIfCancellationRequested();
         await using var transaction = await db.Database.BeginTransactionAsync(token);
         try
@@ -117,7 +129,7 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
         finally { db.ChangeTracker.Clear(); }
     }
 
-    private (UserSession Session, string Raw) NewSession(UserAccount user, DateTime now, SessionDevice? device)
+    internal (UserSession Session, string Raw) NewSession(UserAccount user, DateTime now, SessionDevice? device = null)
     {
         var raw = SessionToken.Create();
         return (new()

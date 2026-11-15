@@ -195,7 +195,10 @@ public sealed class ResearchTests
             await migrator.MigrateAsync("20261107000000_AddPersonalRetailerComparisons");
             var account = new UserAccount { DisplayName = "Preserved fixture", Email = "migration@example.test", PasswordHash = "fixture", PasswordSalt = "fixture",
                 CreatedDate = DateTime.UtcNow, UpdatedDate = DateTime.UtcNow };
-            db.Add(account); await db.SaveChangesAsync();
+            account.Id = (await db.Database.SqlQuery<long>($"""
+                INSERT INTO "UserAccounts" ("DisplayName","Email","PasswordHash","PasswordSalt","IsTrial","IsActive","IsPaid","CreatedDate","UpdatedDate","CompareOnlyPreferredShops","ContributionBlocked")
+                VALUES ({account.DisplayName},{account.Email},{account.PasswordHash},{account.PasswordSalt},false,true,false,{account.CreatedDate},{account.UpdatedDate},false,false) RETURNING "Id" AS "Value"
+                """).ToArrayAsync()).Single();
             await db.Database.MigrateAsync();
             Assert.Equal("Preserved fixture", (await db.UserAccounts.SingleAsync()).DisplayName);
             var job = new ResearchJob { Id = Guid.NewGuid(), UserAccountId = account.Id, Query = "Retain evidence", WorkflowVersion = ResearchWorkflow.Version, CreatedAt = DateTime.UtcNow };

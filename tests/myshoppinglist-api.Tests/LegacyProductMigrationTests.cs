@@ -298,6 +298,16 @@ internal sealed class MigrationRehearsalScope : IAsyncDisposable
     {
         A = new() { DisplayName = "Account A", Email = "a@example.test", PasswordHash = "fixture", PasswordSalt = "fixture", CreatedDate = Past, UpdatedDate = Past };
         B = new() { DisplayName = "Expired B", IsTrial = true, IsActive = false, ExpiresDate = Past, CreatedDate = Past, UpdatedDate = Past };
+        // Seed the historical account contract explicitly: later nullable account columns do not
+        // exist when rehearsing an older migration. Keep the production model unchanged.
+        foreach (var account in new[] { A, B })
+        {
+            account.Id = (await Db.Database.SqlQuery<long>($"""
+                INSERT INTO "UserAccounts" ("DisplayName","Email","PasswordHash","PasswordSalt","IsTrial","IsActive","ExpiresDate","IsPaid","CreatedDate","UpdatedDate","CompareOnlyPreferredShops","ContributionBlocked")
+                VALUES ({account.DisplayName},{account.Email},{account.PasswordHash},{account.PasswordSalt},{account.IsTrial},{account.IsActive},{account.ExpiresDate},{account.IsPaid},{account.CreatedDate},{account.UpdatedDate},{account.CompareOnlyPreferredShops},{account.ContributionBlocked}) RETURNING "Id" AS "Value"
+                """).ToArrayAsync()).Single();
+        }
+        Db.AttachRange(A, B);
         ListA = new() { UserAccount = A, Name = "Weekly", CreatedDate = Past, UpdatedDate = Past };
         ListB = new() { UserAccount = B, Name = "Archived", IsArchived = true, ExpiresDate = Past, CreatedDate = Past, UpdatedDate = Past };
         Source = new() { Name = "Acme Original Coffee 500g", Brand = "Acme", GTIN = "9300000000002", PackQuantity = 1, PackSize = 500,
