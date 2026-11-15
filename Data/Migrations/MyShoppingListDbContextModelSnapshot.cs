@@ -1374,6 +1374,40 @@ namespace myshoppinglist_api.Data.Migrations
                         });
                 });
 
+            modelBuilder.Entity("myshoppinglist_api.Models.PersonalRetailerComparison", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<long>("CaptureJobId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime>("CreatedDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("StateJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("UserAccountId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CaptureJobId")
+                        .IsUnique();
+
+                    b.HasIndex("UserAccountId");
+
+                    b.ToTable("PersonalRetailerComparisons");
+                });
+
             modelBuilder.Entity("myshoppinglist_api.Models.Product", b =>
                 {
                     b.Property<long>("Id")
@@ -1573,21 +1607,6 @@ namespace myshoppinglist_api.Data.Migrations
                     b.ToTable("ProductBrandSuggestions");
                 });
 
-            modelBuilder.Entity("myshoppinglist_api.Models.PersonalRetailerComparison", b =>
-                {
-                    b.Property<long>("Id").ValueGeneratedOnAdd().HasColumnType("bigint");
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
-                    b.Property<long>("CaptureJobId").HasColumnType("bigint");
-                    b.Property<long>("UserAccountId").HasColumnType("bigint");
-                    b.Property<string>("StateJson").IsRequired().HasColumnType("text");
-                    b.Property<DateTime>("CreatedDate").HasColumnType("timestamp with time zone");
-                    b.Property<DateTime>("UpdatedDate").HasColumnType("timestamp with time zone");
-                    b.HasKey("Id");
-                    b.HasIndex("CaptureJobId").IsUnique();
-                    b.HasIndex("UserAccountId");
-                    b.ToTable("PersonalRetailerComparisons");
-                });
-
             modelBuilder.Entity("myshoppinglist_api.Models.ProductImportJob", b =>
                 {
                     b.Property<long>("Id")
@@ -1781,6 +1800,144 @@ namespace myshoppinglist_api.Data.Migrations
                         {
                             t.HasCheckConstraint("CK_ProductImportRetailerResults_MatchConfidence", "\"MatchConfidence\" BETWEEN 0 AND 100");
                         });
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.ResearchCandidate", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("IssuesJson")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("ReportJson")
+                        .IsRequired()
+                        .HasMaxLength(12000)
+                        .HasColumnType("character varying(12000)");
+
+                    b.Property<Guid>("ResearchJobId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long?>("SelectedProductId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("UserAccountId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Validation")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SelectedProductId");
+
+                    b.HasIndex("ResearchJobId", "Key")
+                        .IsUnique();
+
+                    b.HasIndex("ResearchJobId", "UserAccountId");
+
+                    b.ToTable("ResearchCandidates");
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.ResearchIssue", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("Detail")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<Guid>("ResearchJobId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Resolution")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("Retailer")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<string>("Target")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<long>("UserAccountId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ResearchJobId", "UserAccountId");
+
+                    b.HasIndex("ResearchJobId", "Retailer", "Code", "Target")
+                        .IsUnique();
+
+                    b.ToTable("ResearchIssues", t =>
+                        {
+                            t.HasCheckConstraint("CK_ResearchIssue_Revision", "\"Revision\" > 0");
+                        });
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.ResearchJob", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Query")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<long>("UserAccountId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("WorkflowVersion")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserAccountId", "CreatedAt");
+
+                    b.ToTable("ResearchJobs");
                 });
 
             modelBuilder.Entity("myshoppinglist_api.Models.RetailerWorkloadState", b =>
@@ -3188,6 +3345,23 @@ namespace myshoppinglist_api.Data.Migrations
                     b.Navigation("UserAccount");
                 });
 
+            modelBuilder.Entity("myshoppinglist_api.Models.PersonalRetailerComparison", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.ProductImportJob", "CaptureJob")
+                        .WithMany()
+                        .HasForeignKey("CaptureJobId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("CaptureJob");
+                });
+
             modelBuilder.Entity("myshoppinglist_api.Models.Product", b =>
                 {
                     b.HasOne("myshoppinglist_api.Models.UserAccount", null)
@@ -3320,6 +3494,40 @@ namespace myshoppinglist_api.Data.Migrations
                     b.Navigation("Shop");
 
                     b.Navigation("ShopProduct");
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.ResearchCandidate", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.Product", null)
+                        .WithMany()
+                        .HasForeignKey("SelectedProductId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("myshoppinglist_api.Models.ResearchJob", null)
+                        .WithMany()
+                        .HasForeignKey("ResearchJobId", "UserAccountId")
+                        .HasPrincipalKey("Id", "UserAccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.ResearchIssue", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.ResearchJob", null)
+                        .WithMany()
+                        .HasForeignKey("ResearchJobId", "UserAccountId")
+                        .HasPrincipalKey("Id", "UserAccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("myshoppinglist_api.Models.ResearchJob", b =>
+                {
+                    b.HasOne("myshoppinglist_api.Models.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("UserAccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("myshoppinglist_api.Models.ShopLocation", b =>
@@ -3654,15 +3862,6 @@ namespace myshoppinglist_api.Data.Migrations
                 {
                     b.Navigation("Tokens");
                 });
-            modelBuilder.Entity("myshoppinglist_api.Models.PersonalRetailerComparison", b =>
-                {
-                    b.HasOne("myshoppinglist_api.Models.ProductImportJob", "CaptureJob").WithMany()
-                        .HasForeignKey("CaptureJobId").OnDelete(DeleteBehavior.Cascade).IsRequired();
-                    b.HasOne("myshoppinglist_api.Models.UserAccount", null).WithMany()
-                        .HasForeignKey("UserAccountId").OnDelete(DeleteBehavior.Restrict).IsRequired();
-                    b.Navigation("CaptureJob");
-                });
-
 #pragma warning restore 612, 618
         }
     }

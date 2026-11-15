@@ -9,5 +9,6 @@ public enum SourceType
     BrowserExtension = 4,
     Playwright = 5,
     Manual = 6,
+    AiResearch = 7,
 }
 

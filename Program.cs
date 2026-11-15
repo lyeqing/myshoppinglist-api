@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using myshoppinglist_api.Data;
 using myshoppinglist_api.Providers;
@@ -141,6 +142,10 @@ try
     builder.Services.AddExtensionBridge(builder.Configuration);
     builder.Services.AddAiIntegration(builder.Configuration, builder.Environment);
     builder.Services.AddScoped<ProductLibraryService>();
+    builder.Services.AddOptions<ResearchOptions>().BindConfiguration("Research").ValidateDataAnnotations().ValidateOnStart();
+    builder.Services.AddScoped<ResearchEvidenceValidator>();
+    builder.Services.AddScoped<ResearchService>();
+    builder.Services.AddScoped<McpMutationCoordinator>();
     builder.Services.AddScoped<ShoppingPreferencesService>();
     builder.Services.Configure<UserExtensionOptions>(builder.Configuration.GetSection(UserExtensionOptions.SectionName));
     builder.Services.AddScoped<InStoreShoppingService>();
@@ -228,7 +233,22 @@ try
     builder.Services.AddOpenApi();
     builder.Services.ConfigureHttpJsonOptions(options =>
         options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+    var developmentLoopbackProxy = builder.Environment.IsDevelopment()
+        && builder.Configuration.GetValue<bool>("AiIntegration:Enabled")
+        && builder.Configuration.GetValue<bool>("AiIntegration:DevelopmentLoopbackProxy");
+    if (developmentLoopbackProxy)
+        builder.Services.Configure<ForwardedHeadersOptions>(options =>
+        {
+            options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost;
+            options.ForwardLimit = 1;
+            options.KnownIPNetworks.Clear();
+            options.KnownProxies.Clear();
+            options.KnownProxies.Add(IPAddress.Loopback);
+            options.KnownProxies.Add(IPAddress.IPv6Loopback);
+            options.AllowedHosts.Add(new Uri(builder.Configuration["AiIntegration:Issuer"]!).Host);
+        });
     var app = builder.Build();
+    if (developmentLoopbackProxy) app.UseForwardedHeaders();
     app.UseRouting();
     app.UseExceptionHandler(new ExceptionHandlerOptions
     {
@@ -274,6 +294,7 @@ try
     app.MapCurrentListEndpoints();
     app.MapExtensionBridgeEndpoints();
     app.MapAiIntegration();
+    app.MapResearchEndpoints();
     app.MapProductLibraryEndpoints();
     app.MapPackDiscoveryEndpoints();
     app.MapBrandDiscoveryEndpoints();

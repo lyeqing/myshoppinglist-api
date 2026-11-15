@@ -13,6 +13,7 @@ namespace myshoppinglist_api.Services;
 // hash and a single, explicit schema. The caller must arrange backup/maintenance.
 public sealed class LegacyProductMigrationService(MyShoppingListDbContext db, TimeProvider clock)
 {
+    private static readonly string[] ResearchTables = ["ResearchJobs", "ResearchCandidates", "ResearchIssues"];
     private static readonly string[] Tables = ["Products", "ShopProducts", "ShopProductPrices", "ShopProductPriceHistory",
         "ShoppingLists", "ShoppingListProducts", "UserProductPreferences", "UserProductActivities", "ProductImportJobs",
         "ProductImportRetailerResults", "ShoppingListItemSubstitutions", "PackDiscoveryJobs", "BrandDiscoveryJobs",
@@ -65,7 +66,7 @@ public sealed class LegacyProductMigrationService(MyShoppingListDbContext db, Ti
         {
             // Bound lock acquisition rather than waiting indefinitely on a writer.
             await db.Database.ExecuteSqlRawAsync("SET LOCAL lock_timeout = '5s'", ct);
-            var lockSql = "LOCK TABLE " + string.Join(", ", Tables.Select(Quote)) + " IN SHARE ROW EXCLUSIVE MODE";
+            var lockSql = "LOCK TABLE " + string.Join(", ", Tables.Concat(ResearchTables.Where(present.Contains)).Select(Quote)) + " IN SHARE ROW EXCLUSIVE MODE";
             await db.Database.ExecuteSqlRawAsync(lockSql, ct);
             var state = await ReadAsync(ct);
             var plan = await PlanAsync(state, ct);
@@ -222,10 +223,12 @@ public sealed class LegacyProductMigrationService(MyShoppingListDbContext db, Ti
     private async Task<string> UnchangedFingerprintAsync(CancellationToken ct)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var present = await PresentTablesAsync(ct);
         // These tables are never changed by conversion, including accounts,
         // lists, observations, shared suggestions and archived queue payloads.
         foreach (var table in new[] { "ShoppingLists", "UserAccounts", "Shops", "ContributionObservations",
-            "ProductAlternativeRelationships", "ProductBrandSuggestions", "UserExtensionImportTasks", "ColesExtensionTasks" })
+            "ProductAlternativeRelationships", "ProductBrandSuggestions", "UserExtensionImportTasks", "ColesExtensionTasks" }
+            .Concat(ResearchTables.Where(present.Contains)))
         {
             hash.AppendData(Encoding.UTF8.GetBytes(table + "\n"));
             var sql = "SELECT to_jsonb(t)::text AS \"Value\" FROM " + Quote(table) + " t ORDER BY \"Value\"";
@@ -285,7 +288,21 @@ public sealed class LegacyProductMigrationService(MyShoppingListDbContext db, Ti
             WHERE c.contype = 'f' AND n.nspname = current_schema() AND pn.nspname = n.nspname
                 AND p.relname IN ('Products', 'ShopProducts', 'ShoppingListProducts')
             """).ToListAsync(ct);
-        Check("unreviewed product-reference tables", referenceTables.Count(name => !Tables.Contains(name, StringComparer.Ordinal)));
+        Check("unreviewed product-reference tables", referenceTables.Count(name => !Tables.Contains(name, StringComparer.Ordinal) && name != "ResearchCandidates"));
+        if (s.Tables.Contains("ResearchCandidates"))
+        {
+            // Research can point only to pre-existing private products; it is never
+            // a source of legacy-copy ownership and must remain byte-for-byte intact.
+            Check("research product ownership conflicts", await db.ResearchCandidates.Where(c => c.SelectedProductId != null)
+                .Join(db.Products, c => c.SelectedProductId, p => (long?)p.Id, (c, p) => new { c.UserAccountId, ProductOwner = p.UserAccountId })
+                .CountAsync(x => x.ProductOwner == null || x.ProductOwner != x.UserAccountId, ct));
+            var guard = await db.Database.SqlQueryRaw<int>("""
+                SELECT count(*)::int AS "Value" FROM pg_trigger t JOIN pg_class r ON r.oid=t.tgrelid
+                JOIN pg_namespace n ON n.oid=r.relnamespace WHERE n.nspname=current_schema()
+                AND r.relname='ResearchCandidates' AND t.tgname='research_candidate_guard' AND NOT t.tgisinternal AND t.tgenabled='O'
+                """).SingleAsync(ct);
+            if (guard != 1) conflicts.Add("research evidence guard unavailable");
+        }
         bool WrongOwner(long owner, long product) => s.Products[product].UserAccountId is { } actual && actual != owner;
         Check("unknown candidate accounts", s.Pairs.Count(p => !s.Accounts.Contains(p.Owner)));
         Check("list item ownership conflicts", s.Items.Count(i => WrongOwner(s.Lists[i.ShoppingListId].UserAccountId, i.ProductId)));

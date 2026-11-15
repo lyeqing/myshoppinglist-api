@@ -32,6 +32,7 @@ public static class AiIntegrationSetup
         services.AddScoped<AiConnectionService>();
         services.AddScoped<ShoppingListReadTools>();
         services.AddScoped<AccountReadTools>();
+        services.AddScoped<ResearchReadTools>();
         services.AddScoped<SavedPriceReader>();
         services.AddHostedService<AiClientRegistration>();
         services.AddSingleton<AiProtocolProtection>();
@@ -44,6 +45,8 @@ public static class AiIntegrationSetup
                 o.SetTokenEndpointUris("/connect/token");
                 o.SetRevocationEndpointUris("/connect/revoke");
                 o.AllowAuthorizationCodeFlow().AllowRefreshTokenFlow().RequireProofKeyForCodeExchange();
+                // Public PKCE clients authenticate without a shared client secret; advertise that capability.
+                o.Configure(options => options.ClientAuthenticationMethods.Add(ClientAuthenticationMethods.None));
                 o.Configure(options => { options.CodeChallengeMethods.Clear(); options.CodeChallengeMethods.Add(CodeChallengeMethods.Sha256); });
                 o.RegisterScopes(settings.AllowedScopes.Concat([Scopes.OfflineAccess]).ToArray());
                 o.RegisterResources(settings.Resource);
@@ -81,8 +84,15 @@ public static class AiIntegrationSetup
         });
         services.AddAuthorization(o => o.AddPolicy(AccessPolicy, p => p
             .AddAuthenticationSchemes(McpAuthenticationDefaults.AuthenticationScheme).RequireAuthenticatedUser()));
-        var server = services.AddMcpServer().WithHttpTransport(o => o.Stateless = true).WithTools<ShoppingListReadTools>().WithTools<AccountReadTools>()
+        var server = services.AddMcpServer(o => o.ServerInstructions = Services.ResearchWorkflow.ServerInstructions)
+            .WithHttpTransport(o => o.Stateless = true).WithTools<ShoppingListReadTools>().WithTools<AccountReadTools>()
+            .WithTools<ResearchReadTools>().WithPrompts<ResearchPrompts>()
             .WithRequestFilters(filters => filters.AddCallToolFilter(McpToolAudit.Wrap));
+        if (settings.AllowedScopes.Contains(AiScopes.ResearchWrite, StringComparer.Ordinal))
+        {
+            services.AddScoped<ResearchWriteTools>();
+            server.WithTools<ResearchWriteTools>();
+        }
         if (settings.AllowedScopes.Contains(AiScopes.ListsWrite, StringComparer.Ordinal))
         {
             services.AddScoped<McpMutationCoordinator>();

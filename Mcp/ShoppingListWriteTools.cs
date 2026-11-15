@@ -10,7 +10,8 @@ using myshoppinglist_api.Services;
 namespace myshoppinglist_api.Mcp;
 
 public sealed class ShoppingListWriteTools(McpMutationCoordinator commands, ShoppingListService lists, CurrentListService current,
-    ProductLibraryService products, MyShoppingListDbContext db, IHttpContextAccessor context, TimeProvider clock)
+    ProductLibraryService products, MyShoppingListDbContext db, IHttpContextAccessor context, TimeProvider clock,
+    ResearchService? research = null)
 {
     [McpServerTool(Name = "create_list", ReadOnly = false, Destructive = false, Idempotent = true, OpenWorld = false, UseStructuredContent = true)]
     [Description("Create your own list within your existing account limits. Requires lists.write. Use a new UUID requestId for each intended change and reuse exactly that ID and inputs on retries. Does not select the new list as current.")]
@@ -45,12 +46,18 @@ public sealed class ShoppingListWriteTools(McpMutationCoordinator commands, Shop
     }
 
     [McpServerTool(Name = "add_product_to_list", ReadOnly = false, Destructive = false, Idempotent = true, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Add an already saved product by productId, or a generic item by genericName, to your own list. Supply exactly one. Generic items have no invented retailer, package size or price. A product already on the list is returned unchanged; use update_list_item with its version to edit quantity. quantity applies only to a new generic item. Reuse UUID requestId and inputs for retries.")]
+    [Description("Add one reviewed candidateId after the customer's choice, an already saved productId, or a genericName to your own list. Supply exactly one. Candidate and generic quantities count packages; saved productId retains the existing quantity-one contract. A product already on the list is returned unchanged; use update_list_item to edit quantity. Candidate prices stay unverified and excluded from totals. Reuse UUID requestId and inputs on retries. Requires lists.write.")]
     public Task<McpMutationResult> AddProductToListAsync(string requestId, string listId, string? productId = null, string? genericName = null,
-        int quantity = 1, CancellationToken cancellationToken = default)
+        int quantity = 1, CancellationToken cancellationToken = default, string? candidateId = null)
     {
         var account = McpAccount.Require(context, AiScopes.ListsWrite);
         var request = Request(requestId); var list = Positive(listId);
+        if (candidateId is not null)
+        {
+            if (productId is not null || genericName is not null || research is null) throw new McpException("invalid_arguments");
+            return ResearchReadTools.Safe(() => research.SelectAsync(account,
+                new(request, ResearchReadTools.GuidId(candidateId), list, quantity), cancellationToken));
+        }
         if ((productId is null) == (genericName is null) || quantity <= 0 || productId is not null && quantity != 1) throw new McpException("invalid_arguments");
         var product = productId is null ? (long?)null : Positive(productId);
         return Execute(account, request, "add_product_to_list", new { list, product, genericName, quantity }, async () =>

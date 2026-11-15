@@ -21,14 +21,14 @@ public sealed class ProductService(MyShoppingListDbContext db, ProductNormalisat
         DateTime now, CancellationToken token) => ResolveCoreAsync(null, source, knownMapping, now, token);
 
     public Task<ProductResolution> ResolvePersonalAsync(long accountId, ExtractedShopProduct source, ShopProduct? knownMapping,
-        DateTime now, CancellationToken token)
+        DateTime now, CancellationToken token, bool enrichExisting = true)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(accountId);
-        return ResolveCoreAsync(accountId, source, knownMapping, now, token);
+        return ResolveCoreAsync(accountId, source, knownMapping, now, token, enrichExisting);
     }
 
     private async Task<ProductResolution> ResolveCoreAsync(long? accountId, ExtractedShopProduct source, ShopProduct? knownMapping,
-        DateTime now, CancellationToken token)
+        DateTime now, CancellationToken token, bool enrichExisting = true)
     {
         await LockCatalogueAsync(db, token);
         if (knownMapping is not null && knownMapping.UserAccountId != accountId)
@@ -60,7 +60,7 @@ public sealed class ProductService(MyShoppingListDbContext db, ProductNormalisat
                 knownMapping.MatchType = MatchType.Exact;
                 knownMapping.MatchConfidence = match.Confidence;
             }
-            Enrich(mapped, source, identity, now);
+            if (enrichExisting) Enrich(mapped, source, identity, now);
             return new(ProductPersistenceStatus.Success, mapped, MatchConfidence: knownMapping.MatchConfidence ?? 100);
         }
         if (exact.Count == 0)
@@ -84,7 +84,7 @@ public sealed class ProductService(MyShoppingListDbContext db, ProductNormalisat
         if (exact.Count == 1)
         {
             var confidence = matching.Match(source.Identity, ProductMatchingService.Identity(exact[0])).Confidence;
-            Enrich(exact[0], source, identity, now);
+            if (enrichExisting) Enrich(exact[0], source, identity, now);
             return new(ProductPersistenceStatus.Success, exact[0], MatchConfidence: confidence);
         }
         var product = new Product { UserAccountId = accountId, Name = source.Identity.Name.Trim(), CreatedDate = now, UpdatedDate = now };

@@ -38,7 +38,9 @@ public sealed class AccountSecurityMigrationTests
     [PostgreSqlFact]
     public async Task Rollback_refuses_to_discard_delivery_or_credential_history()
     {
-        await using var f = await MigrationRehearsalScope.CreateAsync(); await f.SeedAsync();
+        // Exercise this migration's guard without first removing later empty feature tables.
+        await using var f = await MigrationRehearsalScope.CreateAsync(latest: false);
+        await f.Db.GetService<IMigrator>().MigrateAsync(Current); await f.SeedAsync();
         f.Db.AccountCredentialChanges.Add(new() { UserAccountId = f.A.Id, ChangedAt = f.Past }); await f.Db.SaveChangesAsync();
         var before = await f.FingerprintAsync();
         var error = await Assert.ThrowsAsync<PostgresException>(() => f.Db.GetService<IMigrator>().MigrateAsync(Previous));

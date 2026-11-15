@@ -93,7 +93,14 @@ public sealed class ProductLibraryService(MyShoppingListDbContext db, TimeProvid
         return new(accountId, rows, total, offset + rows.Length < total ? offset + rows.Length : null);
     }
 
-    public async Task<ProductLibraryAddResponse> AddAsync(long accountId, long productId, long listId, ProductLibraryAddRequest request, CancellationToken ct)
+    public Task<ProductLibraryAddResponse> AddAsync(long accountId, long productId, long listId, ProductLibraryAddRequest request, CancellationToken ct) =>
+        AddCoreAsync(accountId, productId, listId, request, 1, true, ct);
+
+    internal Task<ProductLibraryAddResponse> AddOwnedAsync(long accountId, long productId, long listId, int quantity, CancellationToken ct) =>
+        AddCoreAsync(accountId, productId, listId, new(accountId), quantity, false, ct);
+
+    private async Task<ProductLibraryAddResponse> AddCoreAsync(long accountId, long productId, long listId,
+        ProductLibraryAddRequest request, int quantity, bool knownOnly, CancellationToken ct)
     {
         if (request.ExpectedAccountId != accountId) throw new UserImportException(409, "Your account changed. Reload before adding products.");
         await using var transaction = await WriteTransactionScope.BeginAsync(db, ct);
@@ -104,12 +111,13 @@ public sealed class ProductLibraryService(MyShoppingListDbContext db, TimeProvid
             var now = clock.GetUtcNow().UtcDateTime;
             var list = await db.ShoppingLists.FromSqlInterpolated($"""SELECT * FROM "ShoppingLists" WHERE "Id" = {listId} AND "UserAccountId" = {accountId} FOR UPDATE""").SingleOrDefaultAsync(ct);
             if (list is null || list.IsArchived || list.ExpiresDate <= now) throw new UserImportException(404, "Choose an active shopping list.");
-            if (!await Known(accountId).AnyAsync(p => p.Id == productId, ct)) throw new UserImportException(404, "This product was not found in your products.");
+            var eligible = knownOnly ? Known(accountId) : db.Products.Where(p => p.UserAccountId == accountId && !p.IsDeleted);
+            if (!await eligible.AnyAsync(p => p.Id == productId, ct)) throw new UserImportException(404, "This product was not found in your products.");
             var item = await db.ShoppingListProducts.SingleOrDefaultAsync(i => i.ShoppingListId == listId && i.ProductId == productId, ct);
             var exists = item is not null;
             if (item is null)
             {
-                item = new() { ShoppingListId = listId, ProductId = productId, Quantity = 1, AddedDate = now, UpdatedDate = now };
+                item = new() { ShoppingListId = listId, ProductId = productId, Quantity = quantity, AddedDate = now, UpdatedDate = now };
                 db.ShoppingListProducts.Add(item);
                 list.UpdatedDate = now > list.UpdatedDate ? now : list.UpdatedDate.AddTicks(10);
                 await TrackActivityAsync(db, accountId, item, ct);
@@ -123,6 +131,7 @@ public sealed class ProductLibraryService(MyShoppingListDbContext db, TimeProvid
 
     public async Task<ProductLibraryAddResponse> AddGenericAsync(long accountId, long listId, string name, int quantity, CancellationToken ct)
     {
+        if (string.IsNullOrWhiteSpace(name)) throw new UserImportException(400, "Enter a product name.");
         name = name.Trim();
         if (name.Length is < 1 or > 200 || quantity <= 0) throw new UserImportException(400, "Use a product name of 1–200 characters and a positive quantity.");
         await using var transaction = await WriteTransactionScope.BeginAsync(db, ct);

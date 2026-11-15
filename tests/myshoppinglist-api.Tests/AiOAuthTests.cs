@@ -26,6 +26,43 @@ namespace myshoppinglist_api.Tests;
 public sealed class AiOAuthTests
 {
     [PostgreSqlFact]
+    public async Task Development_proxy_accepts_https_only_from_loopback_and_preserves_host_guard()
+    {
+        await using var isolated = await IsolatedDatabaseScope.CreateAsync();
+        await using var app = new OAuthFactory(loopbackProxy: true);
+        using var start = app.Client(false);
+        async Task<(int Status, string Scheme)> Probe(string peer, string host)
+        {
+            var response = await app.Server.SendAsync(context =>
+            {
+                context.Connection.RemoteIpAddress = IPAddress.Parse(peer);
+                context.Request.Method = "POST";
+                context.Request.Scheme = "http";
+                context.Request.Host = new("localhost");
+                context.Request.Path = "/mcp";
+                context.Request.Headers["X-Forwarded-Proto"] = "https";
+                context.Request.Headers["X-Forwarded-Host"] = host;
+            });
+            return (response.Response.StatusCode, response.Request.Scheme);
+        }
+        Assert.Equal((401, "https"), await Probe("127.0.0.1", "localhost"));
+        Assert.Equal((401, "https"), await Probe("::1", "localhost"));
+        Assert.Equal((401, "http"), await Probe("203.0.113.10", "localhost"));
+        // Disallowed forwarded hosts are ignored; a hostile direct Host is still rejected.
+        var hostile = await app.Server.SendAsync(context =>
+        {
+            context.Connection.RemoteIpAddress = IPAddress.Loopback;
+            context.Request.Method = "POST";
+            context.Request.Scheme = "http";
+            context.Request.Host = new("attacker.example");
+            context.Request.Path = "/mcp";
+            context.Request.Headers["X-Forwarded-Proto"] = "https";
+            context.Request.Headers["X-Forwarded-Host"] = "attacker.example";
+        });
+        Assert.Equal(403, hostile.Response.StatusCode);
+    }
+
+    [PostgreSqlFact]
     public async Task Consent_rechecks_the_source_session_after_credentials_are_revoked()
     {
         await using var isolated = await IsolatedDatabaseScope.CreateAsync(); await using var app = new OAuthFactory();
@@ -117,7 +154,7 @@ public sealed class AiOAuthTests
         var result = await client.CallToolAsync("get_my_lists");
         Assert.NotEqual(true, result.IsError);
         Assert.NotNull(result.StructuredContent);
-        Assert.Equal(new[] { "get_current_list", "get_list_items", "get_my_lists", "search_my_products" }, (await client.ListToolsAsync()).Select(t => t.Name).Order().ToArray());
+        Assert.Equal(new[] { "get_current_list", "get_list_items", "get_my_lists", "get_price_refresh_tasks", "get_research_instructions", "get_research_review", "get_shopping_context", "search_my_products" }, (await client.ListToolsAsync()).Select(t => t.Name).Order().ToArray());
         Assert.Equal(true, (await client.CallToolAsync("search_my_products")).IsError); // No products.read grant.
         Assert.Equal(true, (await client.CallToolAsync("get_list_items", new Dictionary<string, object?> { ["listId"] = other.ShoppingListId!.Value.ToString() })).IsError);
         var own = await client.CallToolAsync("get_list_items", new Dictionary<string, object?> { ["listId"] = session.ShoppingListId!.Value.ToString() });
@@ -162,10 +199,14 @@ public sealed class AiOAuthTests
     [PostgreSqlFact]
     public Task Enabling_write_tools_does_not_upgrade_a_read_only_grant() => SdkFlowAsync(true, false);
 
-    private static async Task SdkFlowAsync(bool enableWrites, bool approveWrites)
+    [PostgreSqlFact]
+    public Task Official_sdk_submits_reviews_and_selects_research_without_verifying_a_price() => SdkFlowAsync(true, true, true);
+
+    private static async Task SdkFlowAsync(bool enableWrites, bool approveWrites, bool research = false)
     {
         await using var isolated = await IsolatedDatabaseScope.CreateAsync();
-        await using var app = new OAuthFactory(enableWrites);
+        await using var app = new OAuthFactory(enableWrites, research);
+        var scopes = approveWrites ? research ? new[] { "lists.read", "lists.write", "research.read", "research.write" } : ["lists.read", "lists.write"] : ["lists.read"];
         using var browser = app.Client(true);
         using var remote = app.Client(false);
         using (var scope = app.Services.CreateScope())
@@ -177,7 +218,7 @@ public sealed class AiOAuthTests
             Endpoint = new("https://localhost/mcp"), TransportMode = HttpTransportMode.StreamableHttp,
             OAuth = new ClientOAuthOptions
             {
-                ClientId = "test-ai", RedirectUri = new("https://client.example/callback"), Scopes = approveWrites ? ["lists.read", "lists.write"] : ["lists.read"],
+                ClientId = "test-ai", RedirectUri = new("https://client.example/callback"), Scopes = scopes,
                 AuthorizationCallbackHandler = async (flow, ct) =>
                 {
                     callbacks++;
@@ -190,7 +231,7 @@ public sealed class AiOAuthTests
                     var description = await preview.Content.ReadFromJsonAsync<JsonElement>(ct);
                     var approved = await browser.PostAsync("/api/ai/oauth/authorize", Form(("request_uri", requestUri),
                         ("decision", "approve"), ("expected_account_id", description.GetProperty("accountId").GetString()!),
-                        ("approved_scopes", approveWrites ? "lists.read lists.write" : "lists.read")), ct);
+                        ("approved_scopes", string.Join(' ', scopes))), ct);
                     Assert.Equal(HttpStatusCode.Redirect, approved.StatusCode);
                     var callback = QueryHelpers.ParseQuery(approved.Headers.Location!.Query);
                     return new AuthorizationResult { Code = callback["code"]!, State = callback["state"]!, Iss = callback["iss"] };
@@ -200,6 +241,27 @@ public sealed class AiOAuthTests
         await using var client = await McpClient.CreateAsync(transport);
         Assert.NotEqual(true, (await client.CallToolAsync("get_my_lists")).IsError);
         Assert.Equal(1, callbacks);
+        Assert.Contains("get_research_instructions", client.ServerInstructions);
+        Assert.NotEqual(true, (await client.CallToolAsync("get_research_instructions")).IsError);
+        Assert.Contains(await client.ListPromptsAsync(), p => p.Name == "research_groceries");
+        if (research)
+        {
+            var request = ResearchTests.Submission();
+            var submitted = await client.CallToolAsync("submit_product_research", new Dictionary<string, object?> { ["submission"] = request });
+            Assert.NotEqual(true, submitted.IsError);
+            var jobId = submitted.StructuredContent!.Value.GetProperty("researchJobId").GetString()!;
+            var reviewed = await client.CallToolAsync("get_research_review", new Dictionary<string, object?> { ["jobId"] = jobId });
+            Assert.NotEqual(true, reviewed.IsError);
+            var candidate = reviewed.StructuredContent!.Value.GetProperty("candidates")[0].GetProperty("id").GetString()!;
+            var ownList = (await browser.GetFromJsonAsync<ShoppingListManagement>("/api/shopping-lists/manage"))!.Lists.Single().Id;
+            var selected = await client.CallToolAsync("add_product_to_list", new Dictionary<string, object?> {
+                ["requestId"] = Guid.NewGuid().ToString(), ["listId"] = ownList.ToString(), ["candidateId"] = candidate, ["quantity"] = 2 });
+            Assert.NotEqual(true, selected.IsError);
+            Assert.Equal(2, (await browser.GetFromJsonAsync<ShoppingListItemPage>($"/api/shopping-lists/{ownList}/items"))!.Items.Single().Quantity);
+            using var scope = app.Services.CreateScope();
+            Assert.Empty(await scope.ServiceProvider.GetRequiredService<MyShoppingListDbContext>().ShopProductPrices.ToArrayAsync());
+            return;
+        }
         if (!enableWrites) return;
         var requestId = Guid.NewGuid().ToString();
         var input = new Dictionary<string, object?> { ["requestId"] = requestId, ["name"] = "SDK-created list" };
@@ -238,12 +300,13 @@ public sealed class AiOAuthTests
     private static FormUrlEncodedContent Form(params (string Key, string Value)[] fields) => new(fields
         .Append((Key: "client_id", Value: "test-ai")).DistinctBy(f => f.Key).Select(f => new KeyValuePair<string, string>(f.Key, f.Value)));
 
-    private sealed class OAuthFactory(bool enableWrites = false) : WebApplicationFactory<Program>
+    private sealed class OAuthFactory(bool enableWrites = false, bool research = false, bool loopbackProxy = false) : WebApplicationFactory<Program>
     {
         public OAuthClock Clock { get; } = new();
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
+            builder.UseSetting("AiIntegration:DevelopmentLoopbackProxy", loopbackProxy ? "true" : "false");
             foreach (var (key, value) in new Dictionary<string, string> { ["Enabled"] = "true", ["Issuer"] = "https://localhost/",
                 ["Resource"] = "https://localhost/mcp", ["FrontendOrigin"] = "https://frontend.example", ["DevelopmentEphemeralKeys"] = "true",
                 ["Clients:0:ClientId"] = "test-ai", ["Clients:0:DisplayName"] = "Test AI", ["Clients:0:RedirectUris:0"] = "https://client.example/callback" })
@@ -253,6 +316,11 @@ public sealed class AiOAuthTests
                 builder.UseSetting("AiIntegration:AllowedScopes:0", "lists.read");
                 builder.UseSetting("AiIntegration:AllowedScopes:1", "products.read");
                 builder.UseSetting("AiIntegration:AllowedScopes:2", "lists.write");
+                if (research)
+                {
+                    builder.UseSetting("AiIntegration:AllowedScopes:3", "research.read");
+                    builder.UseSetting("AiIntegration:AllowedScopes:4", "research.write");
+                }
             }
             builder.ConfigureServices(services =>
             {

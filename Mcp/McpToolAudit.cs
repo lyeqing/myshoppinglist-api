@@ -18,7 +18,9 @@ public static class McpToolAudit
     private static readonly Counter<long> Calls = Meter.CreateCounter<long>("myshoppinglist.mcp.tool.calls");
     private static readonly HashSet<string> Names = ["get_my_lists", "get_current_list", "get_list_items", "search_my_products",
         "create_list", "set_current_list", "add_product_to_list", "update_list_item", "remove_list_item",
-        "get_extension_status", "request_extension_capture", "request_extension_search", "get_extension_task_status"];
+        "get_extension_status", "request_extension_capture", "request_extension_search", "get_extension_task_status",
+        "get_research_instructions", "get_shopping_context", "get_research_review", "get_price_refresh_tasks",
+        "submit_product_research", "resolve_research_issue"];
 
     public static McpRequestHandler<CallToolRequestParams, CallToolResult> Wrap(McpRequestHandler<CallToolRequestParams, CallToolResult> next) =>
         async (request, ct) =>

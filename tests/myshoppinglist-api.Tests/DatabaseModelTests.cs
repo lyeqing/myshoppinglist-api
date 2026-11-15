@@ -82,6 +82,7 @@ public class DatabaseModelTests
             typeof(UserProductActivity), typeof(UserProductPreference),
             typeof(ShoppingList), typeof(ShoppingListProduct), typeof(UserAccount), typeof(UserExtensionImportTask),
             typeof(UserPreferredShop), typeof(UserPreferredShopLocation), typeof(UserSession)];
+        expected = [.. expected, typeof(ResearchJob), typeof(ResearchCandidate), typeof(ResearchIssue)];
         Assert.Equal(expected.Select(t => t.FullName).Order(), db.Model.GetEntityTypes().Select(e => e.ClrType.FullName).Order());
         Assert.DoesNotContain(db.Model.GetEntityTypes(), e => e.Name.Contains("Company"));
         Assert.All(db.Model.GetEntityTypes().Where(e => e.ClrType.Namespace == typeof(UserAccount).Namespace)
