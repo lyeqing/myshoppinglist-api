@@ -37,13 +37,14 @@ public static class EmailDeliverySetup
         services.AddSingleton<RecoveryTokenService>();
         services.AddSingleton<IEmailTransport, SmtpEmailTransport>();
         services.AddScoped<EmailOutboxService>(); services.AddScoped<AccountCredentialService>();
+        services.AddScoped<AccountProfileService>();
         if (email.Enabled) services.AddHostedService<EmailDeliveryWorker>();
         services.AddRateLimiter(o => o.AddPolicy(RecoveryRatePolicy, c => RateLimitPartition.GetFixedWindowLimiter(
             c.Connection.RemoteIpAddress?.MapToIPv6().ToString() ?? "unknown",
             _ => new FixedWindowRateLimiterOptions { PermitLimit = 5, Window = TimeSpan.FromMinutes(15), QueueLimit = 0, AutoReplenishment = true })));
     }
 
-    private static bool ValidOrigin(string value, bool development) => Uri.TryCreate(value, UriKind.Absolute, out var u)
+    internal static bool ValidOrigin(string value, bool development) => Uri.TryCreate(value, UriKind.Absolute, out var u)
         && u.UserInfo.Length == 0 && u.AbsolutePath == "/" && u.Query.Length == 0 && u.Fragment.Length == 0
         && (u.Scheme == "https" || development && u.Scheme == "http" && u.IsLoopback);
 }

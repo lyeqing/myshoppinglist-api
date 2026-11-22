@@ -19,6 +19,6 @@ public sealed class ExternalAuthFlowConfiguration : IEntityTypeConfiguration<Ext
         b.Property(x => x.TokenHash).HasMaxLength(64);
         b.HasIndex(x => x.ExpiresAt);
         b.HasIndex(x => new { x.UserAccountId, x.ExpiresAt });
-        b.ToTable("ExternalAuthFlows", t => t.HasCheckConstraint("CK_ExternalAuthFlow_Purpose", "\"Purpose\" IN ('signin','link','reauthenticate','email') AND \"ExpiresAt\">\"CreatedAt\" AND ((\"UserAccountId\" IS NULL) = (\"UserSessionId\" IS NULL))"));
+        b.ToTable("ExternalAuthFlows", t => t.HasCheckConstraint("CK_ExternalAuthFlow_Purpose", "\"Purpose\" IN ('signin','link','reauthenticate','email','email_change') AND \"ExpiresAt\">\"CreatedAt\" AND ((\"UserAccountId\" IS NULL) = (\"UserSessionId\" IS NULL))"));
     }
 }

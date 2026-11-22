@@ -1014,7 +1014,7 @@ namespace myshoppinglist_api.Data.Migrations
 
                     b.ToTable("ExternalAuthFlows", null, t =>
                         {
-                            t.HasCheckConstraint("CK_ExternalAuthFlow_Purpose", "\"Purpose\" IN ('signin','link','reauthenticate','email') AND \"ExpiresAt\">\"CreatedAt\" AND ((\"UserAccountId\" IS NULL) = (\"UserSessionId\" IS NULL))");
+                            t.HasCheckConstraint("CK_ExternalAuthFlow_Purpose", "\"Purpose\" IN ('signin','link','reauthenticate','email','email_change') AND \"ExpiresAt\">\"CreatedAt\" AND ((\"UserAccountId\" IS NULL) = (\"UserSessionId\" IS NULL))");
                         });
                 });
 

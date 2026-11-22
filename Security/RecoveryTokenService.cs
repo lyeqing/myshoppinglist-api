@@ -12,7 +12,7 @@ public sealed class RecoveryTokenService(IDataProtectionProvider protection, Tim
 {
     private readonly IDataProtector protector = protection.CreateProtector("MyShoppingList.AccountRecovery.v1");
     public static string Fingerprint(UserAccount user) => Convert.ToHexString(SHA256.HashData(
-        Encoding.UTF8.GetBytes(user.PasswordHash + ":" + user.PasswordSalt)));
+        Encoding.UTF8.GetBytes(user.PasswordHash + ":" + user.PasswordSalt + ":" + user.Email + ":" + user.EmailVerifiedAt?.Ticks)));
     public string Create(UserAccount user, DateTime expiresAt) => protector.Protect(JsonSerializer.Serialize(
         new RecoveryTicket(user.Id, expiresAt, Fingerprint(user), SessionToken.Create())));
     public RecoveryTicket? Read(string? value)
