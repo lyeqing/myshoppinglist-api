@@ -19,48 +19,34 @@ namespace myshoppinglist_api.Tests;
 [Collection("Import worker database")]
 public class AuthEndpointTests
 {
+    private static Task<HttpResponseMessage> RegisterAsync(HttpClient client) => client.PostAsJsonAsync("/api/auth/register",
+        new RegisterRequest(Guid.NewGuid() + "@example.test", "A long test passphrase 123!", "Shopper"));
+
     [PostgreSqlFact]
-    public async Task Browser_can_start_reuse_read_and_logout_without_exposing_token_in_json()
+    public async Task Retired_trial_endpoint_returns_gone_and_creates_no_records_or_cookie()
     {
-        await using var app = new AuthFactory();
-        using var client = app.Client();
+        await using var app = new AuthFactory(); using var client = app.Client();
         var response = await client.PostAsync("/api/auth/trial", null);
-        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        var first = (await response.Content.ReadFromJsonAsync<TrialStartResponse>())!;
-        var cookie = response.Headers.GetValues("Set-Cookie").Single();
-        Assert.Contains("httponly", cookie, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("secure", cookie, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("samesite=lax", cookie, StringComparison.OrdinalIgnoreCase);
-        var raw = cookie.Split(';')[0].Split('=')[1];
-        Assert.DoesNotContain(raw, await response.Content.ReadAsStringAsync());
-        Assert.True(response.Headers.CacheControl!.NoStore);
-        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/auth/me")).StatusCode);
-        app.Clock.Now += TimeSpan.FromMinutes(20);
-        var reuse = await client.PostAsync("/api/auth/trial", null);
-        Assert.Equal(HttpStatusCode.OK, reuse.StatusCode);
-        var second = (await reuse.Content.ReadFromJsonAsync<TrialStartResponse>())!;
-        Assert.True(second.Reused); Assert.Equal(first.SessionExpiresDate, second.SessionExpiresDate);
-        Assert.False(reuse.Headers.Contains("Set-Cookie"));
-        Assert.Equal(HttpStatusCode.NoContent, (await client.PostAsync("/api/auth/logout", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Gone, response.StatusCode);
+        Assert.Contains("Create a free account", await response.Content.ReadAsStringAsync());
+        Assert.False(response.Headers.Contains("Set-Cookie")); Assert.True(response.Headers.CacheControl!.NoStore);
+        Assert.Empty(app.CreatedAccounts);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/auth/me")).StatusCode);
-        using var replay = app.Client(cookies: false);
-        replay.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", raw);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await replay.GetAsync("/api/auth/me")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/shopping-lists/manage")).StatusCode);
+
     }
 
     [PostgreSqlFact]
     public async Task Missing_header_cross_origin_and_cross_site_requests_are_rejected()
     {
-        await using var app = new AuthFactory();
-        using var client = app.Client();
+        await using var app = new AuthFactory(); using var client = app.Client();
         client.DefaultRequestHeaders.Remove(CookieRequestProtection.HeaderName);
-        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsync("/api/auth/trial", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await RegisterAsync(client)).StatusCode);
         client.DefaultRequestHeaders.Add(CookieRequestProtection.HeaderName, "1");
         client.DefaultRequestHeaders.Add("Origin", "https://other.example");
-        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsync("/api/auth/trial", null)).StatusCode);
-        client.DefaultRequestHeaders.Remove("Origin");
-        client.DefaultRequestHeaders.Add("Origin", "https://localhost");
-        Assert.Equal(HttpStatusCode.Created, (await client.PostAsync("/api/auth/trial", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await RegisterAsync(client)).StatusCode);
+        client.DefaultRequestHeaders.Remove("Origin"); client.DefaultRequestHeaders.Add("Origin", "https://localhost");
+        Assert.Equal(HttpStatusCode.Created, (await RegisterAsync(client)).StatusCode);
         client.DefaultRequestHeaders.Add("Sec-Fetch-Site", "cross-site");
         Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsync("/api/auth/logout", null)).StatusCode);
         client.DefaultRequestHeaders.Remove("Sec-Fetch-Site");
@@ -68,55 +54,36 @@ public class AuthEndpointTests
     }
 
     [PostgreSqlFact]
-    public async Task Session_expiry_account_expiry_and_inactive_account_are_enforced()
+    public async Task Session_expiry_and_inactive_account_are_enforced()
     {
-        await using var app = new AuthFactory();
-        using var client = app.Client();
-        var response = await client.PostAsync("/api/auth/trial", null);
-        var trial = (await response.Content.ReadFromJsonAsync<TrialStartResponse>())!;
+        await using var app = new AuthFactory(); using var client = app.Client();
+        var account = (await (await RegisterAsync(client)).Content.ReadFromJsonAsync<CurrentSessionResponse>())!;
         await using var db = PersistenceScope.Context();
-        await db.UserAccounts.Where(u => u.Id == trial.Account.Id).ExecuteUpdateAsync(s => s.SetProperty(u => u.IsActive, false));
+        await db.UserAccounts.Where(u => u.Id == account.Account.Id).ExecuteUpdateAsync(s => s.SetProperty(u => u.IsActive, false));
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/auth/me")).StatusCode);
-        await db.UserAccounts.Where(u => u.Id == trial.Account.Id).ExecuteUpdateAsync(s => s
-            .SetProperty(u => u.IsActive, true).SetProperty(u => u.ExpiresDate, app.Clock.Now.UtcDateTime));
-        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/auth/me")).StatusCode);
-        await db.UserAccounts.Where(u => u.Id == trial.Account.Id).ExecuteUpdateAsync(s => s
-            .SetProperty(u => u.ExpiresDate, app.Clock.Now.UtcDateTime.AddHours(5)));
-        app.Clock.Now = new DateTimeOffset(trial.SessionExpiresDate);
+        await db.UserAccounts.Where(u => u.Id == account.Account.Id).ExecuteUpdateAsync(s => s.SetProperty(u => u.IsActive, true));
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/auth/me")).StatusCode);
+        app.Clock.Now = new DateTimeOffset(account.SessionExpiresDate);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/auth/me")).StatusCode);
     }
 
     [PostgreSqlFact]
     public async Task Explicit_invalid_bearer_does_not_fall_back_to_browser_cookie()
     {
-        await using var app = new AuthFactory();
-        using var client = app.Client();
-        Assert.Equal(HttpStatusCode.Created, (await client.PostAsync("/api/auth/trial", null)).StatusCode);
+        await using var app = new AuthFactory(); using var client = app.Client();
+        Assert.Equal(HttpStatusCode.Created, (await RegisterAsync(client)).StatusCode);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "invalid");
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/auth/me")).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsync("/api/auth/trial", null)).StatusCode);
-    }
-
-    [PostgreSqlFact]
-    public async Task Trial_rate_limit_returns_429_with_retry_after_without_creating_another_account()
-    {
-        await using var app = new AuthFactory(limit: 1);
-        using var client = app.Client(cookies: false);
-        Assert.Equal(HttpStatusCode.Created, (await client.PostAsync("/api/auth/trial", null)).StatusCode);
-        var denied = await client.PostAsync("/api/auth/trial", null);
-        Assert.Equal(HttpStatusCode.TooManyRequests, denied.StatusCode);
-        Assert.NotNull(denied.Headers.RetryAfter);
-        Assert.Single(app.CreatedAccounts);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/shopping-lists/manage")).StatusCode);
     }
 
     [PostgreSqlFact]
     public async Task Bearer_logout_needs_no_browser_header_and_cannot_revoke_another_session()
     {
-        await using var app = new AuthFactory();
-        using var first = app.Client(); using var second = app.Client();
-        var created = await first.PostAsync("/api/auth/trial", null);
+        await using var app = new AuthFactory(); using var first = app.Client(); using var second = app.Client();
+        var created = await RegisterAsync(first);
         var raw = created.Headers.GetValues("Set-Cookie").Single().Split(';')[0].Split('=')[1];
-        await second.PostAsync("/api/auth/trial", null);
+        await RegisterAsync(second);
         using var native = app.Client(cookies: false);
         native.DefaultRequestHeaders.Remove(CookieRequestProtection.HeaderName);
         native.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", raw);
@@ -134,7 +101,7 @@ public class AuthEndpointTests
         var created = await client.PostAsJsonAsync("/api/auth/register", request);
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
         var account = (await created.Content.ReadFromJsonAsync<CurrentSessionResponse>())!;
-        Assert.False(account.Account.IsTrial); Assert.Null(account.Account.ExpiresDate);
+        Assert.False(account.Account.IsTrial); Assert.False(account.Account.IsPaid); Assert.Null(account.Account.ExpiresDate);
         var cookie = created.Headers.GetValues("Set-Cookie").Single();
         Assert.Contains("httponly", cookie, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("secure", cookie, StringComparison.OrdinalIgnoreCase);
@@ -152,41 +119,25 @@ public class AuthEndpointTests
     }
 
     [PostgreSqlFact]
-    public async Task Conversion_keeps_account_and_list_and_invalidates_old_trial_token()
+    public async Task Legacy_trial_cookie_and_bearer_cannot_access_shopping_or_restore_a_session()
     {
-        await using var app = new AuthFactory();
-        using var client = app.Client();
-        var started = await client.PostAsync("/api/auth/trial", null);
-        var trial = (await started.Content.ReadFromJsonAsync<TrialStartResponse>())!;
-        var raw = started.Headers.GetValues("Set-Cookie").Single().Split(';')[0].Split('=')[1];
-        var registered = await client.PostAsJsonAsync("/api/auth/register", new RegisterRequest(Guid.NewGuid() + "@example.test", "A long test passphrase 123!", "Shopper"));
-        Assert.Equal(HttpStatusCode.Created, registered.StatusCode);
-        var account = (await registered.Content.ReadFromJsonAsync<CurrentSessionResponse>())!;
-        Assert.Equal(trial.Account.Id, account.Account.Id); Assert.Equal(trial.ShoppingListId, account.ShoppingListId);
-        using var replay = app.Client(false);
-        replay.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", raw);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await replay.GetAsync("/api/auth/me")).StatusCode);
-        app.Clock.Now += TimeSpan.FromHours(4);
-        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/auth/me")).StatusCode);
-    }
-
-    [PostgreSqlFact]
-    public async Task Expired_trial_cannot_register_but_can_login_without_merging_its_list()
-    {
-        await using var app = new AuthFactory();
-        using var owner = app.Client(); using var trialClient = app.Client();
-        var request = new RegisterRequest(Guid.NewGuid() + "@example.test", "A long test passphrase 123!", "Shopper");
-        var registered = (await (await owner.PostAsJsonAsync("/api/auth/register", request)).Content.ReadFromJsonAsync<CurrentSessionResponse>())!;
-        var trialResponse = await trialClient.PostAsync("/api/auth/trial", null);
-        var trial = (await trialResponse.Content.ReadFromJsonAsync<TrialStartResponse>())!;
-        app.Clock.Now += TimeSpan.FromHours(4);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await trialClient.PostAsJsonAsync("/api/auth/register", request with { Email = Guid.NewGuid() + "@example.test" })).StatusCode);
-        var login = await trialClient.PostAsJsonAsync("/api/auth/login", new SignInRequest(request.Email, request.Password));
-        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
-        Assert.Equal(registered.ShoppingListId, (await login.Content.ReadFromJsonAsync<CurrentSessionResponse>())!.ShoppingListId);
-        await using var db = PersistenceScope.Context();
-        Assert.True((await db.UserAccounts.SingleAsync(u => u.Id == trial.Account.Id)).IsTrial);
-        Assert.Equal(trial.Account.Id, (await db.ShoppingLists.SingleAsync(l => l.Id == trial.ShoppingListId)).UserAccountId);
+        await using var app = new AuthFactory(); using var cookieClient = app.Client(false); using var bearerClient = app.Client(false);
+        var raw = SessionToken.Create();
+        using (var scope = app.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<MyShoppingListDbContext>(); var now = app.Clock.Now.UtcDateTime;
+            var account = new UserAccount { DisplayName = "Legacy trial", IsTrial = true, ExpiresDate = now.AddHours(3), CreatedDate = now, UpdatedDate = now };
+            db.Add(new UserSession { UserAccount = account, TokenHash = SessionToken.Hash(raw), CreatedDate = now, ExpiresDate = now.AddHours(3) });
+            await db.SaveChangesAsync();
+        }
+        cookieClient.DefaultRequestHeaders.Add("Cookie", $"{SessionCookie.Name}={raw}");
+        bearerClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", raw);
+        foreach (var client in new[] { cookieClient, bearerClient })
+        {
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/auth/me")).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/shopping-lists/manage")).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await RegisterAsync(client)).StatusCode);
+        }
     }
 
     [PostgreSqlFact]

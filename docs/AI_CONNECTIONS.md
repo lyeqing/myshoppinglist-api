@@ -18,7 +18,8 @@ In ChatGPT, use Plugins → Add custom MCP server (or the legacy Apps creation s
 
 ## Account and permissions
 
-- Existing registered, active MyShoppingList accounts approve each connection using their first-party browser session. Trial accounts cannot connect. Suspending an account blocks subsequent MCP requests and token renewal.
+- Creating a registered MyShoppingList account is free; signing in is required for all shopping and AI features. Temporary trial creation is retired (`POST /api/auth/trial` returns 410), and legacy trial credentials cannot authenticate.
+- Active registered accounts approve each connection using their first-party browser session. The consent page offers free registration and sign-in while retaining the pending request. Account creation never approves permissions automatically. Suspending an account blocks subsequent MCP requests and token renewal.
 - Browser sessions and extension login tokens are not MCP access tokens. MCP accepts only dedicated, resource-bound OpenIddict tokens.
 - Public clients must be explicitly configured with a client ID, display name and exact callback URLs. Dynamic client registration is not enabled. The client must support authorization code with S256 PKCE and resource indicators.
 - Default permissions remain `lists.read` and `products.read`. Explicitly offering `lists.write` registers scoped write tools. Explicitly offering `extension.capture` requires the personal extension bridge and registers customer-approved capture/search tools. Existing grants never gain new scopes automatically.

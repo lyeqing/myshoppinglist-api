@@ -36,7 +36,7 @@ public sealed class SessionTokenAuthenticationHandler(IOptionsMonitor<Authentica
         var now = clock.GetUtcNow().UtcDateTime;
         var session = await db.UserSessions.AsNoTracking().Where(s => s.TokenHash == hash && s.RevokedDate == null
             && s.ExpiresDate > now && s.UserAccount.IsActive
-            && (!s.UserAccount.IsTrial || s.UserAccount.ExpiresDate > now))
+            && !s.UserAccount.IsTrial)
             .Select(s => new { s.Id, s.UserAccountId }).SingleOrDefaultAsync(Context.RequestAborted);
         if (session is null) return AuthenticateResult.Fail("Invalid session.");
         var identity = new ClaimsIdentity(new[]

@@ -209,41 +209,34 @@ The original worker stage implemented source extraction only. Stage 6B now check
 
 The worker processes SQL jobs created by the Stage 4B submission endpoint. Fresh-price reuse and comparison processing are described under Stage 6B below. No new migration is required. Implementation references: [PostgreSQL queue locking](https://www.postgresql.org/docs/14/sql-select.html) and [scoped services in BackgroundService](https://learn.microsoft.com/en-us/dotnet/core/extensions/scoped-service).
 
-## Trial accounts and sessions (Stage 4A)
+## Free accounts and sessions
+
+Account creation is free. All shopping and AI features require a signed-in, active registered account. Public information pages remain available without an account. This supersedes the historical Stage 4A temporary-trial workflow; no new schema migration is needed.
 
 | Endpoint | Behaviour |
 | --- | --- |
-| `POST /api/auth/trial` | Creates a trial account, shopping list, and session atomically; returns `201` and a session cookie. An existing valid trial returns `200` with the same list and original expiry. |
-| `GET /api/auth/me` | Returns the current account, first available list ID, and session expiry; requires a valid session. |
-| `POST /api/auth/logout` | Revokes only the calling session, clears the cookie, and returns `204`. |
+| `POST /api/auth/register` | Creates a free registered account, permanent initial list and session; returns `201` and an HttpOnly session cookie. No payment details are required. |
+| `POST /api/auth/login` | Signs in to an existing registered account. |
+| `POST /api/auth/trial` | Retired: returns `410 Gone` with account-required guidance; creates no account, list, session or cookie. |
+| `GET /api/auth/me` | Returns the signed-in registered account, available list ID and session expiry. Legacy trial credentials are rejected. |
+| `POST /api/auth/logout` | Revokes only the calling session, clears its cookie and returns `204`. |
 
-Trial accounts, their initial lists, and sessions expire together after three hours by default (`Auth:TrialLifetimeHours`). Reuse does not extend any expiry or replace an archived/expired list; an unavailable trial list returns `409`. A registered session cannot be replaced with a trial (`409`). An expired browser session can explicitly start a new trial. Expired records are retained until a later cleanup implementation; shared catalogue data is unaffected.
+Sessions use 256 random bits encoded as lowercase hexadecimal; only SHA-256 hashes are stored. Browser credentials are returned only through the host-only, HttpOnly, `SameSite=Lax` cookie, never in JSON. Cookies are Secure in production and HTTPS development. Session expiry, revocation and registered-account activity are checked on each request, without sliding expiry. Auth responses use `Cache-Control: no-store`.
 
-Session credentials are 256 random bits encoded as lowercase hexadecimal. The database stores their SHA-256 hashes. Browser responses never include the raw credential in JSON; it is carried only in `myshoppinglist_session`, an HttpOnly, host-only, `SameSite=Lax` cookie with path `/`. Cookies are Secure in production and on HTTPS development requests. Use HTTPS in production. Authentication checks session expiry/revocation and account activity/trial expiry on every request, without sliding expiry. Auth responses use `Cache-Control: no-store`.
+The authentication handler also accepts a valid opaque session bearer token. An explicit invalid Authorization header never falls back to a cookie. Legacy trial records and fields remain for historical compatibility, but cannot authenticate shopping or AI requests.
 
-The authentication handler also accepts `Authorization: Bearer <opaque-session-token>` for a client that already possesses a valid token. An explicit invalid Authorization header never falls back to a cookie. This stage does not provide a separate native-client token-issuance endpoint.
-
-Browser state-changing API requests, including anonymous trial creation, must send `X-MyShoppingList-Request: 1`. The middleware rejects cross-site fetch metadata and any supplied Origin that differs from the API's scheme/host/port. Authenticated bearer requests do not need the browser header. Protection relies on the browser same-origin policy and the absence of credentialed CORS; future frontend deployment should use a same-origin API proxy. Do not enable cross-origin access without revisiting this protection. Local tools may omit Origin but must send the custom header.
-
-Example same-origin browser calls:
+Browser mutations, including registration and sign-in, require `X-MyShoppingList-Request: 1`. Cross-site fetch metadata and mismatched origins are rejected. Authenticated bearer calls use their existing protection. Registration and sign-in retain separate request limits. Historical trial rate-limit configuration only bounds requests to the retired endpoint and does not enable trials.
 
 ```javascript
-await fetch('/api/auth/trial', {
-  method: 'POST',
-  credentials: 'same-origin',
-  headers: { 'X-MyShoppingList-Request': '1' }
+await fetch('/api/auth/register', {
+  method: 'POST', credentials: 'same-origin',
+  headers: { 'Content-Type': 'application/json', 'X-MyShoppingList-Request': '1' },
+  body: JSON.stringify({ email, password, displayName })
 });
 const current = await fetch('/api/auth/me', { credentials: 'same-origin' }).then(r => r.json());
-await fetch('/api/auth/logout', {
-  method: 'POST',
-  credentials: 'same-origin',
-  headers: { 'X-MyShoppingList-Request': '1' }
-});
 ```
 
-Trial-start requests are limited to `Auth:TrialRequestsPerWindow` (default 10) per `Auth:TrialWindowSeconds` (default 3600), per remote IP per application instance. Reused trials also count. Rejection returns `429` with `Retry-After`. Limits are held in memory and reset on restart; they are not shared between instances. Forwarded address headers are not trusted automatically. Configure trusted proxies explicitly before relying on client-IP limits behind a proxy.
-
-No database migration is required for this stage. Registered login, account conversion, and expired-data cleanup remain subsequent work.
+Expired or legacy cookies can be explicitly cleared by the website before new registration; signing in opens the selected existing account. Neither action silently merges accounts. AI registration/sign-in returns to the pending permission review; registering does not approve an AI connection. Existing free/paid list limits and AI rollout configuration remain unchanged.
 
 ## Import submission and polling (Stage 4B)
 

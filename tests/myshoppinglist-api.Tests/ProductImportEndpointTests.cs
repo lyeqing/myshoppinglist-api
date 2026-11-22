@@ -27,10 +27,10 @@ public class ProductImportEndpointTests
     {
         await using var app = new ImportApiFactory();
         using var client = app.Client(); using var other = app.Client();
-        var trial = await Read<TrialStartResponse>(await client.PostAsync("/api/auth/trial", null));
-        await other.PostAsync("/api/auth/trial", null);
-        for (var i = 0; i < 3; i++) await client.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId), new ProductImportRequest(app.Provider.Url + i));
-        var route = $"/api/shopping-lists/{trial.ShoppingListId}/imports";
+        var trial = await RegisterAsync(client);
+        await RegisterAsync(other);
+        for (var i = 0; i < 3; i++) await client.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId!.Value), new ProductImportRequest(app.Provider.Url + i));
+        var route = $"/api/shopping-lists/{trial.ShoppingListId!.Value}/imports";
         var first = await Read<ProductImportPage>(await client.GetAsync(route + "?pageSize=2"));
         Assert.Equal(2, first.Items.Count); Assert.NotNull(first.NextBeforeId);
         var second = await Read<ProductImportPage>(await client.GetAsync(route + $"?pageSize=2&beforeId={first.NextBeforeId}"));
@@ -38,7 +38,7 @@ public class ProductImportEndpointTests
         Assert.Equal(HttpStatusCode.NotFound, (await other.GetAsync(route)).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync(route + "?pageSize=51")).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync(route + "?beforeId=0")).StatusCode);
-        app.Clock.Now += TimeSpan.FromHours(4);
+        app.Clock.Now += TimeSpan.FromDays(31);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync(route)).StatusCode);
     }
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
@@ -60,8 +60,8 @@ public class ProductImportEndpointTests
         await using var app = new ImportApiFactory(worker: true, retailer: retailer);
         await app.AssertEmptyQueueAsync();
         using var client = app.Client();
-        var trial = await Read<TrialStartResponse>(await client.PostAsync("/api/auth/trial", null));
-        var response = await client.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId), new ProductImportRequest(app.Provider.Url, 3));
+        var trial = await RegisterAsync(client);
+        var response = await client.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId!.Value), new ProductImportRequest(app.Provider.Url, 3));
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         var accepted = await Read<ProductImportAcceptedResponse>(response);
         Assert.Equal(accepted.StatusUrl, response.Headers.Location!.OriginalString);
@@ -94,13 +94,13 @@ public class ProductImportEndpointTests
     {
         await using var app = new ImportApiFactory();
         using var first = app.Client(); using var other = app.Client(); using var anonymous = app.Client();
-        var trial = await Read<TrialStartResponse>(await first.PostAsync("/api/auth/trial", null));
-        await other.PostAsync("/api/auth/trial", null);
-        var accepted = await Read<ProductImportAcceptedResponse>(await first.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId), new ProductImportRequest(app.Provider.Url)));
+        var trial = await RegisterAsync(first);
+        await RegisterAsync(other);
+        var accepted = await Read<ProductImportAcceptedResponse>(await first.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId!.Value), new ProductImportRequest(app.Provider.Url)));
         Assert.Equal(HttpStatusCode.NotFound, (await other.GetAsync(accepted.StatusUrl)).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await other.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId), new ProductImportRequest(app.Provider.Url))).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await other.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId!.Value), new ProductImportRequest(app.Provider.Url))).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(accepted.StatusUrl)).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId), new ProductImportRequest(app.Provider.Url))).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId!.Value), new ProductImportRequest(app.Provider.Url))).StatusCode);
         Assert.Equal(0, app.Provider.Calls);
     }
 
@@ -109,8 +109,8 @@ public class ProductImportEndpointTests
     {
         await using var app = new ImportApiFactory();
         using var client = app.Client();
-        var trial = await Read<TrialStartResponse>(await client.PostAsync("/api/auth/trial", null));
-        var url = SubmitUrl(trial.ShoppingListId);
+        var trial = await RegisterAsync(client);
+        var url = SubmitUrl(trial.ShoppingListId!.Value);
         var first = await Read<ProductImportAcceptedResponse>(await client.PostAsJsonAsync(url, new ProductImportRequest(app.Provider.Url, 2)));
         var second = await Read<ProductImportAcceptedResponse>(await client.PostAsJsonAsync(url, new ProductImportRequest(app.Provider.Url + "#details", 2)));
         Assert.Equal(first.JobId, second.JobId); Assert.True(second.Reused); Assert.Equal(2, second.Quantity);
@@ -126,7 +126,7 @@ public class ProductImportEndpointTests
         client.DefaultRequestHeaders.Remove(CookieRequestProtection.HeaderName);
         Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync(url, new ProductImportRequest(app.Provider.Url))).StatusCode);
         await using var db = PersistenceScope.Context();
-        Assert.Equal(2, await db.ProductImportJobs.CountAsync(j => j.ShoppingListId == trial.ShoppingListId));
+        Assert.Equal(2, await db.ProductImportJobs.CountAsync(j => j.ShoppingListId == trial.ShoppingListId!.Value));
     }
 
     [PostgreSqlFact]
@@ -134,13 +134,13 @@ public class ProductImportEndpointTests
     {
         await using var app = new ImportApiFactory(limit: 1);
         using var first = app.Client(); using var other = app.Client();
-        var trial = await Read<TrialStartResponse>(await first.PostAsync("/api/auth/trial", null));
-        var secondTrial = await Read<TrialStartResponse>(await other.PostAsync("/api/auth/trial", null));
-        var accepted = await Read<ProductImportAcceptedResponse>(await first.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId), new ProductImportRequest(app.Provider.Url)));
-        var limited = await first.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId), new ProductImportRequest(app.Provider.Url));
+        var trial = await RegisterAsync(first);
+        var secondTrial = await RegisterAsync(other);
+        var accepted = await Read<ProductImportAcceptedResponse>(await first.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId!.Value), new ProductImportRequest(app.Provider.Url)));
+        var limited = await first.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId!.Value), new ProductImportRequest(app.Provider.Url));
         Assert.Equal(HttpStatusCode.TooManyRequests, limited.StatusCode); Assert.NotNull(limited.Headers.RetryAfter);
         Assert.Equal(HttpStatusCode.OK, (await first.GetAsync(accepted.StatusUrl)).StatusCode);
-        Assert.Equal(HttpStatusCode.Accepted, (await other.PostAsJsonAsync(SubmitUrl(secondTrial.ShoppingListId), new ProductImportRequest(app.Provider.Url))).StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, (await other.PostAsJsonAsync(SubmitUrl(secondTrial.ShoppingListId!.Value), new ProductImportRequest(app.Provider.Url))).StatusCode);
     }
 
     [PostgreSqlFact]
@@ -148,12 +148,16 @@ public class ProductImportEndpointTests
     {
         await using var app = new ImportApiFactory();
         using var client = app.Client();
-        var trial = await Read<TrialStartResponse>(await client.PostAsync("/api/auth/trial", null));
-        var accepted = await Read<ProductImportAcceptedResponse>(await client.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId), new ProductImportRequest(app.Provider.Url)));
-        app.Clock.Now += TimeSpan.FromHours(4);
+        var trial = await RegisterAsync(client);
+        var accepted = await Read<ProductImportAcceptedResponse>(await client.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId!.Value), new ProductImportRequest(app.Provider.Url)));
+        app.Clock.Now += TimeSpan.FromDays(31);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync(accepted.StatusUrl)).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId), new ProductImportRequest(app.Provider.Url))).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync(SubmitUrl(trial.ShoppingListId!.Value), new ProductImportRequest(app.Provider.Url))).StatusCode);
     }
+
+    private static async Task<CurrentSessionResponse> RegisterAsync(HttpClient client) =>
+        await Read<CurrentSessionResponse>(await client.PostAsJsonAsync("/api/auth/register",
+            new RegisterRequest(Guid.NewGuid() + "@example.test", "A long test passphrase 123!", "Shopper")));
 
     private sealed class ImportApiFactory(bool worker = false, int limit = 20, string retailer = "coles") : WebApplicationFactory<Program>
     {

@@ -21,8 +21,11 @@ public static class AuthEndpoints
             .Produces<CurrentSessionResponse>(201).ProducesProblem(400).ProducesProblem(401).ProducesProblem(403).ProducesProblem(409).ProducesProblem(429);
         group.MapPost("/login", SignInAsync).RequireRateLimiting(SignInRatePolicy)
             .Produces<CurrentSessionResponse>().ProducesProblem(400).ProducesProblem(401).ProducesProblem(403).ProducesProblem(429);
-        group.MapPost("/trial", StartAsync).RequireRateLimiting(TrialRatePolicy)
-            .Produces<TrialStartResponse>(201).Produces<TrialStartResponse>().ProducesProblem(403).ProducesProblem(409).ProducesProblem(429);
+        group.MapPost("/trial", (HttpContext context) =>
+        {
+            NoStore(context);
+            return Results.Problem(statusCode: 410, title: "Temporary trials are no longer available. Create a free account or sign in.");
+        }).RequireRateLimiting(TrialRatePolicy).ProducesProblem(410);
         group.MapGet("/me", MeAsync).RequireAuthorization().Produces<CurrentSessionResponse>().ProducesProblem(401);
         group.MapPost("/logout", LogoutAsync).RequireAuthorization().Produces(204).ProducesProblem(401).ProducesProblem(403);
     }
@@ -82,19 +85,6 @@ public static class AuthEndpoints
         return result.StatusCode == 201 ? Results.Created("/api/auth/me", result.Response) : Results.Ok(result.Response);
     }
 
-    private static async Task<IResult> StartAsync(HttpContext context, TrialSessionService service, IWebHostEnvironment environment, CancellationToken token)
-    {
-        NoStore(context);
-        if (context.Request.Headers.ContainsKey("Authorization") && context.User.Identity?.IsAuthenticated != true)
-            return Results.Problem(statusCode: 401, title: "A valid session is required.");
-        var identity = context.User.Identity?.IsAuthenticated == true ? Identity(context) : ((long Account, long Session)?)null;
-        var result = await service.StartAsync(identity?.Account, identity?.Session, token, context.Request.Headers["X-Client-Timezone"].ToString());
-        if (result.Response is null) return Results.Problem(statusCode: result.ErrorCode == "invalid_session" ? 401 : 409,
-            title: result.ErrorCode == "registered_session" ? "You are already signed in to a registered account." : "The trial session is unavailable.");
-        if (result.Token is not null) SessionCookie.Write(context, result.Token, result.Response.SessionExpiresDate,
-            !environment.IsDevelopment() || context.Request.IsHttps);
-        return result.Response.Reused ? Results.Ok(result.Response) : Results.Created("/api/auth/me", result.Response);
-    }
     private static async Task<IResult> MeAsync(HttpContext context, TrialSessionService service, CancellationToken token)
     {
         NoStore(context);

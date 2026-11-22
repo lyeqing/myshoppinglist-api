@@ -116,42 +116,17 @@ public sealed class SocialAuthenticationTests
     }
 
     [PostgreSqlFact]
-    public async Task Trial_conversion_preserves_ownership_preferences_and_revokes_old_trial_token()
+    public async Task Social_registration_creates_a_free_registered_account_and_persistent_list()
     {
         await using var isolated = await IsolatedDatabaseScope.CreateAsync(); await using var app = new SocialFactory(); using var browser = app.Client();
-        var trial = (await (await browser.PostAsync("/api/auth/trial", null)).Content.ReadFromJsonAsync<TrialStartResponse>())!;
-        string hash;
-        using (var scope = app.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<MyShoppingListDbContext>();
-            hash = (await db.UserSessions.SingleAsync()).TokenHash;
-            await db.UserAccounts.Where(x => x.Id == trial.Account.Id).ExecuteUpdateAsync(s => s.SetProperty(x => x.IncludeDifferentBrands, true));
-        }
-        await Authenticate(app, browser, "microsoft", "signin", trial.Account.Id); await Finish(browser);
-        var permanent = (await browser.GetFromJsonAsync<CurrentSessionResponse>("/api/auth/me"))!;
-        Assert.Equal(trial.Account.Id, permanent.Account.Id); Assert.Equal(trial.ShoppingListId, permanent.ShoppingListId); Assert.False(permanent.Account.IsTrial);
-        using (var scope = app.Services.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<MyShoppingListDbContext>();
-            Assert.True((await db.UserAccounts.SingleAsync()).IncludeDifferentBrands);
-            Assert.NotNull((await db.UserSessions.SingleAsync(x => x.TokenHash == hash)).RevokedDate);
-        }
-    }
-
-    [PostgreSqlFact]
-    public async Task Opening_existing_account_from_trial_requires_explicit_switch_without_merging()
-    {
-        await using var isolated = await IsolatedDatabaseScope.CreateAsync(); await using var app = new SocialFactory(); using var owner = app.Client();
-        await Authenticate(app, owner, "google"); await Finish(owner);
-        var existing = (await owner.GetFromJsonAsync<CurrentSessionResponse>("/api/auth/me"))!;
-        using var trialBrowser = app.Client(); var trial = (await (await trialBrowser.PostAsync("/api/auth/trial", null)).Content.ReadFromJsonAsync<TrialStartResponse>())!;
-        await Authenticate(app, trialBrowser, "google", "signin", trial.Account.Id);
-        Assert.Equal("confirm_trial_switch", (await Finish(trialBrowser)).GetProperty("outcome").GetString());
-        Assert.Equal(trial.Account.Id, (await trialBrowser.GetFromJsonAsync<CurrentSessionResponse>("/api/auth/me"))!.Account.Id);
-        await Finish(trialBrowser, true);
-        Assert.Equal(existing.Account.Id, (await trialBrowser.GetFromJsonAsync<CurrentSessionResponse>("/api/auth/me"))!.Account.Id);
+        await Authenticate(app, browser, "microsoft"); await Finish(browser);
+        var session = (await browser.GetFromJsonAsync<CurrentSessionResponse>("/api/auth/me"))!;
+        Assert.False(session.Account.IsTrial); Assert.False(session.Account.IsPaid); Assert.Null(session.Account.ExpiresDate);
         using var scope = app.Services.CreateScope(); var db = scope.ServiceProvider.GetRequiredService<MyShoppingListDbContext>();
-        Assert.Equal(2, await db.ShoppingLists.CountAsync()); Assert.True((await db.UserAccounts.SingleAsync(x => x.Id == trial.Account.Id)).IsTrial);
+        var list = await db.ShoppingLists.SingleAsync(l => l.Id == session.ShoppingListId);
+        Assert.Equal(session.Account.Id, list.UserAccountId); Assert.Null(list.ExpiresDate);
+        Assert.Equal(HttpStatusCode.Gone, (await browser.PostAsync("/api/auth/trial", null)).StatusCode);
+        Assert.Single(await db.UserAccounts.ToListAsync());
     }
 
     [PostgreSqlFact]
