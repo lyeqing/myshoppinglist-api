@@ -17,7 +17,7 @@ public sealed class TrialSessionService(MyShoppingListDbContext db, TimeProvider
             && s.RevokedDate == null && s.ExpiresDate > now && s.UserAccount.IsActive
             && !s.UserAccount.IsTrial)
             .Select(s => new CurrentSessionResponse(new AccountResponse(s.UserAccountId, s.UserAccount.DisplayName,
-                s.UserAccount.IsTrial, s.UserAccount.ExpiresDate, s.UserAccount.IsPaid),
+                s.UserAccount.IsTrial, s.UserAccount.ExpiresDate, s.UserAccount.IsPaid, s.UserAccount.Email),
                 db.ShoppingLists.Where(l => l.UserAccountId == accountId && !l.IsArchived && (l.ExpiresDate == null || l.ExpiresDate > now))
                     .OrderByDescending(l => db.UserCurrentLists.Any(c => c.UserAccountId == accountId && c.ShoppingListId == l.Id))
                     .ThenBy(l => l.Id).Select(l => (long?)l.Id).FirstOrDefault(), s.ExpiresDate,

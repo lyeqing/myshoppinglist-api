@@ -11,6 +11,23 @@ namespace myshoppinglist_api.Tests;
 [Collection("Import worker database")]
 public class AccountAuthServiceTests
 {
+    [PostgreSqlTheory]
+    [InlineData(null, "")]
+    [InlineData("", "")]
+    [InlineData(" \t ", "")]
+    [InlineData("  Taylor  ", "Taylor")]
+    public async Task Registration_accepts_optional_names_and_preserves_them_on_login(string? suppliedName, string expected)
+    {
+        await using var f = new AccountFixture();
+        var registered = await f.Service.RegisterAsync(f.Request with { DisplayName = suppliedName }, null, null, default);
+        Assert.Equal(201, registered.StatusCode); Assert.Equal(expected, registered.Response!.Account.DisplayName);
+        Assert.Equal(f.Email, registered.Response.Account.Email);
+        Assert.Equal(expected, (await f.Db.UserAccounts.AsNoTracking().SingleAsync(u => u.Id == registered.Response.Account.Id)).DisplayName);
+        var login = await f.Service.SignInAsync(new(f.Email, AccountFixture.Password), default);
+        Assert.Equal(200, login.StatusCode); Assert.Equal(expected, login.Response!.Account.DisplayName);
+        Assert.Equal(f.Email, login.Response.Account.Email);
+    }
+
     [PostgreSqlFact]
     public async Task Registration_requires_each_character_type_and_accepts_eight_characters()
     {
@@ -65,7 +82,7 @@ public class AccountAuthServiceTests
     public async Task Invalid_and_duplicate_registration_do_not_create_extra_accounts()
     {
         await using var f = new AccountFixture();
-        foreach (var request in new[] { f.Request with { Email = "not email" }, f.Request with { DisplayName = " " },
+        foreach (var request in new[] { f.Request with { Email = "not email" }, f.Request with { DisplayName = new string('x', 201) },
             f.Request with { Password = "short" }, f.Request with { Password = new string('x',1025) } })
             Assert.Equal(400, (await f.Service.RegisterAsync(request, null, null, default)).StatusCode);
         async Task<AccountAuthResult> Register()

@@ -22,6 +22,36 @@ public class AuthEndpointTests
     private static Task<HttpResponseMessage> RegisterAsync(HttpClient client) => client.PostAsJsonAsync("/api/auth/register",
         new RegisterRequest(Guid.NewGuid() + "@example.test", "A long test passphrase 123!", "Shopper"));
 
+    [PostgreSqlTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Browser_and_mobile_registration_accept_an_omitted_display_name(bool mobile)
+    {
+        await using var app = new AuthFactory(); using var client = app.Client();
+        var body = new Dictionary<string, object?> { ["email"] = Guid.NewGuid() + "@example.test", ["password"] = "Valid-Password9!" };
+        if (mobile) body["device"] = new SessionDevice("android", "phone", "Fixture", "Test", "Test", "Fixture");
+        var response = await client.PostAsJsonAsync(mobile ? "/api/auth/mobile/register" : "/api/auth/register", body);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var mobileSession = mobile ? (await response.Content.ReadFromJsonAsync<MobileSessionResponse>())! : null;
+        var session = mobileSession is not null
+            ? new CurrentSessionResponse(mobileSession.Account, mobileSession.ShoppingListId, mobileSession.SessionExpiresDate)
+            : (await response.Content.ReadFromJsonAsync<CurrentSessionResponse>())!;
+        Assert.Equal(string.Empty, session.Account.DisplayName); Assert.False(session.Account.IsPaid);
+        Assert.Equal(body["email"], session.Account.Email);
+        if (mobile)
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", mobileSession!.Token);
+        }
+        var current = (await client.GetFromJsonAsync<CurrentSessionResponse>("/api/auth/me"))!;
+        Assert.Equal(session.Account, current.Account);
+        var signIn = await client.PostAsJsonAsync(mobile ? "/api/auth/mobile/login" : "/api/auth/login", body);
+        Assert.Equal(HttpStatusCode.OK, signIn.StatusCode);
+        var signedIn = (await signIn.Content.ReadFromJsonAsync<CurrentSessionResponse>())!;
+        Assert.Equal(session.Account, signedIn.Account);
+        await using var db = PersistenceScope.Context();
+        Assert.Equal(string.Empty, (await db.UserAccounts.SingleAsync(a => a.Id == session.Account.Id)).DisplayName);
+    }
+
     [PostgreSqlFact]
     public async Task Retired_trial_endpoint_returns_gone_and_creates_no_records_or_cookie()
     {

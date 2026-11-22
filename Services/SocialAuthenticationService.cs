@@ -144,7 +144,7 @@ public sealed class SocialAuthenticationService(MyShoppingListDbContext db, Acco
         }
         flow.ConsumedAt = Now; await db.SaveChangesAsync(ct);
         var displayName = proof.Name?.Trim();
-        if (string.IsNullOrWhiteSpace(displayName) || displayName.Length > 200 || displayName.Any(char.IsControl)) displayName = "Shopper";
+        if (string.IsNullOrWhiteSpace(displayName) || displayName.Length > 200 || displayName.Any(char.IsControl)) displayName = string.Empty;
         var result = await authentication.RegisterExternalAsync(displayName, new() { Provider = proof.Provider, Subject = proof.Subject,
             ProviderEmail = email, CreatedAt = Now }, account, session, ct, timezone);
         if (result.Response is null) throw new UserImportException(result.StatusCode, result.Message!);

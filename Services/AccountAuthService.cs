@@ -27,8 +27,9 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
     {
         var email = external is null ? NormaliseEmail(request.Email) : null;
         if (email is null && external is null) return Fail(400, "Enter a valid email address.");
-        if (string.IsNullOrWhiteSpace(request.DisplayName) || request.DisplayName.Trim().Length > 200)
-            return Fail(400, "Enter a display name of at most 200 characters.");
+        var displayName = request.DisplayName?.Trim() ?? string.Empty;
+        if (displayName.Length > 200)
+            return Fail(400, "Use at most 200 characters for your display name, or leave it blank.");
         if (external is null && PasswordPolicy.Error(request.Password, options.Value.MinimumPasswordLength) is { } passwordError)
             return Fail(400, passwordError);
         if (accountId.HasValue != sessionId.HasValue) return Fail(401, "A valid session is required.");
@@ -80,7 +81,7 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
                 list = new() { UserAccount = user, Name = ShoppingListNameService.First(now, timezone), CreatedDate = now, UpdatedDate = now };
                 db.AddRange(user, list);
             }
-            user.Email = email; user.DisplayName = request.DisplayName.Trim();
+            user.Email = email; user.DisplayName = displayName;
             user.PasswordHash = credential?.Hash; user.PasswordSalt = credential?.Salt;
             user.IsTrial = false; user.ExpiresDate = null; user.UpdatedDate = now;
             if (external is not null) { external.UserAccount = user; db.ExternalIdentities.Add(external); }
@@ -162,7 +163,7 @@ public sealed class AccountAuthService(MyShoppingListDbContext db, IOptions<Auth
         return email;
     }
     private static CurrentSessionResponse Response(UserAccount user, long? listId, UserSession session) =>
-        new(new(user.Id, user.DisplayName, user.IsTrial, user.ExpiresDate, user.IsPaid), listId, session.ExpiresDate);
+        new(new(user.Id, user.DisplayName, user.IsTrial, user.ExpiresDate, user.IsPaid, user.Email), listId, session.ExpiresDate);
     private static AccountAuthResult Fail(int code, string message) => new(null, StatusCode: code, Message: message);
     private static AccountAuthResult InvalidCredentials() => Fail(401, "The email or password is incorrect.");
 }

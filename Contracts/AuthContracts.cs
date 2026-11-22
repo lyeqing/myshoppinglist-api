@@ -1,6 +1,6 @@
 namespace myshoppinglist_api.Contracts;
 
-public sealed record AccountResponse(long Id, string DisplayName, bool IsTrial, DateTime? ExpiresDate, bool IsPaid = false);
+public sealed record AccountResponse(long Id, string DisplayName, bool IsTrial, DateTime? ExpiresDate, bool IsPaid = false, string? Email = null);
 public sealed record CurrentSessionResponse(AccountResponse Account, long? ShoppingListId, DateTime SessionExpiresDate, long? CurrentShoppingListId = null);
 public sealed record TrialStartResponse(AccountResponse Account, long ShoppingListId, DateTime SessionExpiresDate, bool Reused);
 public sealed record RegisterRequest(string? Email, string? Password, string? DisplayName);

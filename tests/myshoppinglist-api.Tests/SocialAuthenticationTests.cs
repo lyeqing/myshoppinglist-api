@@ -34,6 +34,34 @@ public sealed class SocialAuthenticationTests
     private const string Password = "Original-passphrase1!";
 
     [PostgreSqlTheory]
+    [InlineData(null)]
+    [InlineData(" \t ")]
+    public async Task Missing_provider_names_stay_blank_without_using_email(string? name)
+    {
+        await using var isolated = await IsolatedDatabaseScope.CreateAsync(); await using var app = new SocialFactory(); using var browser = app.Client();
+        app.Name = name;
+        await Authenticate(app, browser, "google"); await Finish(browser);
+        var session = (await browser.GetFromJsonAsync<CurrentSessionResponse>("/api/auth/me"))!;
+        Assert.Equal(string.Empty, session.Account.DisplayName);
+        using var scope = app.Services.CreateScope(); var db = scope.ServiceProvider.GetRequiredService<MyShoppingListDbContext>();
+        Assert.Equal(string.Empty, (await db.UserAccounts.SingleAsync(a => a.Id == session.Account.Id)).DisplayName);
+    }
+
+    [PostgreSqlFact]
+    public async Task Returning_social_login_does_not_replace_an_existing_name()
+    {
+        await using var isolated = await IsolatedDatabaseScope.CreateAsync(); await using var app = new SocialFactory(); using var browser = app.Client();
+        await Authenticate(app, browser, "google"); await Finish(browser);
+        var original = (await browser.GetFromJsonAsync<CurrentSessionResponse>("/api/auth/me"))!;
+        Assert.Equal("Social shopper", original.Account.DisplayName);
+        (await browser.PostAsync("/api/auth/logout", null)).EnsureSuccessStatusCode();
+        app.Name = "A changed provider name";
+        await Authenticate(app, browser, "google"); await Finish(browser);
+        var returned = (await browser.GetFromJsonAsync<CurrentSessionResponse>("/api/auth/me"))!;
+        Assert.Equal(original.Account.Id, returned.Account.Id); Assert.Equal(original.Account.DisplayName, returned.Account.DisplayName);
+    }
+
+    [PostgreSqlTheory]
     [InlineData("google", false)]
     [InlineData("facebook", false)]
     [InlineData("microsoft", false)]
@@ -279,6 +307,7 @@ public sealed class SocialAuthenticationTests
     {
         public string Subject { get; set; } = "identity-1";
         public string? Email { get; set; } = "social@example.test";
+        public string? Name { get; set; } = "Social shopper";
         public CaptureMail Transport { get; } = new();
         public PersistenceClock Clock { get; } = new();
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -309,7 +338,7 @@ public sealed class SocialAuthenticationTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             object payload = request.Method == HttpMethod.Post ? new { access_token = "fixture-access-token", token_type = "Bearer", expires_in = 3600 }
-                : new { id = source.Subject, sub = source.Subject, email = source.Email, mail = source.Email, userPrincipalName = source.Email, name = "Social shopper", displayName = "Social shopper" };
+                : new { id = source.Subject, sub = source.Subject, email = source.Email, mail = source.Email, userPrincipalName = source.Email, name = source.Name, displayName = source.Name };
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(payload) });
         }
     }

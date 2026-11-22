@@ -213,6 +213,8 @@ The worker processes SQL jobs created by the Stage 4B submission endpoint. Fresh
 
 Account creation is free. All shopping and AI features require a signed-in, active registered account. Public information pages remain available without an account. This supersedes the historical Stage 4A temporary-trial workflow; no new schema migration is needed.
 
+Display names are optional for browser and mobile registration. Omitted, null, empty and whitespace-only names are stored as an empty string; supplied names are trimmed and limited to 200 characters. Authenticated account responses include the account's stored email address. Customer-facing account labels use the display name, then email when the name is blank, then “My account” if neither is available. Valid social-provider names and existing account names are retained. No data migration is required.
+
 | Endpoint | Behaviour |
 | --- | --- |
 | `POST /api/auth/register` | Creates a free registered account, permanent initial list and session; returns `201` and an HttpOnly session cookie. No payment details are required. |
